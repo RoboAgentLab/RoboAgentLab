@@ -15,7 +15,7 @@ export type NodeSqliteDatabaseOptions = {
 const DEFAULT_WAL_AUTO_CHECKPOINT_PAGES = 1_000;
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 
-type HandleScope = { active: boolean };
+type TransactionScope = { active: boolean };
 
 const ignore = (): void => {};
 
@@ -68,9 +68,14 @@ class SerialOperationQueue {
 	}
 }
 
+/** How many prepared statements one connection keeps. */
+const STATEMENT_CACHE_LIMIT = 256;
+
 /**
  * Executes SQL on one connection. Prepared statements are cached per connection by SQL text, so the
- * database and its transaction handles share them across transactions.
+ * database and its transaction handles share them across transactions. The cache keeps the
+ * `STATEMENT_CACHE_LIMIT` most recently used statements, so callers generating SQL of unbounded shapes
+ * cannot grow it without bound.
  */
 abstract class NodeSqliteExecutor implements SqliteExecutor {
 	protected readonly database: DatabaseSync;
@@ -93,6 +98,10 @@ abstract class NodeSqliteExecutor implements SqliteExecutor {
 		});
 	}
 
+	runCounted(sql: string, ...params: SqliteValue[]): Promise<number> {
+		return this.runOperation(() => Number(this.statement(sql).run(...params).changes));
+	}
+
 	get<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T | undefined> {
 		return this.runOperation(() => this.statement(sql).get(...params) as T | undefined);
 	}
@@ -104,28 +113,34 @@ abstract class NodeSqliteExecutor implements SqliteExecutor {
 	protected abstract runOperation<T>(operation: () => T): Promise<T>;
 
 	private statement(sql: string): StatementSync {
-		let statement = this.statements.get(sql);
-		if (statement === undefined) {
-			statement = this.database.prepare(sql);
-			this.statements.set(sql, statement);
+		const statements = this.statements;
+		let statement = statements.get(sql);
+		if (statement !== undefined) {
+			// Recency matters only once evictions come near: a small cache keeps one lookup per statement.
+			if (statements.size > STATEMENT_CACHE_LIMIT / 2) {
+				statements.delete(sql);
+				statements.set(sql, statement);
+			}
+			return statement;
 		}
+		statement = this.database.prepare(sql);
+		statements.set(sql, statement);
+		// A Map iterates in insertion order: its first key is the least recently used statement.
+		if (statements.size > STATEMENT_CACHE_LIMIT) statements.delete(statements.keys().next().value!);
 		return statement;
 	}
 }
 
-/** The handle passed to a transaction or exclusive operation; it runs SQL directly and is invalid once its scope ends. */
-class NodeSqliteScopedExecutor extends NodeSqliteExecutor {
-	private readonly scope: HandleScope;
-	private readonly kind: string;
+class NodeSqliteTransaction extends NodeSqliteExecutor {
+	private readonly scope: TransactionScope;
 
-	constructor(database: DatabaseSync, statements: Map<string, StatementSync>, scope: HandleScope, kind: string) {
+	constructor(database: DatabaseSync, statements: Map<string, StatementSync>, scope: TransactionScope) {
 		super(database, statements);
 		this.scope = scope;
-		this.kind = kind;
 	}
 
 	protected async runOperation<T>(operation: () => T): Promise<T> {
-		if (!this.scope.active) throw new Error(`SQLite ${this.kind} handle is no longer active`);
+		if (!this.scope.active) throw new Error("SQLite transaction handle is no longer active");
 		return operation();
 	}
 }
@@ -144,9 +159,7 @@ export class NodeSqliteDatabase extends NodeSqliteExecutor implements SqliteData
 			this.database.exec("BEGIN IMMEDIATE");
 			const scope = { active: true };
 			try {
-				const result = await callback(
-					new NodeSqliteScopedExecutor(this.database, this.statements, scope, "transaction"),
-				);
+				const result = await callback(new NodeSqliteTransaction(this.database, this.statements, scope));
 				scope.active = false;
 				this.database.exec("COMMIT");
 				return result;
@@ -159,49 +172,6 @@ export class NodeSqliteDatabase extends NodeSqliteExecutor implements SqliteData
 				}
 				throw error;
 			}
-		});
-	}
-
-	/**
-	 * Runs `operation` alone on the connection, outside a transaction: it starts after every earlier operation and
-	 * transaction has settled, and later calls wait until it settles. The handle runs SQL immediately and is invalid
-	 * afterwards. Use it for work that must not interleave with commits but cannot run inside a transaction, such as
-	 * `PRAGMA wal_checkpoint`, or to hold back all later operations while awaiting something else. As with
-	 * `transaction`, calling the database itself from inside the operation waits for the operation and never settles.
-	 *
-	 * An operation that begins a transaction must end it. Otherwise later statements would silently join it and
-	 * never commit, so a transaction still open when the operation settles is rolled back and the call rejects, with
-	 * the operation's own error as the `cause` if it failed.
-	 */
-	exclusive<T>(operation: (executor: SqliteExecutor) => Promise<T>): Promise<T> {
-		return this.access.runAsync(async () => {
-			const scope = { active: true };
-			let outcome: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
-			try {
-				const handle = new NodeSqliteScopedExecutor(this.database, this.statements, scope, "exclusive");
-				outcome = { ok: true, value: await operation(handle) };
-			} catch (error) {
-				outcome = { ok: false, error };
-			} finally {
-				scope.active = false;
-			}
-			if (this.database.isTransaction) {
-				const leftOpen = new Error(
-					"SQLite exclusive operation left a transaction open; it was rolled back",
-					outcome.ok ? undefined : { cause: outcome.error },
-				);
-				try {
-					this.database.exec("ROLLBACK");
-				} catch (rollbackError) {
-					throw new AggregateError(
-						[leftOpen, rollbackError],
-						"SQLite exclusive operation left a transaction open and rollback failed",
-					);
-				}
-				throw leftOpen;
-			}
-			if (!outcome.ok) throw outcome.error;
-			return outcome.value;
 		});
 	}
 

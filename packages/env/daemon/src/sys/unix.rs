@@ -153,7 +153,8 @@ pub fn remove_file(path: &str) -> io::Result<()> {
 pub trait Pipe: io::Read + std::os::fd::AsRawFd {}
 impl<T: io::Read + std::os::fd::AsRawFd> Pipe for T {}
 
-/// Read `pipe` until it ends, `on_data` returns false, or `stop` is set; the pipe closes when this returns.
+/// Read `pipe` until it ends, `on_data` returns false, or `stop` is set (looked at every 100 ms, also while no output
+/// arrives); the pipe closes when this returns.
 pub fn read_pipe(mut pipe: impl Pipe, stop: &AtomicBool, mut on_data: impl FnMut(&[u8]) -> bool) {
     let fd = pipe.as_raw_fd();
     // SAFETY: fcntl on a descriptor this thread owns.
@@ -195,8 +196,44 @@ pub fn read_pipe(mut pipe: impl Pipe, stop: &AtomicBool, mut on_data: impl FnMut
     }
 }
 
-/// Readers poll `stop` every 100 ms.
-pub fn interrupt_reader(_reader: &std::thread::JoinHandle<()>) {}
+/// A pipe a writer thread can poll, so that it stops when the program settles.
+pub trait WritePipe: io::Write + std::os::fd::AsRawFd {}
+impl<T: io::Write + std::os::fd::AsRawFd> WritePipe for T {}
+
+/// Write all of `bytes`, waiting while the program does not read; false once the pipe is closed or `stop` is set
+/// (looked at every 100 ms, also while the write waits).
+pub fn write_pipe(pipe: &mut impl WritePipe, mut bytes: &[u8], stop: &AtomicBool) -> bool {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: fcntl on a descriptor this thread owns; only the daemon's end of the pipe becomes nonblocking.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    while !bytes.is_empty() {
+        if stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        match pipe.write(bytes) {
+            Ok(0) => return false,
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: one valid pollfd.
+                let ready = unsafe { libc::poll(&mut poll, 1, 100) };
+                if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                    return false;
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    true
+}
 
 /// The program an argv command runs; `Command` searches `PATH` like `execvp`, as libuv does.
 pub fn resolve_program(
@@ -282,6 +319,29 @@ pub fn configure(
 }
 
 pub fn after_spawn(_child: &Child) {}
+
+/// Run `on_signal` with the signal on its own thread when `SIGTERM`, `SIGINT` or `SIGHUP` arrives, instead of dying
+/// at once. Call before starting any other thread: threads inherit the blocked signals, so only this one receives
+/// them. Commands reset their signal mask before they run.
+pub fn on_exit_signal(on_signal: impl FnOnce(i32) + Send + 'static) {
+    // SAFETY: a zeroed sigset_t initialized by sigemptyset, and plain signal mask calls.
+    let set = unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            libc::sigaddset(&mut set, signal);
+        }
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+        set
+    };
+    std::thread::spawn(move || {
+        let mut signal = 0;
+        // SAFETY: waits for one of the signals blocked above.
+        if unsafe { libc::sigwait(&set, &mut signal) } == 0 {
+            on_signal(signal);
+        }
+    });
+}
 
 /// Kill the command's process group, or the process if the group is gone.
 pub fn kill_tree(pid: u32) {
