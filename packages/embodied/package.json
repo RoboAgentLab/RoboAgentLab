@@ -25,7 +25,7 @@
 			"src/infra/setup/index.ts"
 		],
 		"skills": [
-			"skills"
+			"skills/embodied-quickstart"
 		]
 	},
 	"peerDependencies": {

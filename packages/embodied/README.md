@@ -28,6 +28,12 @@ run the printed launch command yourself and enter `Solve the task.`.
 
 See the [full Quickstart](https://roboagentlab.github.io/docs/quickstart.html) for installation, one LIBERO episode, and the dashboard.
 
+The package's one skill is `embodied-quickstart` (`skills/`: install, preflight, run). The five task
+skills adapted from OpenETA's `agent/skills/*.md` (`skills/openeta/`: `embodied-pick`, `embodied-place`,
+`embodied-stack`, `embodied-push-pull`, `embodied-object-memory`) are that work's guidance to its agent,
+so they load only when a run uses its setting, `--preset openeta` (`src/infra/tiers.ts`), and `/skill:`
+does not list them otherwise.
+
 ## Planner × surface
 
 Two independent axes: the **planner** (who returns the next action) and the **action surface** it speaks
