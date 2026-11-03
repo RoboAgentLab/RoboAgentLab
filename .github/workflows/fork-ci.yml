@@ -31,7 +31,7 @@ jobs:
       # nix/model-catalog.json lags upstream's source (a revision is published only after main has used a new
       # provider or model type), so build:offline on the pin can fail to type-check.
       - run: npm run build
-      - run: bash --version | head -1 && nproc && node --version
+      - run: bash --version | head -1 && nproc && node --version && df -T /tmp && mount | grep -E " / | /tmp " && uname -a
       - name: Agent queue compatibility
         working-directory: packages/agent
         run: node ../../node_modules/vitest/dist/cli.js --run test/agent.test.ts
