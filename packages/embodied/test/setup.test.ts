@@ -21,6 +21,7 @@ import {
 	pickMatches,
 	supported,
 	supportedCells,
+	VISER,
 	WORKS,
 	worksIn,
 } from "../src/infra/setup/axes.ts";
@@ -34,6 +35,7 @@ import setup, {
 	NO_PAPER,
 	NOTICE,
 	NOTICE_ENTRY,
+	PANELS,
 	PAPER,
 	PKG,
 	ROBOTS,
@@ -43,14 +45,19 @@ import setup, {
 } from "../src/infra/setup/index.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import {
+	DASHBOARD_PORT,
 	episodeFlags,
 	experimentLabel,
+	freePort,
 	gpus,
 	headlessCommand,
+	panelFlags,
+	panelUrls,
 	RECORD,
 	readExperiment,
 	runCommand,
 	scanExperiments,
+	tunnelHint,
 } from "../src/infra/setup/run.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -1159,11 +1166,22 @@ test("the run module: experiments are read from their settings and record, the c
 	assert.equal(experimentLabel(e), "embodied-metaworld: Metaworld, O1 × A1 Code");
 	const flags = episodeFlags("--task reach-v3 --seed 0", "--units=true", BUDGET);
 	assert.equal(flags, `--task reach-v3 --seed 0 --units=true ${BUDGET} --dashboard=true`);
+	assert.equal(panelFlags(8765), "--dashboard=true --dashboard-port 8765");
+	assert.equal(panelFlags(8766, [VISER]), "--dashboard=true --dashboard-port 8766 --viser --viser-port 8080");
+	assert.deepEqual(panelUrls(8765, [VISER]), [
+		"dashboard http://127.0.0.1:8765/",
+		"Viser 3D view http://127.0.0.1:8080/",
+	]);
+	assert.equal(tunnelHint([8765, 8080], {}), undefined, "not over ssh: no tunnel needed");
+	assert.equal(
+		tunnelHint([8765, 8080], { SSH_CONNECTION: "1.2.3.4 5 6.7.8.9 22" }, "l40s-0003"),
+		"ssh -N -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080 l40s-0003",
+	);
 	assert.equal(
 		runCommand(e, flags, 5),
-		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi ${flags}`,
+		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi ${flags} "Solve the task."`,
 	);
-	assert.equal(runCommand(e, flags), `cd ${dir} && source ${e.env} && pi ${flags}`);
+	assert.equal(runCommand(e, flags), `cd ${dir} && source ${e.env} && pi ${flags} "Solve the task."`);
 	assert.equal(
 		headlessCommand(e, flags, 5),
 		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi -a -p ${flags} "Solve the task."`,
@@ -1193,8 +1211,10 @@ test("the run module: experiments are read from their settings and record, the c
 test("/embodied-run: the installed experiment, its recorded setting, the task, the budget; headless hands the command to the agent, print shows it", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
 	installed(cwd, "embodied-metaworld", "metaworld", {});
-	// One experiment: nothing to pick; the setting is recorded; no GPU on this machine (none asked, none in the command).
+	// One experiment: nothing to pick; the setting is recorded; no GPU on this machine (none asked, none in the command); the dashboard's port is free.
 	runDeps.gpus = () => [];
+	runDeps.freePort = async () => 8765;
+	runDeps.env = {};
 	let p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [true] } });
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	assert.ok(!p.asked.includes("Experiment"));
@@ -1204,10 +1224,12 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O1 × A1 Code; planner openai\/gpt-6$/m);
 	assert.match(p.confirms.at(-1) ?? "", /^task: --task x --seed 0$/m);
 	assert.ok(!p.asked.includes("GPU"));
+	assert.ok(!p.asked.includes(PANELS), "Metaworld has no panel of its own");
 	assert.equal(
 		p.notes.at(-1),
-		`cd ${cwd}/embodied-metaworld && source ${cwd}/services/.venv-metaworld/pi-embodied.env && pi --task x --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true`,
+		`cd ${cwd}/embodied-metaworld && source ${cwd}/services/.venv-metaworld/pi-embodied.env && pi --task x --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true --dashboard-port 8765 "Solve the task."`,
 	);
+	assert.match(p.confirms.at(-1) ?? "", /^panels on this machine: dashboard http:\/\/127\.0\.0\.1:8765\/$/m);
 	assert.deepEqual(p.sent, []);
 	// Headless: the agent gets the pi -a -p command and what to report; the task flags typed replace the recorded ones.
 	p = fakePi({
@@ -1219,7 +1241,7 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	assert.match(text, /^\/skill:embodied-quickstart Run one episode now, in the background/);
 	assert.match(
 		text,
-		/pi -a -p --task push-v3 --seed 3 --units=true --max-turns 10 --dashboard=true "Solve the task\."`$/m,
+		/pi -a -p --task push-v3 --seed 3 --units=true --max-turns 10 --dashboard=true --dashboard-port 8765 "Solve the task\."`$/m,
 	);
 	assert.match(text, /robot_result/);
 	// Outside the TUI "here" is not offered.
@@ -1250,7 +1272,12 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 	// The menu, by directory; the request names LIBERO: no menu, and its setting is not recorded, so the grid and the picker (O1 × A1 Code: Show-Harness) are asked.
 	let p = fakePi({
 		cwd,
-		answers: { select: ["GPU 5", RUN_HOW.print], input: ["", ""], confirm: [true], keys: [["\r"], ["\x1b[B", "\r"]] },
+		answers: {
+			select: ["GPU 5", "the dashboard only", RUN_HOW.print],
+			input: ["", ""],
+			confirm: [true],
+			keys: [["\r"], ["\x1b[B", "\r"]],
+		},
 	});
 	await p.commands.get(RUN)?.handler("libero", p.ctx);
 	assert.ok(!p.asked.includes("Experiment"));
@@ -1286,4 +1313,62 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 	assert.match(p.confirms.at(-1) ?? "", /^GPU: any$/m);
 	assert.match(p.notes.at(-1) ?? "", /&& pi --task x --seed 0 --code=true --privileged --max-turns 40/);
 	runDeps.gpus = () => [];
+});
+
+test("/embodied-run panels: a work's own panel comes first when the robot serves it, the dashboard port is fixed, over ssh the tunnel is shown", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	installed(cwd, "embodied-libero", "libero", {
+		cell: { o: "O3", a: "A3" },
+		paper: "capx-S1",
+		flags: "--tier S1",
+		task: "--suite libero_10 --task 0 --seed 0",
+	});
+	runDeps.gpus = () => [];
+	runDeps.freePort = async (start) => (start ?? DASHBOARD_PORT) + 1;
+	runDeps.env = { SSH_CONNECTION: "10.0.0.2 50000 172.28.181.197 22" };
+	// CaP-X's setting on LIBERO: its Viser view is offered first, with the dashboard.
+	let p = fakePi({ cwd, answers: { select: ["CaP-X S1's own", RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.deepEqual(p.offered[PANELS], [
+		"CaP-X S1's own: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+		"the dashboard only",
+	]);
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(
+		summary,
+		/^panels on this machine: dashboard http:\/\/127\.0\.0\.1:8766\/; Viser 3D view http:\/\/127\.0\.0\.1:8080\/$/m,
+	);
+	assert.match(
+		summary,
+		/^from your own machine, first: ssh -N -L 8766:127\.0\.0\.1:8766 -L 8080:127\.0\.0\.1:8080 \S+ \(or a LocalForward/m,
+	);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/--tier S1 --max-turns 40 --time-limit 900 --dashboard=true --dashboard-port 8766 --viser --viser-port 8080 "Solve the task\."\nssh -N -L 8766/,
+	);
+	// The dashboard only: no --viser.
+	p = fakePi({ cwd, answers: { select: ["the dashboard only", RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.match(p.notes.at(-1) ?? "", /--dashboard-port 8766 "Solve the task\."\nssh/);
+	assert.doesNotMatch(p.notes.at(-1) ?? "", /--viser/);
+	// A plain cell on LIBERO: the robot's own Viser view is the offer; Show-Harness has no panel of its own.
+	const lib = installed(cwd, "libero-units", "libero", { paper: "showharness", flags: "--preset showharness" });
+	p = fakePi({
+		cwd,
+		answers: { select: ["libero-units", "the robot's", RUN_HOW.print], input: ["", ""], confirm: [true] },
+	});
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.equal(
+		p.offered[PANELS]?.[0],
+		"the robot's: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+	);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		new RegExp(`^cd ${lib} .*--preset showharness .*--viser --viser-port 8080 "Solve the task\\."\\n`),
+	);
+	runDeps.env = {};
+	runDeps.freePort = freePort;
+	// freePort itself answers with a port at or after the start.
+	const port = await freePort(DASHBOARD_PORT);
+	assert.ok(port >= DASHBOARD_PORT && port < DASHBOARD_PORT + 20);
 });

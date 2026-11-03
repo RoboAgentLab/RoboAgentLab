@@ -165,9 +165,17 @@ Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `s
 ran) starts one: it lists the experiment directories found (this one and its subdirectories whose
 `.pi/settings.json` loads a robot), takes the setting from the `.pi/embodied-setup.json` record
 /embodied-setup wrote (else asks the grid and the picker), asks the task flags, a GPU (nvidia-smi,
-the freest first) and the budget, then how: in this terminal (pi takes it over until the episode
-ends; the trust prompt, then `Solve the task.`), headless (the agent runs `pi -a -p ... "Solve the
-task."` in the background and reports `robot_result`), or printed. A request names the robot
+the freest first), the budget and the panels, then how: in this terminal (pi takes it over and starts the episode on
+`Solve the task.` at once, after the trust prompt the first time), headless (the agent runs `pi -a -p ... "Solve
+the task."` in the background and reports `robot_result`), or printed. Panels: the dashboard always,
+on a fixed port (`--dashboard-port 8765`, the next free one when taken), and first the work's own panel
+when the robot serves it (CaP-X's Viser 3D view, `--viser --viser-port 8080`, on LIBERO and the Frankas;
+other settings fall back to the robot's own view or the dashboard alone). The dashboard binds to
+loopback on the box, so from another machine the ports are tunnelled: the confirmation prints
+`ssh -N -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080 <box>` when pi runs over ssh; a `LocalForward`
+of the same ports in the user's ssh config entry for the box makes every ssh session carry them, and
+then http://127.0.0.1:8765/ on the user's machine is the dashboard. `--dashboard-language zh-cn`
+switches the dashboard's UI language. A request names the robot
 (`/embodied-run libero`) or overrides the setting (`metaworld privileged code`). An experiment
 whose venv is missing is refused: run /embodied-setup. The command it builds is the one below.
 

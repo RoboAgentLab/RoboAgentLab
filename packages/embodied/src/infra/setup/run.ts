@@ -9,8 +9,10 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { createServer } from "node:net";
+import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { type Cell, cellName } from "./axes.ts";
+import { type Cell, cellName, type Panel } from "./axes.ts";
 
 type RobotLike = { id: string; label: string; kind: "sim" | "real"; extension: string; task: string };
 
@@ -141,17 +143,57 @@ export function gpus(run: typeof spawnSync = spawnSync): Gpu[] {
 }
 export const gpuLabel = (g: Gpu) => `GPU ${g.index}: ${g.freeMiB} MiB free of ${g.totalMiB}`;
 
-/** The episode's pi flags: the task's, the setting's, the budget, the dashboard. */
-export const episodeFlags = (task: string, setting: string, budget: string) =>
-	[task, setting, budget, "--dashboard=true"].filter(Boolean).join(" ");
+/** The dashboard's fixed port, so a tunnel or an ssh LocalForward can be set up once. */
+export const DASHBOARD_PORT = 8765;
+/** The first free port at or after `start` on `host` (pi refuses a taken one). */
+export function freePort(start = DASHBOARD_PORT, host = "127.0.0.1", tries = 20): Promise<number> {
+	const probe = (port: number): Promise<boolean> =>
+		new Promise((ok) => {
+			const s = createServer();
+			s.once("error", () => ok(false));
+			s.listen(port, host, () => s.close(() => ok(true)));
+		});
+	return (async () => {
+		for (let p = start; p < start + tries; p++) if (await probe(p)) return p;
+		return start;
+	})();
+}
+/** The panel flags of an episode: the dashboard on its port, and the chosen extra panels'. */
+export const panelFlags = (port: number, panels: Panel[] = []) =>
+	[`--dashboard=true --dashboard-port ${port}`, ...panels.map((p) => p.flags)].join(" ");
+/** The episode's pi flags: the task's, the setting's, the budget, the panels'. */
+export const episodeFlags = (task: string, setting: string, budget: string, panels = "--dashboard=true") =>
+	[task, setting, budget, panels].filter(Boolean).join(" ");
+/** The panels' URLs on the box, one per line. */
+export const panelUrls = (port: number, panels: Panel[] = []) => [
+	`dashboard http://127.0.0.1:${port}/`,
+	...panels.map((p) => `${p.name.split(" (")[0]} http://127.0.0.1:${p.port}/`),
+];
+/**
+ * When pi runs over ssh (SSH_CONNECTION is set), the command that brings the panels' ports to the user's
+ * machine; a LocalForward of the same ports in their ssh config makes it unnecessary.
+ */
+export function tunnelHint(
+	ports: number[],
+	env: NodeJS.ProcessEnv = process.env,
+	host = hostname(),
+): string | undefined {
+	if (!env.SSH_CONNECTION) return undefined;
+	return `ssh -N ${ports.map((p) => `-L ${p}:127.0.0.1:${p}`).join(" ")} ${host}`;
+}
 
-/** The shell command of one interactive episode in the experiment directory, on one GPU when given. */
-export function runCommand(e: Experiment, flags: string, gpu?: number): string {
+/** The instruction every episode starts with; pi takes it as the first message (its positional `message` argument). */
+export const PROMPT = "Solve the task.";
+/**
+ * The shell command of one interactive episode in the experiment directory, on one GPU when given: pi
+ * starts on the instruction at once (after the trust prompt the first time) instead of waiting for it.
+ */
+export function runCommand(e: Experiment, flags: string, gpu?: number, prompt = PROMPT): string {
 	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
-	return `cd ${e.dir} && source ${e.env} && ${dev}pi ${flags}`;
+	return `cd ${e.dir} && source ${e.env} && ${dev}pi ${flags} ${JSON.stringify(prompt)}`;
 }
 /** The same episode without the terminal UI: trust is approved, the prompt is given, pi prints and exits. */
-export function headlessCommand(e: Experiment, flags: string, gpu?: number, prompt = "Solve the task."): string {
+export function headlessCommand(e: Experiment, flags: string, gpu?: number, prompt = PROMPT): string {
 	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
 	return `cd ${e.dir} && source ${e.env} && ${dev}pi -a -p ${flags} ${JSON.stringify(prompt)}`;
 }
