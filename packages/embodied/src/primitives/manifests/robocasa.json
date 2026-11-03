@@ -1,6 +1,8 @@
 {
 	"robot": "robocasa",
 	"internal": [
+		"env.mm_observe",
+		"env.mm_run_step",
 		"env.list_tasks",
 		"env.reassemble_env_action",
 		"env.set_recording",
@@ -760,6 +762,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
 		},
 		{
 			"use": "modules/remember_object"

@@ -76,8 +76,9 @@ export type MemoryOptions = {
 	/**
 	 * The robot's prompt has a memory-free form, so `--memory-profile off` may turn memory off: no
 	 * memory section, no file tools, no sync, no recipe export. Without it `off` refuses the start.
+	 * A function decides at the start (e.g. only in a mode that replaces the robot's prompt).
 	 */
-	optional?: boolean;
+	optional?: boolean | (() => boolean);
 	/**
 	 * Whether the robot has a published corpus on Hugging Face (default true). Without one, runs
 	 * default to the local profile, and a local corpus exploration has not written yet is empty, not an error.
@@ -297,7 +298,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
 		if (requested === "off") {
 			if (explore) throw new Error("--explore writes memory: it cannot run with --memory-profile off");
-			if (!opts.optional)
+			if (!(typeof opts.optional === "function" ? opts.optional() : opts.optional))
 				throw new Error(
 					`--memory-profile off: ${opts.robot ?? "libero"}'s prompt reads memory and has no form without it`,
 				);
