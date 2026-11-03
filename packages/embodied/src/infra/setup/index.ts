@@ -37,13 +37,14 @@ import {
 	type Paint,
 	type Paper,
 	type Pick,
-	paperFlags,
 	papersFor,
 	pickEntries,
 	pickerLines,
 	pickMatches,
 	supportedCells,
 	typed,
+	type Work,
+	worksIn,
 } from "./axes.ts";
 
 /** The package root and the services checkout next to it (absent in an npm install). */
@@ -61,9 +62,9 @@ export const NO_MODEL =
 /** The quickstart's episode budget: an interactive episode has none by default and can run (and bill) for an hour. */
 export const BUDGET = "--max-turns 40 --time-limit 900";
 export const GRID = "Observation × Execution";
-export const PAPER = "Paper setting (optional)";
+export const PAPER = "Work to reproduce (optional)";
 export const NO_PAPER = "none: the cell's plain flags";
-/** The planner option that runs the robot's fine-tuned adapter instead of a model of the registry (A1 only). */
+/** The planner option that runs the robot's fine-tuned adapter instead of a model of the registry (A1 Code only). */
 export const FINETUNED = "fine-tuned: a small VLM + LoRA picks each unit (served by vLLM)";
 
 export type Kind = "sim" | "real";
@@ -85,18 +86,28 @@ export type Robot = {
 	axes: Axes;
 	/** Example task flags for the launch command. */
 	task: string;
-	/** What `setup.sh --weights` fetches (the VLA of A2, SAM3 of O2). */
+	/** What `setup.sh --weights` fetches (the VLA of A1 Model and A2, SAM3 of O2). */
 	weights?: string;
-	/** Fine-tuned planner (A1): model and flags. */
+	/** Fine-tuned planner (A1 Code): model and flags. */
 	finetuned?: string;
 	/** Fine-tuned planner: the released adapter `setup.sh finetuned` fetches (FT_ADAPTER); unset when the user serves their own. */
 	adapter?: string;
 };
 
-/** A simulator with ground truth, units and code mode. */
-const SIM: Axes = { O2: "--detections", O3: "--privileged", A1: "--units=true", A3: "--code=true" };
-/** A real arm: SAM3 through its own --segment, no ground truth. */
-const ARM: Axes = { O2: "--segment", A1: "--units=true", A3: "--code=true" };
+/** A simulator with ground truth, units and code mode; A1 Model needs a VLA skill (LIBERO's Pi0.5: `LIBERO`). */
+const SIM: Axes = { O1: "", O2: "--detections", O3: "--privileged", A1C: "--units=true", A2: "", A3: "--code=true" };
+const LIBERO: Axes = { ...SIM, A1M: "--require-skills pi0" };
+/** A simulator whose tools are a VLA (RLDX-1, LingBot): no units. */
+const VLA_SIM = (skill: string): Axes => ({
+	O1: "",
+	O2: "--detections",
+	O3: "--privileged",
+	A1M: `--require-skills ${skill}`,
+	A2: "",
+	A3: "--code=true",
+});
+/** A real Franka: SAM3 through its own --segment, Pi0.5 through --vla, no ground truth. */
+const ARM: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A1M: "--vla", A2: "", A3: "--code=true" };
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
 const LIBERO_FT = "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero";
 export const ROBOTS: Robot[] = [
@@ -106,7 +117,7 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		axes: SIM,
+		axes: LIBERO,
 		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -117,7 +128,7 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO-PRO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		axes: SIM,
+		axes: LIBERO,
 		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -128,7 +139,7 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO-plus",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), ~9.5 GB scene assets, system ImageMagick (libmagickwand)",
-		axes: SIM,
+		axes: LIBERO,
 		task: "--libero-type plus --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -177,7 +188,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboCasa365",
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
-		axes: { O2: "--detections", O3: "--privileged", A3: "--code=true" },
+		axes: VLA_SIM("rldx"),
 		task: "--task OpenDrawer --split target --seed 0",
 		weights: "RLDX-1-FT-RC365 VLA",
 	},
@@ -187,7 +198,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboTwin 2",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build; two arms",
-		axes: { O2: "--detections", O3: "--privileged", A3: "--code=true" },
+		axes: VLA_SIM("lingbot"),
 		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
 	},
@@ -226,8 +237,8 @@ export const ROBOTS: Robot[] = [
 		label: "HumanCLAW",
 		extension: "src/robots/humanclaw/index.ts",
 		needs: "NVIDIA GPU, a Habitat-Sim build (nvcc), the gated HSSD datasets (HF_TOKEN); a humanoid in HSSD homes",
-		// The paper's mode: units next to the tools (A2), no SAM3.
-		axes: { O3: "--privileged" },
+		// The survey files HumanCLAW under A1 Model: its units are run by the motion model; no SAM3.
+		axes: { O1: "", O3: "--privileged", A1M: "" },
 		task: "--units=both --humanclaw-mode pi --episode one",
 	},
 	{
@@ -263,7 +274,7 @@ export const ROBOTS: Robot[] = [
 		label: "AgileX Piper",
 		extension: "src/robots/piper/index.ts",
 		needs: "Piper arm, ROS Noetic, an operator at the e-stop",
-		axes: { O2: "--detections", A1: "--units=true", A3: "--code=true" },
+		axes: { O1: "", O2: "--detections", A1C: "--units=true", A2: "", A3: "--code=true" },
 		task: "--robot-config <yaml> --task banana_plate --operator=true",
 		finetuned: "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
 		adapter: "qwen3_5_2b",
@@ -274,7 +285,7 @@ export const ROBOTS: Robot[] = [
 		label: "UR5e",
 		extension: "src/robots/ur5e/index.ts",
 		needs: "UR5e with a Robotiq gripper, cameras, an operator at the e-stop",
-		axes: ARM,
+		axes: { O1: "", O2: "--segment", A1C: "--units=true", A2: "", A3: "--code=true" },
 		task: "--arm <controller serial> --robot-config <yaml> --task <task> --operator=true",
 	},
 ];
@@ -283,13 +294,16 @@ type Settings = Record<string, unknown> & { packages?: unknown[]; extensions?: u
 export type Choice = {
 	robot: Robot;
 	cell: Cell;
+	/** A ported work's setting, run as its preset or tier. */
 	paper?: Paper;
+	/** A work of the survey to reproduce that is not ported: the cell's flags, and the agent reads the paper. */
+	work?: Work;
 	remote?: { host: string; checkout: string };
 	services: string;
 	weights: boolean;
 	/** The planner of the registry, or none when `finetuned`. */
 	model?: string;
-	/** The robot's fine-tuned adapter is the planner (A1). */
+	/** The robot's fine-tuned adapter is the planner (A1 Code). */
 	finetuned: boolean;
 	dir: string;
 };
@@ -315,9 +329,9 @@ function packageSource(pi: ExtensionAPI): string {
 	return PKG;
 }
 
-/** The setting's flags: the paper's, else the cell's, then the fine-tuned planner's. */
+/** The setting's flags: the ported work's preset or tier, else the cell's, then the fine-tuned planner's. */
 export function settingFlags(c: Choice): string {
-	const cell = c.paper ? paperFlags(c.robot.axes, c.cell, c.paper) : cellFlags(c.robot.axes, c.cell);
+	const cell = c.paper ? c.paper.flag : cellFlags(c.robot.axes, c.cell);
 	return [cell, c.finetuned ? c.robot.finetuned : undefined].filter(Boolean).join(" ");
 }
 
@@ -363,9 +377,13 @@ export function launchCommand(c: Choice): string {
 const realModel = (m: { provider: string; id: string } | undefined) =>
 	m && !(m.provider === "unknown" && m.id === "unknown") ? `${m.provider}/${m.id}` : undefined;
 
-/** The setting in one line: the cell, its levels, the paper. */
-export const settingLine = (c: Choice) =>
-	`${cellName(c.cell)} (${OBSERVATION[c.cell.o].name} × ${EXECUTION[c.cell.a].name})${c.paper ? `, ${c.paper.name}'s setting` : ""}`;
+/** The setting in one line: the cell with the survey's sections and names, the ported work, or the work to reproduce. */
+export const settingLine = (c: Choice) => {
+	const O = OBSERVATION[c.cell.o];
+	const A = EXECUTION[c.cell.a];
+	const work = c.paper ? `, ${c.paper.name}'s setting` : c.work ? `, reproducing ${c.work.name}` : "";
+	return `${cellName(c.cell)} (${O.section} ${O.name} × ${A.section} ${A.name})${work}`;
+};
 
 function handoff(c: Choice, settingsText: string): string {
 	const setup = `${c.services}/setup.sh ${c.robot.id}${c.weights ? " --weights" : ""}`;
@@ -377,6 +395,12 @@ function handoff(c: Choice, settingsText: string): string {
 	const settings = c.remote
 		? `write this to <experiment dir on the box>/.pi/settings.json (the package paths become ${c.remote.checkout}/packages/embodied):\n${settingsText}`
 		: `${join(c.dir, ".pi/settings.json")} is written`;
+	// A work that is not ported: the agent starts from the cell's flags and reads the paper.
+	const work = c.work
+		? [
+				`- work: reproduce "${c.work.title}"${c.work.url ? ` (${c.work.url})` : ""}, which the survey files in ${cellName(c.cell)}; it is not ported: start from the cell's flags above, read the paper, and tell me what its setting needs beyond them before installing anything extra`,
+			]
+		: [];
 	// O2: the perception server the flags attach to.
 	const perception =
 		c.cell.o === "O2"
@@ -398,6 +422,7 @@ function handoff(c: Choice, settingsText: string): string {
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
 		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
 		`- setting: ${settingLine(c)}; flags \`${settingFlags(c) || "none"}\``,
+		...work,
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
 		...perception,
@@ -451,18 +476,22 @@ function keyFrom(data: string, keybindings: { matches(data: string, id: string):
 					: keyOf(data, vi);
 }
 
-/** A paper's setting: a searchable list (typing filters by the short name) in the TUI, a select elsewhere. Cancelled: undefined. */
-async function pickPaper(ctx: ExtensionCommandContext, papers: Paper[]): Promise<{ paper?: Paper } | undefined> {
-	const entries = pickEntries(papers, NO_PAPER);
+type Picked = { paper?: Paper; work?: Work };
+/**
+ * The work to reproduce: the cell's ported settings and the survey's other works filed there, a searchable
+ * list (typing filters by name or title) in the TUI, a select elsewhere. Cancelled: undefined.
+ */
+async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], works: Work[]): Promise<Picked | undefined> {
+	const entries = pickEntries(papers, works, NO_PAPER);
 	if (ctx.mode !== "tui") {
 		const picked = await ctx.ui.select(
 			PAPER,
 			entries.map((e) => e.text),
 		);
 		const e = entries.find((x) => x.text === picked);
-		return e ? { paper: e.paper } : undefined;
+		return e ? { paper: e.paper, work: e.work } : undefined;
 	}
-	return ctx.ui.custom<{ paper?: Paper } | undefined>((_tui, theme, keybindings, done) => {
+	return ctx.ui.custom<Picked | undefined>((_tui, theme, keybindings, done) => {
 		let q = "";
 		let idx = 0;
 		const paint: Paint = {
@@ -477,7 +506,7 @@ async function pickPaper(ctx: ExtensionCommandContext, papers: Paper[]): Promise
 				const shown: Pick[] = pickMatches(entries, q);
 				const key = keyFrom(data, keybindings, false);
 				if (key === "enter") {
-					if (shown[idx]) done({ paper: shown[idx].paper });
+					if (shown[idx]) done({ paper: shown[idx].paper, work: shown[idx].work });
 				} else if (key === "escape") done(undefined);
 				else if (key === "up") idx = Math.max(0, idx - 1);
 				else if (key === "down") idx = Math.min(shown.length - 1, idx + 1);
@@ -520,14 +549,10 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	if (!robot) return;
 	const cell = await pickCell(ctx, robot);
 	if (!cell) return;
-	// A paper's setting in this cell, when one is ported: typing filters the list by its short name.
-	let paper: Paper | undefined;
-	const papers = papersFor(robot, cell);
-	if (papers.length) {
-		const picked = await pickPaper(ctx, papers);
-		if (!picked) return;
-		paper = picked.paper;
-	}
+	// The work to reproduce: a ported setting of the cell, or one of the survey's works filed there.
+	const picked = await pickWork(ctx, papersFor(robot, cell), worksIn(cell));
+	if (!picked) return;
+	const { paper, work } = picked;
 
 	const where = await ui.select("Where do the services run?", ["here (this machine)", "a remote GPU box over ssh"]);
 	if (!where) return;
@@ -546,24 +571,24 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		services = `${(checkout || "~/pi-embodied").replace(/^~(?=\/|$)/, homedir())}/services`;
 	}
 
-	// The planner: a model of the registry, or (A1, no paper preset) the robot's fine-tuned adapter.
+	// The planner: a model of the registry, or (A1 Code, no preset) the robot's fine-tuned adapter.
 	const planners = [...new Set([...(current ? [current] : []), ...available])];
-	if (cell.a === "A1" && robot.finetuned && !paper) planners.push(FINETUNED);
+	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
 	const planner = await ui.select("Planner model", planners);
 	if (!planner) return;
 	const finetuned = planner === FINETUNED;
 	const model = finetuned ? undefined : planner;
 	if (!finetuned && !model?.includes("/")) return;
-	// The weights setup.sh --weights fetches serve A2's VLA and O2's SAM3.
+	// The weights setup.sh --weights fetches serve the VLA of A1 Model and A2, and O2's SAM3.
 	const weights =
-		robot.weights && (cell.a === "A2" || cell.o === "O2")
+		robot.weights && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")
 			? await ui.confirm("Model weights", `Also download ${robot.weights}?`)
 			: false;
 	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
 	// The title names the default: an empty input field shows no placeholder in every TUI.
 	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
 	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
-	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir };
+	const choice: Choice = { robot, cell, paper, work, remote, services, weights, model, finetuned, dir };
 
 	const file = join(dir, ".pi", "settings.json");
 	let existing: Settings = {};

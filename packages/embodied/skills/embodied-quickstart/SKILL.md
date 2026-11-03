@@ -13,54 +13,65 @@ every command over `ssh <host>`; pi and the experiment directory live on the box
 ## 1. Pick
 
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
-observation × execution grid, optionally a paper's setting in that cell, where services run, the
-planner and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
+observation × execution grid (Figure A1a), optionally the work to reproduce in that cell, where
+services run, the planner and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
 flags; the task and the setting go on the command line. With no model configured it writes nothing and
 tells the user to `/login` or add a provider to `~/.pi/agent/models.json`.
 
-The grid (`src/infra/setup/axes.ts`) is the survey's Agent-as-Policy taxonomy: observations O1–O3 by
-execution authority A1–A3. Each level is a flag; O1 and A2 are a robot's defaults:
+The grid (`src/infra/setup/axes.ts`) is the survey's Agent-as-Policy taxonomy, Figure A1a: observations
+O1–O3 (§3.1–3.3) by execution authority (A1 Behavior Selection §3.4 with its Code §3.4.1 and Model
+§3.4.2 sub-columns, A2 Tool Orchestration §3.5, A3 Code Synthesis §3.6). Each level is a flag; O1 and
+A2 are a robot's defaults:
 
-| level | meaning | flags |
-| --- | --- | --- |
-| O1 agent-built perception | camera frames only; the planner reads the scene itself | none |
-| O2 supplied perception | SAM3 masks with ids (detect, select_detection, reject_detection) | `--detections` (the arms: `--segment`); a SAM3 server at `services.sam3` |
-| O3 privileged state | the simulator's ground-truth poses; the result is marked privileged | `--privileged` (simulators only) |
-| A1 behavior selection | Show-Harness action units run by a fixed executor; no VLA | `--units=true` (`--units=both` keeps the tools) |
-| A2 tool orchestration | the robot's own tools: VLA, segmentation, motion | none |
-| A3 code synthesis | `run_code`, Python over the primitives (CaP-X) | `--code=true` (`--code-api high\|low\|low-noexamples`) |
+| level | the survey's definition | here | flags |
+| --- | --- | --- | --- |
+| O1 Sensory Inputs | decisions start from sensory inputs; agent-built perception remains O1 | camera frames only | none |
+| O2 Perception Tools | decisions use supplied semantic or geometric perception tools or outputs | SAM3 masks with ids (detect, select_detection, reject_detection) | `--detections` (the arms: `--segment`); a SAM3 server at `services.sam3` |
+| O3 Privileged State | decisions use oracle state unavailable at deployment | the simulator's ground-truth poses; the result is marked privileged | `--privileged` (simulators only) |
+| A1 Code | a fixed programmed executor realizes behavior requests | Show-Harness action units run by the robot's motion code; no VLA | `--units=true` (`--units=both` keeps the tools) |
+| A1 Model | a fixed learned executor realizes selected behaviors | the robot's VLA skill realizes each request; the run requires its server | `--require-skills pi0` (LIBERO), `rldx` (RoboCasa), `lingbot` (RoboTwin); `--vla` (Frankas); HumanCLAW's default |
+| A2 Tool Orchestration | the agent selects execution APIs, supplies arguments, coordinates them | the robot's own tools: VLA, segmentation, motion | none |
+| A3 Code Synthesis | the agent writes executable logic with conditions, loops, computations | `run_code`, Python over the primitives (CaP-X) | `--code=true` (`--code-api high\|low\|low-noexamples`) |
 
-A robot without a level has no cell in that row or column: RoboCasa and RoboTwin have no A1,
-HumanCLAW is A2 only (its task flags carry `--units=both`), real arms have no O3. `--units` and
-`--code` are mutually exclusive.
+A robot without a level has no cell in that row or column: RoboCasa and RoboTwin have no A1 Code (their
+tools are a VLA), HumanCLAW is A1 Model only (its units are run by its motion model), real arms have no
+O3, only LIBERO and the Frankas have a VLA for A1 Model. `--units` and `--code` are mutually exclusive.
+A1 Model and A2 share the same tools: the cell says what the planner is asked to do (one behavior
+request at a time to the VLA, or composing tools); the result row records what it did.
 
-### A paper's setting
+### The work to reproduce
 
-When the user names a paper or a ported repository's configuration ("run it like Show-Harness",
-"the CaP-X S2 setting", "reproduce RPent"), first say which cell it is and the cell's flags, then
-the preset: `--preset` / `--tier` (`src/infra/tiers.ts`) expands to the flags of that setting and
-refuses a flag given with another value, so add the cell's O flag only where the table leaves it
-free. `/embodied-setup` offers these after the cell (typing filters the list by the short name):
+After the cell, `/embodied-setup` lists every work the survey files in it (`src/infra/setup/works.json`,
+493 works over the 12 cells, generated from the survey site's papers.json by
+`src/scripts/works-catalog.mjs <papers.json>`; regenerate it when the survey's classification changes).
+Typing filters by name or title. The ported works run as a `--preset` / `--tier` (`src/infra/tiers.ts`
+expands it to the flags of that setting and refuses a flag given with another value; the cell adds none
+of its own); the others are listed as "not ported": choosing one keeps the cell's flags and tells the
+agent to read the paper and say what its setting needs beyond them.
 
-| short name | paper | cell | flags | robots |
+When the user names a work ("run it like Show-Harness", "the CaP-X S2 setting", "reproduce RPent",
+"the configuration of paper X"), first say which cell the survey files it in and the cell's flags, then
+whether it is ported and the preset:
+
+| short name | work | cell | flags | robots |
 | --- | --- | --- | --- | --- |
-| showharness | Show-Harness | O1 × A1 | `--preset showharness` | any with units |
-| motormind | MotorMind | O1 × A1 | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| showharness | Show-Harness | O1 × A1 Code | `--preset showharness` | any with units |
+| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
 | rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
-| openeta | OpenETA | O1 × A2 | `--preset openeta` (VDM + anchor image) | any |
-| humanclaw | HumanCLAW | O1 × A2 | `--preset humanclaw` | HumanCLAW |
-| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (sets `--privileged` itself) | simulators with code |
-| capx-S2, S3, S4 | CaP-X S2–S4 | O1 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
-| capx-M1 … M4 | CaP-X M1–M4 | O1 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
-| xpolicylab | XPolicyLab | O1 × A2 | `--preset xpolicylab --xpolicy ws://host:port` (a policy server; not in the wizard) | RoboTwin, RoboDojo, Piper, dual Franka |
+| openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
+| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth) | simulators with code |
+| capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
+| capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
+| xpolicylab | XPolicyLab | (Infrastructure in the survey) | `--preset xpolicylab --xpolicy ws://host:port` (a policy server; not in the wizard) | RoboTwin, RoboDojo, Piper, dual Franka |
 
-A setting not in the table is answered the same way: read the paper's observation access (what the
-agent is given beyond the frames) and execution interface (behaviors, tools, or code) off the
-taxonomy, name the cell, then the flags.
+A work not in works.json is answered the same way: read its observation access (what the agent is given
+beyond the frames) and execution interface (behaviors to a programmed or learned executor, tools, or
+code) off the taxonomy, name the cell, then the flags.
 
-The planner is a model of the registry or, in A1 without a preset, the robot's fine-tuned adapter
+The planner is a model of the registry or, in A1 Code without a preset, the robot's fine-tuned adapter
 (`src/modes/finetuned` extension, `--model finetuned/<adapter>`): a small VLM + LoRA picks each unit,
 served by vLLM. Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no planner;
 LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) is not an experiment setting and is started
