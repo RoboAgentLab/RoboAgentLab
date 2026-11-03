@@ -21,9 +21,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-node
       - run: python3 -m pip install --user -q uv==0.12.17 # setup.sh's dry runs need uv
-      - name: Load pinned model catalog
-        run: node scripts/hydrate-ci-models.mjs
-      - run: npm run build:offline
+      # Generates the model data from the catalog sources, as upstream's CI does. The pinned catalog
+      # (nix/model-catalog.json + scripts/hydrate-ci-models.mjs) lags upstream's source: pi.dev publishes a
+      # revision only after main has used a new provider/model type, so build:offline on the pin can fail to type-check.
+      - run: npm run build
       - run: npm run check
       - name: Agent queue compatibility
         working-directory: packages/agent

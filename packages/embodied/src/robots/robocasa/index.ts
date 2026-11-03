@@ -20,7 +20,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
@@ -45,6 +44,7 @@ import {
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, median, round } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 import { type Cell, loadTable, resolveCell } from "./tasks.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));

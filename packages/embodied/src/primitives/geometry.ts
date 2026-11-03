@@ -25,10 +25,10 @@
  * its video, recorder and success latch), a real arm through its bounded delta primitives.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type Json, message, toolResult } from "../robot.ts";
+import { StringEnum } from "../string-enum.ts";
 import { optionalTools } from "./optional.ts";
 
 export const GEOMETRY_TOOLS = ["view_points", "mark_point", "move_grip"] as const;

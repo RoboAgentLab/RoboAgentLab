@@ -192,7 +192,8 @@ try {
 		run.task = await tx.createTask(Batch, {}, { ownership: { kind: "conversation" } });
 		return run.task;
 	}, context);
-	const graph = await harness.taskGraph(context);
+	// Harness.taskGraph() was removed upstream (pi-durable 1.5.0); the watch holds the newest graph as `value`.
+	const graph = await harness.watchTaskGraph(context);
 	const statusPath = join(directory, "durable-status.json");
 	let outcome: { status: string; code: number } | null = null;
 	const writeStatus = () => {
@@ -203,15 +204,14 @@ try {
 		renameSync(`${statusPath}.tmp`, statusPath);
 	};
 	writeStatus();
-	const unsubscribe = graph.subscribe(writeStatus);
+	graph.start(async () => writeStatus());
 	try {
 		const result = await harness.waitForTask(id, context);
 		process.exitCode = result.state.outcome.status === "completed" ? result.state.outcome.result : 1;
 		outcome = { status: result.state.outcome.status, code: process.exitCode };
 		writeStatus();
 	} finally {
-		unsubscribe();
-		graph.dispose();
+		await graph.stop();
 	}
 } catch (error) {
 	if (!stopping) console.error(error instanceof Error ? error.message : String(error));

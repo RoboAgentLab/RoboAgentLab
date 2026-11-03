@@ -28,7 +28,6 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { cudaDevice, python, service, servicesDir } from "../../infra/config.ts";
@@ -41,6 +40,7 @@ import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { attach, defineRobot, type Json, round, toolResult } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));

@@ -26,7 +26,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { encodePng } from "../../infra/png.ts";
@@ -89,6 +88,7 @@ import {
 	vec,
 	workspaceLimits,
 } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));

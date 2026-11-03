@@ -21,7 +21,6 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
@@ -46,6 +45,7 @@ import {
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, type Json, plain, rgbOf, toolResult } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
 const EXPLORE = template(new URL("./explore.md", import.meta.url));

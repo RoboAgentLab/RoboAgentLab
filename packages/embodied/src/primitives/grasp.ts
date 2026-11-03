@@ -29,12 +29,12 @@
  */
 
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { auxModel, requireService, type ServiceKey } from "../infra/config.ts";
 import { askVlm, parseJson, VLM_COST_EVENT } from "../modes/units/vlm.ts";
 import { type Json, message, toolResult } from "../robot.ts";
+import { StringEnum } from "../string-enum.ts";
 
 /** Session entry when ids expired or a stale id was refused: `{ tool, ids, observation, error? }`. */
 export const DETECTIONS_EXPIRED_ENTRY = "detections_expired";

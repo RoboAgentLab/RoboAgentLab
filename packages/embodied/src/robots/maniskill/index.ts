@@ -33,7 +33,6 @@
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { anchorPlane, type CameraMeta, pixelOnPlane, unletterbox } from "../../capabilities/flash/plane.ts";
@@ -52,6 +51,7 @@ import { mountGraspTool } from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, type Json, rgbOf, toolResult } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");

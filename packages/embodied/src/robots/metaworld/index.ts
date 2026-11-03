@@ -20,7 +20,6 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
@@ -44,6 +43,7 @@ import {
 } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, type Json, type Mat, rgbOf, round } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 import { sideBySide } from "../maniskill/index.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));

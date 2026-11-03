@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { recipe } from "../src/capabilities/memory/index.ts";
 import { VLM_COST_EVENT } from "../src/modes/units/vlm.ts";
@@ -26,6 +25,7 @@ import libero, {
 	runClaim,
 	xyRefusal,
 } from "../src/robots/libero/index.ts";
+import { StringEnum } from "../src/string-enum.ts";
 import { deployFlags, useDeployment } from "./helpers/deployment.ts";
 
 type Json = Record<string, any>;

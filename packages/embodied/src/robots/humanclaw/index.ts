@@ -33,7 +33,6 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { cudaDevice, python, servicesDir } from "../../infra/config.ts";
@@ -42,6 +41,7 @@ import { encodePng } from "../../infra/png.ts";
 import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { template } from "../../planner/context-version.ts";
 import { attach, defineRobot } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 import { KEYS, skillCall, toJson, UNITS } from "./actions.ts";
 import { DECISION_EVENT, mountPsv, psvBase } from "./provider.ts";
 import type { Decision } from "./psv.ts";

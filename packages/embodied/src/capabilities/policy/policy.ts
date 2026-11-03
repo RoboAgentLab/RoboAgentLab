@@ -5,7 +5,6 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type ImageContent,
-	StringEnum,
 	type TextContent,
 	type Tool,
 } from "@earendil-works/pi-ai";
@@ -25,6 +24,7 @@ import {
 	section,
 } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import { StringEnum } from "../../string-enum.ts";
 
 export type WorldIdentity = { episode: string; revision: string };
 export type PolicyObservation = WorldIdentity & { content: (TextContent | ImageContent)[]; solved: boolean };

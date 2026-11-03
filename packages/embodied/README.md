@@ -12,8 +12,7 @@ Requires Node.js 22.19+ and a Linux NVIDIA GPU machine for simulation. Build pi 
 git clone https://github.com/RoboAgentLab/RoboAgentLab ~/RoboAgentLab
 cd ~/RoboAgentLab
 npm ci --ignore-scripts
-node scripts/hydrate-ci-models.mjs
-npm run build:offline
+npm run build
 npm link --ignore-scripts --workspace @earendil-works/pi-coding-agent
 pi install ./packages/embodied
 mkdir -p ~/robot-runs

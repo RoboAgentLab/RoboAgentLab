@@ -26,7 +26,6 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { anchorPlane, type CameraMeta, pixelOnPlane } from "../../capabilities/flash/plane.ts";
@@ -42,6 +41,7 @@ import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags 
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import { attach, defineRobot, rgbOf } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
