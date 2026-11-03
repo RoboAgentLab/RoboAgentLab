@@ -11,6 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import type { Mode } from "./modes.ts";
 
 export type O = "O1" | "O2" | "O3";
 export type A = "A1C" | "A1M" | "A2" | "A3";
@@ -179,8 +180,8 @@ export const worksIn = (c: Cell): Work[] => WORKS.filter((w) => w.cells.includes
 /**
  * A ported work's setting: the `--preset` / `--tier` that reproduces it (../tiers.ts expands it to the
  * flags of that setting; the cell adds none of its own), in the cell the survey files the work (`work`:
- * its works.json id), on the robots that have what it needs (`robots`: id prefixes; absent = any robot
- * that has the cell).
+ * its works.json id), on the robots that have what it needs (`needs`: a mode the robot's spec declares;
+ * `robots`: id prefixes; absent = any robot that has the cell).
  */
 /** A live web panel a work or a robot brings, besides the dashboard: its pi flags and the port it serves. */
 export type Panel = { name: string; flags: string; port: number };
@@ -198,6 +199,8 @@ export type Paper = {
 	flag: string;
 	note: string;
 	robots?: string[];
+	/** A mode the robot's spec must declare (./modes.ts), so a robot that gains it is offered the work. */
+	needs?: Mode;
 	/** The work's own panels, preferred over the dashboard alone when the robot can serve them. */
 	panels?: Panel[];
 };
@@ -225,8 +228,8 @@ export const PAPERS: Paper[] = [
 		work: "motormind2026",
 		cell: { o: "O2", a: "A1C" },
 		flag: "--preset motormind",
-		note: "LIBERO side camera, settle ticks, no cross-task memory",
-		robots: ["libero"],
+		note: "side camera, settle ticks, no cross-task memory",
+		needs: "motormind",
 	},
 	{
 		id: "humanclaw",
@@ -264,12 +267,13 @@ export const PAPERS: Paper[] = [
 	capx("M4", "O2", "multi-turn, VDM feedback, low-level API"),
 ];
 /** The ported works whose setting is this cell on this robot (one that has the cell and what the port needs). */
-export const papersFor = (robot: { id: string; axes: Axes }, c: Cell): Paper[] =>
+export const papersFor = (robot: { id: string; axes: Axes; modes: readonly Mode[] }, c: Cell): Paper[] =>
 	PAPERS.filter(
 		(p) =>
 			p.cell.o === c.o &&
 			p.cell.a === c.a &&
 			supported(robot.axes, c) &&
+			(!p.needs || robot.modes.includes(p.needs)) &&
 			(!p.robots || p.robots.some((r) => robot.id.startsWith(r))),
 	);
 

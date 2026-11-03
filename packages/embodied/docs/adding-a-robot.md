@@ -96,7 +96,7 @@ second `move_delta`.
   <robot>` verify.
 - `src/<robot>/eval.sh` for the eval matrix, and its case in `src/scripts/eval-parallel.sh` (light or heavy
   job: see the GPU lock note there).
-- The robot table in `README.md`, the setup target in `src/infra/setup` (`/embodied-setup`).
+- The robot table in `README.md`, and a `ROBOTS` entry in `src/infra/setup/index.ts` (label, setup target, task, weights; `/embodied-setup` reads the robot's modes and grid levels from its spec, so they are not listed there).
 - `test/tool-schemas.test.ts`: add the robot to `ROBOTS` and regenerate the snapshot with
   `UPDATE_TOOL_SCHEMAS=1 node --test --experimental-strip-types test/tool-schemas.test.ts`; the diff
   must show only the new robot.

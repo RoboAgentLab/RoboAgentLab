@@ -42,9 +42,10 @@ A2 are a robot's defaults:
 | A2 Tool Orchestration | the agent selects execution APIs, supplies arguments, coordinates them | the robot's own tools: VLA, segmentation, motion | none |
 | A3 Code Synthesis | the agent writes executable logic with conditions, loops, computations | `run_code`, Python over the primitives (CaP-X) | `--code=true` (`--code-api high\|low\|low-noexamples`) |
 
-A robot without a level has no cell in that row or column: RoboCasa and RoboTwin have no A1 Code (their
-tools are a VLA), HumanCLAW is A1 Model only (its units are run by its motion model), real arms have no
-O3, only LIBERO and the Frankas have a VLA for A1 Model. `--units` and `--code` are mutually exclusive.
+A robot's levels are read from its own spec (`src/infra/setup/modes.ts`): A1 Code when it has `units`,
+A3 when it has `code`, O3 when it has a ground truth. A robot without a level has no cell in that row or
+column: HumanCLAW is A1 Model only (its units are run by its motion model), real arms have no O3, only
+LIBERO, RoboCasa, RoboTwin, HumanCLAW and the Frankas have a VLA for A1 Model. `--units` and `--code` are mutually exclusive.
 A1 Model and A2 share the same tools: the cell says what the planner is asked to do (one behavior
 request at a time to the VLA, or composing tools); the result row records what it did.
 
@@ -68,7 +69,7 @@ whether it is ported and the preset:
 | short name | work | cell | flags | robots |
 | --- | --- | --- | --- | --- |
 | showharness | Show-Harness | O1 × A1 Code | `--preset showharness` | any with units |
-| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | any whose spec has `motormind` (LIBERO today) |
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
 | rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
 | openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |

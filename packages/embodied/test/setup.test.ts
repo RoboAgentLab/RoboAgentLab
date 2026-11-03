@@ -38,11 +38,12 @@ import setup, {
 	PANELS,
 	PAPER,
 	PKG,
-	ROBOTS,
 	RUN,
 	RUN_HOW,
+	robotTable,
 	runDeps,
 } from "../src/infra/setup/index.ts";
+import { axesOf, type Mode, modesOf } from "../src/infra/setup/modes.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import {
 	DASHBOARD_PORT,
@@ -59,6 +60,9 @@ import {
 	scanExperiments,
 	tunnelHint,
 } from "../src/infra/setup/run.ts";
+
+/** The robot table with each robot's modes and grid levels read from its spec (the robot modules load once). */
+const ROBOTS = await robotTable();
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 /** `keys`: the raw terminal input each custom component (the grid, then the paper picker) receives, in order; enter picks the cursor's entry. */
@@ -340,11 +344,11 @@ test("A2 asks about weights; a declined confirmation writes and sends nothing", 
 			select: ["sim", "RoboCasa", "here", "anthropic/claude-opus-5"],
 			input: [""],
 			confirm: [true, false],
-			keys: [["\r"], ["\r"]],
+			keys: [["l", "\r"], ["\r"]],
 		},
 	});
 	await p.run();
-	// RoboCasa has no A1 Code: the cursor starts on O1 × A1 Model (its VLA, which the weights serve).
+	// The cursor starts on O1 × A1 Code (RoboCasa's units); one right is O1 × A1 Model (its VLA, which the weights serve).
 	assert.match(p.confirms.at(-1) ?? "", /^RoboCasa365 \(sim\): O1 × A1 Model /m);
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --require-skills rldx; planner/m);
 	assert.ok(p.asked.includes("Model weights"));
@@ -609,10 +613,10 @@ test("the grid: every robot has O1 × A2, only simulators have O3, only robots w
 	assert.equal(cellFlags(robot("libero").axes, cell("O3", "A1C")), "--units=true --privileged");
 	assert.equal(cellFlags(robot("libero").axes, cell("O1", "A2")), "");
 	assert.equal(cellFlags(robot("franka").axes, cell("O2", "A1M")), "--vla --segment");
-	// RoboCasa: no A1 Code. Left of A1 Model is nothing, right is A2, down is O2 × A1 Model.
+	// RoboCasa (units, code and a VLA): left of A1 Model is A1 Code, right is A2, down is O2 × A1 Model.
 	const rc = robot("robocasa").axes;
-	assert.deepEqual(supportedCells(rc)[0], cell("O1", "A1M"));
-	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "left"), cell("O1", "A1M"));
+	assert.deepEqual(supportedCells(rc)[0], cell("O1", "A1C"));
+	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "left"), cell("O1", "A1C"));
 	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "right"), cell("O1", "A2"));
 	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "down"), cell("O2", "A1M"));
 	// HumanCLAW: A1 Model only, O1 and O3. Down from O1 skips O2; right goes nowhere.
@@ -624,6 +628,64 @@ test("the grid: every robot has O1 × A2, only simulators have O3, only robots w
 	// A real arm without a VLA: O2 is its own --segment, no O3, no A1 Model.
 	assert.equal(cellFlags(robot("ur5e").axes, cell("O2", "A3")), "--code=true --segment");
 	assert.deepEqual(gridMove(robot("ur5e").axes, cell("O1", "A1C"), "right"), cell("O1", "A2"));
+});
+
+test("the modes and grid levels of every robot are read from its spec, not listed in the wizard", async () => {
+	const base: Mode[] = ["tools", "units", "code", "finetuned"];
+	const withFlash: Mode[] = [...base, "flash"];
+	// What each robot's spec declares (units, code, flash, motormind), written out once so a spec change shows here.
+	const expected: Record<string, Mode[]> = {
+		libero: [...withFlash, "motormind"],
+		"libero-pro": [...withFlash, "motormind"],
+		"libero-plus": [...withFlash, "motormind"],
+		maniskill: withFlash,
+		metaworld: base,
+		robosuite: base,
+		genesis: base,
+		robocasa: withFlash,
+		robotwin: withFlash,
+		robolab: withFlash,
+		robodojo: withFlash,
+		behavior: base,
+		humanclaw: ["tools", "units", "finetuned"],
+		franka: base,
+		"franka-polymetis": base,
+		"dual-franka": base,
+		piper: base,
+		ur5e: base,
+	};
+	assert.deepEqual(ROBOTS.map((r) => r.id).sort(), Object.keys(expected).sort());
+	for (const r of ROBOTS) {
+		assert.deepEqual(r.modes, expected[r.id], `${r.id}: modes`);
+		assert.deepEqual(await modesOf(r), r.modes, `${r.id}: modesOf`);
+		assert.deepEqual(await axesOf(r), r.axes, `${r.id}: axesOf`);
+		// The levels follow the modes: A1 Code is units, A3 is code (HumanCLAW's units are A1 Model's).
+		const filed = r.a1ModelOnly !== true;
+		assert.equal(r.axes.A1C !== undefined, filed && r.modes.includes("units"), `${r.id}: A1 Code`);
+		assert.equal(r.axes.A3 !== undefined, filed && r.modes.includes("code"), `${r.id}: A3`);
+		assert.equal(r.axes.A2 !== undefined, filed, `${r.id}: A2`);
+		assert.equal(r.axes.O3 !== undefined, r.kind === "sim", `${r.id}: O3`);
+		if (r.finetuned) assert.ok(r.modes.includes("finetuned"), `${r.id}: a fine-tuned planner needs units`);
+	}
+	// The mismatches the hand-written levels had: RoboCasa and RoboTwin have units and code, every simulator has code.
+	for (const id of ["robocasa", "robotwin"]) {
+		assert.ok(robot(id).modes.includes("units") && robot(id).modes.includes("code"), `${id}: units and code`);
+		assert.ok(
+			supported(robot(id).axes, cell("O1", "A1C")) && supported(robot(id).axes, cell("O1", "A3")),
+			`${id}: cells`,
+		);
+	}
+	for (const r of ROBOTS.filter((r) => r.kind === "sim" && r.id !== "humanclaw"))
+		assert.ok(r.modes.includes("code") && supported(r.axes, cell("O1", "A3")), `${r.id}: code`);
+	// MotorMind's setting follows the spec: a robot that gains `motormind` is offered it with no change here.
+	const gains = { ...robot("maniskill"), modes: [...robot("maniskill").modes, "motormind" as const] };
+	assert.deepEqual(ids(papersFor(gains, cell("O2", "A1C"))), ["motormind"]);
+	assert.deepEqual(ids(papersFor(robot("libero"), cell("O2", "A1C"))), ["motormind"]);
+	// Every real arm has code too; only HumanCLAW lacks it (its survey cell is A1 Model).
+	assert.deepEqual(
+		ROBOTS.filter((r) => !r.modes.includes("code")).map((r) => r.id),
+		["humanclaw"],
+	);
 });
 
 test("the grid renders 3 × 4 with A1's two sub-columns under one head, the cursor marked, missing cells dashed, the survey's count under it", () => {
@@ -639,8 +701,14 @@ test("the grid renders 3 × 4 with A1's two sub-columns under one head, the curs
 	);
 	const rows = lines.filter((l) => /^O[123] (Sensory|Perception|Privileged)/.test(l));
 	assert.equal(rows.length, 3);
-	assert.match(rows[0], /^O1 Sensory Inputs\s+–\s+\[ \]\s+\[ \]\s+\[ \]\s*$/);
-	assert.match(rows[1], /^O2 Perception Tools\s+–\s+\[ \]\s+\[●\]\s+\[ \]\s*$/);
+	assert.match(rows[0], /^O1 Sensory Inputs\s+\[ \]\s+\[ \]\s+\[ \]\s+\[ \]\s*$/);
+	assert.match(rows[1], /^O2 Perception Tools\s+\[ \]\s+\[ \]\s+\[●\]\s+\[ \]\s*$/);
+	// HumanCLAW is A1 Model only, without SAM3: the cells it lacks are dashed.
+	const hc = gridLines("T", robot("humanclaw").axes, cell("O1", "A1M")).filter((l) =>
+		/^O[123] (Sensory|Perception|Privileged)/.test(l),
+	);
+	assert.match(hc[0], /^O1 Sensory Inputs\s+–\s+\[●\]\s+–\s+–\s*$/);
+	assert.match(hc[1], /^O2 Perception Tools\s+–\s+–\s+–\s+–\s*$/);
 	assert.match(
 		lines.find((l) => l.startsWith("O2 × A2")) ?? "",
 		/^O2 × A2: §3\.2 Perception Tools × §3\.5 Tool Orchestration$/,
@@ -761,7 +829,8 @@ test("the work catalog: the survey's policy works per cell, every ported setting
 	]);
 	assert.deepEqual(papersFor(robot("maniskill"), cell("O1", "A3")), [], "CaP-X's API supplies perception: O2");
 	assert.deepEqual(papersFor(robot("ur5e"), cell("O3", "A3")), [], "a real arm has no O3");
-	assert.deepEqual(papersFor(robot("robocasa"), cell("O1", "A1C")), [], "RoboCasa has no A1 Code, so no Show-Harness");
+	assert.deepEqual(ids(papersFor(robot("robocasa"), cell("O1", "A1C"))), ["showharness"], "RoboCasa has units");
+	assert.deepEqual(papersFor(robot("humanclaw"), cell("O1", "A1C")), [], "HumanCLAW has no A1 Code");
 	assert.ok(worksIn(cell("O1", "A2")).some((w) => w.name === "Reflective Planning"));
 	assert.ok(
 		worksIn(cell("O1", "A2")).some((w) => w.id === "harnessvla"),

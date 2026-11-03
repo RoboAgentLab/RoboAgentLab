@@ -14,6 +14,9 @@
  * filters only narrow what the manifest declares (docs/packages.md), which is why the robots are
  * listed as extension paths and not as a filter of this package.
  *
+ * What each robot offers (its modes and the levels of the grid) is read from its own spec (./modes.ts), not
+ * listed here: the robot table holds labels, setup targets, tasks, weights and flags a spec cannot say.
+ *
  * The notice is shown once per project: a `pi-embodied-setup-notice` session entry records it, and
  * any session of the project (the session directory) that holds one suppresses it.
  */
@@ -50,6 +53,7 @@ import {
 	typed,
 	VISER,
 } from "./axes.ts";
+import { axesOf, type Mode, modesOf } from "./modes.ts";
 import { parseRequest, requestCell } from "./request.ts";
 import {
 	DASHBOARD_PORT,
@@ -101,7 +105,8 @@ export const KINDS: Record<Kind, string> = {
 	sim: "sim: a simulator or benchmark on a GPU",
 	real: "real: a physical robot, an operator at the e-stop",
 };
-export type Robot = {
+/** What the table says about a robot; its modes and grid levels come from its spec (./modes.ts). */
+export type RobotEntry = {
 	/** services/setup.sh target. */
 	id: string;
 	/** Simulated or a physical robot: the first menu of /embodied-setup. */
@@ -111,8 +116,10 @@ export type Robot = {
 	/** The robot extension, relative to the package. */
 	extension: string;
 	needs: string;
-	/** The levels of the grid this robot has, and their flags (./axes.ts). */
-	axes: Axes;
+	/** The flag of A1 Model's learned executor, a VLA skill (the spec does not name it); absent: no A1 Model level. */
+	a1m?: string;
+	/** The survey files the robot under A1 Model only: its units are run by a learned motion model. */
+	a1ModelOnly?: boolean;
 	/** Example task flags for the launch command. */
 	task: string;
 	/** What `setup.sh --weights` fetches (the VLA of A1 Model and A2, SAM3 of O2). */
@@ -125,23 +132,9 @@ export type Robot = {
 	panels?: Panel[];
 };
 
-/** A simulator with ground truth, units and code mode; A1 Model needs a VLA skill (LIBERO's Pi0.5: `LIBERO`). */
-const SIM: Axes = { O1: "", O2: "--detections", O3: "--privileged", A1C: "--units=true", A2: "", A3: "--code=true" };
-const LIBERO: Axes = { ...SIM, A1M: "--require-skills pi0" };
-/** A simulator whose tools are a VLA (RLDX-1, LingBot): no units. */
-const VLA_SIM = (skill: string): Axes => ({
-	O1: "",
-	O2: "--detections",
-	O3: "--privileged",
-	A1M: `--require-skills ${skill}`,
-	A2: "",
-	A3: "--code=true",
-});
-/** A real Franka: SAM3 through its own --segment, Pi0.5 through --vla, no ground truth. */
-const ARM: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A1M: "--vla", A2: "", A3: "--code=true" };
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
 const LIBERO_FT = "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero";
-export const ROBOTS: Robot[] = [
+export const ROBOTS: RobotEntry[] = [
 	{
 		id: "libero",
 		kind: "sim",
@@ -149,7 +142,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		axes: LIBERO,
+		a1m: "--require-skills pi0",
 		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -161,7 +154,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		axes: LIBERO,
+		a1m: "--require-skills pi0",
 		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -173,7 +166,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), ~9.5 GB scene assets, system ImageMagick (libmagickwand)",
-		axes: LIBERO,
+		a1m: "--require-skills pi0",
 		task: "--libero-type plus --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
@@ -184,7 +177,6 @@ export const ROBOTS: Robot[] = [
 		label: "ManiSkill 3",
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
-		axes: SIM,
 		task: "--task PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
@@ -195,7 +187,6 @@ export const ROBOTS: Robot[] = [
 		label: "Metaworld",
 		extension: "src/robots/metaworld/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		axes: SIM,
 		task: "--task reach-v3 --seed 0",
 	},
 	{
@@ -204,7 +195,6 @@ export const ROBOTS: Robot[] = [
 		label: "Robosuite",
 		extension: "src/robots/robosuite/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), SAM3 for segment; the CaP-X tasks",
-		axes: SIM,
 		task: "--task Lift --seed 0",
 	},
 	{
@@ -213,7 +203,6 @@ export const ROBOTS: Robot[] = [
 		label: "Genesis",
 		extension: "src/robots/genesis/index.ts",
 		needs: "NVIDIA GPU (a cu128 torch on RTX 50xx); a Franka, cube_pick",
-		axes: SIM,
 		task: "--task cube_pick --seed 0",
 	},
 	{
@@ -222,7 +211,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboCasa365",
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
-		axes: VLA_SIM("rldx"),
+		a1m: "--require-skills rldx",
 		task: "--task OpenDrawer --split target --seed 0",
 		weights: "RLDX-1-FT-RC365 VLA",
 	},
@@ -232,7 +221,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboTwin 2",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build; two arms",
-		axes: VLA_SIM("lingbot"),
+		a1m: "--require-skills lingbot",
 		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
 	},
@@ -242,7 +231,6 @@ export const ROBOTS: Robot[] = [
 		label: "RoboLab",
 		extension: "src/robots/robolab/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0",
-		axes: SIM,
 		task: "--task BananaInBowlTask --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
@@ -253,7 +241,6 @@ export const ROBOTS: Robot[] = [
 		label: "RoboDojo",
 		extension: "src/robots/robodojo/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets; two arms",
-		axes: SIM,
 		task: "--task stack_bowls --seed 0",
 	},
 	{
@@ -262,7 +249,6 @@ export const ROBOTS: Robot[] = [
 		label: "BEHAVIOR-1K",
 		extension: "src/robots/behavior/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 (OmniGibson), a BEHAVIOR-1K checkout and its data (license key); the R1Pro robot",
-		axes: SIM,
 		task: "--task turning_on_radio --seed 0",
 	},
 	{
@@ -271,8 +257,9 @@ export const ROBOTS: Robot[] = [
 		label: "HumanCLAW",
 		extension: "src/robots/humanclaw/index.ts",
 		needs: "NVIDIA GPU, a Habitat-Sim build (nvcc), the gated HSSD datasets (HF_TOKEN); a humanoid in HSSD homes",
-		// The survey files HumanCLAW under A1 Model: its units are run by the motion model; no SAM3.
-		axes: { O1: "", O3: "--privileged", A1M: "" },
+		// The survey files HumanCLAW under A1 Model: its units are run by the motion model.
+		a1m: "",
+		a1ModelOnly: true,
 		task: "--units=both --humanclaw-mode pi --episode one",
 	},
 	{
@@ -282,7 +269,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka, RLinf controller + Ray, an operator at the e-stop",
-		axes: ARM,
+		a1m: "--vla",
 		task: "--robot-config <yaml> --task 0 --operator=true",
 	},
 	{
@@ -292,7 +279,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
-		axes: ARM,
+		a1m: "--vla",
 		task: "--backend polymetis --robot-config <yaml> --operator=true",
 	},
 	{
@@ -301,7 +288,7 @@ export const ROBOTS: Robot[] = [
 		label: "Dual Franka",
 		extension: "src/robots/dual_franka/index.ts",
 		needs: "two real Frankas, RLinf + Ray, an operator at the e-stop",
-		axes: ARM,
+		a1m: "--vla",
 		task: "--robot-config <yaml> --operator=true",
 	},
 	{
@@ -310,7 +297,6 @@ export const ROBOTS: Robot[] = [
 		label: "AgileX Piper",
 		extension: "src/robots/piper/index.ts",
 		needs: "Piper arm, ROS Noetic, an operator at the e-stop",
-		axes: { O1: "", O2: "--detections", A1C: "--units=true", A2: "", A3: "--code=true" },
 		task: "--robot-config <yaml> --task banana_plate --operator=true",
 		finetuned: "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
 		adapter: "qwen3_5_2b",
@@ -321,10 +307,19 @@ export const ROBOTS: Robot[] = [
 		label: "UR5e",
 		extension: "src/robots/ur5e/index.ts",
 		needs: "UR5e with a Robotiq gripper, cameras, an operator at the e-stop",
-		axes: { O1: "", O2: "--segment", A1C: "--units=true", A2: "", A3: "--code=true" },
 		task: "--arm <controller serial> --robot-config <yaml> --task <task> --operator=true",
 	},
 ];
+
+/** A table entry with what its spec declares: the modes it supports and the grid levels it has. */
+export type Robot = RobotEntry & { modes: Mode[]; axes: Axes };
+
+let table: Promise<Robot[]> | undefined;
+/** The robots /embodied-setup offers, each with its modes and grid levels read from its spec (loaded once). */
+export function robotTable(): Promise<Robot[]> {
+	table ??= Promise.all(ROBOTS.map(async (r) => ({ ...r, modes: await modesOf(r), axes: await axesOf(r) })));
+	return table;
+}
 
 type Settings = Record<string, unknown> & { packages?: unknown[]; extensions?: unknown[] };
 export type Choice = {
@@ -565,7 +560,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		return;
 	}
 	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
-	const req = parseRequest(args, ROBOTS, available);
+	const robots = await robotTable();
+	const req = parseRequest(args, robots, available);
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
@@ -580,11 +576,11 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		if (!kind) return;
 	}
 	// One named robot is taken; several named (franka) narrow the menu to them.
-	const robots = req.robots ?? ROBOTS.filter((r) => r.kind === kind);
-	let robot: Robot | undefined = robots.length === 1 ? robots[0] : undefined;
+	const named = req.robots ?? robots.filter((r) => r.kind === kind);
+	let robot: Robot | undefined = named.length === 1 ? named[0] : undefined;
 	if (!robot) {
-		const robotOpts = robots.map((r) => r.label);
-		robot = robots[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
+		const robotOpts = named.map((r) => r.label);
+		robot = named[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
 	}
 	if (!robot) return;
 	// The cell: the named setting's, else one of a named work's cells on this robot (its ported settings, when it
@@ -616,8 +612,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 			if (!cell) return;
 		} else ui.notify(`${robot.label} has none of ${req.work.name}'s cells; pick a cell`, "warning");
 	}
-	const named = requestCell(req);
-	if (!cell && named && supported(robot.axes, named)) cell = named;
+	const asked = requestCell(req);
+	if (!cell && asked && supported(robot.axes, asked)) cell = asked;
 	if (!cell) cell = await pickCell(ctx, robot);
 	if (!cell) return;
 	// The work to reproduce: one of the cell's ported settings; a named work narrows them to its own.
@@ -654,7 +650,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 
 	// The planner: a model of the registry, or (A1 Code, no preset) the robot's fine-tuned adapter.
 	const planners = [...new Set([...(current ? [current] : []), ...available])];
-	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
+	if (cell.a === "A1C" && robot.modes.includes("finetuned") && robot.finetuned && !paper) planners.push(FINETUNED);
 	const planner = req.model ?? (await ui.select("Planner model", planners));
 	if (!planner) return;
 	const finetuned = planner === FINETUNED;
@@ -743,7 +739,8 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		return;
 	}
 	const ui = ctx.ui;
-	const all = scanExperiments(ctx.cwd, ROBOTS);
+	const robots = await robotTable();
+	const all = scanExperiments(ctx.cwd, robots);
 	if (!all.length) {
 		ui.notify(
 			`no experiment here: no .pi/settings.json loading a robot in ${ctx.cwd} or its subdirectories; run /embodied-setup first`,
@@ -753,7 +750,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	}
 	const req = parseRequest(
 		args,
-		ROBOTS,
+		robots,
 		ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`),
 	);
 	const named = req.robots ? all.filter((e) => req.robots?.some((r) => e.robots.includes(r))) : all;
