@@ -194,7 +194,9 @@ which against a paid API can cost a lot. With a planner that has thinking levels
 may be added (pi clamps it to the model's levels).
 After the start the robot waits for a prompt: the user types `Solve the task.` (or another
 instruction). For a first run without the terminal UI:
-`pi -a -p <task flags> [setting flags] --max-turns 40 --time-limit 900 --thinking low "Solve the task."`.
+`pi -a -p <task flags> [setting flags] --max-turns 40 --time-limit 900 --thinking low "Solve the task." < /dev/null`
+(close stdin: `pi -p` reads a piped stdin to its end first, and over ssh or from an agent's shell that pipe never
+closes, so without `< /dev/null` the episode never starts).
 On a machine with several GPUs add `CUDA_VISIBLE_DEVICES` and `MUJOCO_EGL_DEVICE_ID` (MuJoCo robots).
 
 The first pi in the experiment directory asks whether to trust the project: its `.pi/settings.json`

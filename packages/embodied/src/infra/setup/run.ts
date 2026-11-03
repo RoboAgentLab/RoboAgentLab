@@ -192,8 +192,12 @@ export function runCommand(e: Experiment, flags: string, gpu?: number, prompt = 
 	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
 	return `cd ${e.dir} && source ${e.env} && ${dev}pi ${flags} ${JSON.stringify(prompt)}`;
 }
-/** The same episode without the terminal UI: trust is approved, the prompt is given, pi prints and exits. */
+/**
+ * The same episode without the terminal UI: trust is approved, the prompt is given, pi prints and exits.
+ * stdin is closed: `pi -p` reads a piped stdin to its end first, and over ssh or from an agent's shell that
+ * pipe never closes, so the episode would never start.
+ */
 export function headlessCommand(e: Experiment, flags: string, gpu?: number, prompt = PROMPT): string {
 	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
-	return `cd ${e.dir} && source ${e.env} && ${dev}pi -a -p ${flags} ${JSON.stringify(prompt)}`;
+	return `cd ${e.dir} && source ${e.env} && ${dev}pi -a -p ${flags} ${JSON.stringify(prompt)} < /dev/null`;
 }
