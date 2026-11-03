@@ -33,9 +33,10 @@ What differs from LIBERO, by design:
 - A motion's video frames ride in the reply (``frames``), as the robot's own motions send them.
 - A rotation the robot cannot make (``max_rotation_rad`` 0: Metaworld's position-only hand) is
   refused, nothing moved; a robot without fingers refuses gripper segments the same way.
-- ``home`` with ``--mm-home reset`` runs the robot's own episode reset (``_mm_reset_scene``); there
-  are no settle ticks (LIBERO's ``--settle-ticks``) and no remounted side camera: the robot's
-  ``_mm_cameras`` say which views it has.
+- ``home`` with ``--mm-home reset`` runs the robot's own episode reset (``_mm_reset_scene``). The
+  settle after a reset (LIBERO's ``--settle-ticks``) is a lagging hand's coming to rest at the
+  episode's first mm call (``settle_ticks``), not a fixed count; no side camera is remounted: the
+  robot's ``_mm_cameras`` say which views it has.
 
 The hooks a facade defines (base frame and poses in the world frame, metres, radians):
 
@@ -83,8 +84,6 @@ logger = get_logger("motormind")
 MM_HOME = ("refuse", "reset")
 #: The env.mm_run_step segment kinds.
 MM_KINDS = ("translate", "rotate", "gripper", "wait", "home")
-#: A view whose name is not one of these is not shown.
-MM_VIEWS = ("scene", "side", "wrist")
 #: A lagging hand's settle after its target arrived: at most this many ticks, until the tool moves
 #: less than SETTLED_M (m) in one.
 SETTLE_TICKS = 12
