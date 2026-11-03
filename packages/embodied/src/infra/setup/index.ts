@@ -37,9 +37,17 @@ export const NO_MODEL =
 export const BUDGET = "--max-turns 40 --time-limit 900";
 
 type Mode = "tools" | "units" | "finetuned" | "flash";
+export type Kind = "sim" | "real";
+export const KINDS: Record<Kind, string> = {
+	sim: "sim: a simulator or benchmark on a GPU",
+	real: "real: a physical robot, an operator at the e-stop",
+};
 export type Robot = {
 	/** services/setup.sh target. */
 	id: string;
+	/** Simulated or a physical robot: the first menu of /embodied-setup. */
+	kind: Kind;
+	/** The name shown in the robot menu; what it needs is in `needs` (the confirmation, not the menu). */
 	label: string;
 	/** The robot extension, relative to the package. */
 	extension: string;
@@ -59,7 +67,8 @@ const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
 export const ROBOTS: Robot[] = [
 	{
 		id: "libero-pro",
-		label: "LIBERO-PRO (sim)",
+		kind: "sim",
+		label: "LIBERO-PRO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		modes: ["tools", "units", "finetuned", "flash"],
@@ -69,7 +78,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "libero",
-		label: "LIBERO (sim)",
+		kind: "sim",
+		label: "LIBERO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		modes: ["tools", "units", "finetuned", "flash"],
@@ -79,7 +89,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "maniskill",
-		label: "ManiSkill 3 (sim)",
+		kind: "sim",
+		label: "ManiSkill 3",
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
 		modes: ["tools", "units", "finetuned"],
@@ -89,7 +100,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "metaworld",
-		label: "Metaworld MT50 (sim)",
+		kind: "sim",
+		label: "Metaworld MT50",
 		extension: "src/robots/metaworld/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		modes: ["tools", "units"],
@@ -97,7 +109,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "robosuite",
-		label: "Robosuite (sim, CaP-X tasks)",
+		kind: "sim",
+		label: "Robosuite (CaP-X tasks)",
 		extension: "src/robots/robosuite/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), SAM3 for segment",
 		modes: ["tools", "units"],
@@ -105,7 +118,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "genesis",
-		label: "Genesis (sim, Franka cube_pick)",
+		kind: "sim",
+		label: "Genesis (Franka cube_pick)",
 		extension: "src/robots/genesis/index.ts",
 		needs: "NVIDIA GPU (a cu128 torch on RTX 50xx)",
 		modes: ["tools", "units"],
@@ -113,7 +127,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "robocasa",
-		label: "RoboCasa365 (sim)",
+		kind: "sim",
+		label: "RoboCasa365",
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
 		modes: ["tools"],
@@ -122,7 +137,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "robotwin",
-		label: "RoboTwin 2 (sim, two arms)",
+		kind: "sim",
+		label: "RoboTwin 2 (two arms)",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build",
 		modes: ["tools"],
@@ -131,6 +147,7 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "robolab",
+		kind: "sim",
 		label: "RoboLab (Isaac Sim 6.1)",
 		extension: "src/robots/robolab/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0",
@@ -141,6 +158,7 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "robodojo",
+		kind: "sim",
 		label: "RoboDojo (Isaac Sim 6.1, two arms)",
 		extension: "src/robots/robodojo/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets",
@@ -149,6 +167,7 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "behavior",
+		kind: "sim",
 		label: "BEHAVIOR-1K R1Pro (Isaac Sim 6.1, OmniGibson)",
 		extension: "src/robots/behavior/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1, a BEHAVIOR-1K checkout and its data (license key)",
@@ -157,7 +176,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "humanclaw",
-		label: "HumanCLAW (sim, humanoid in HSSD homes)",
+		kind: "sim",
+		label: "HumanCLAW (humanoid in HSSD homes)",
 		extension: "src/robots/humanclaw/index.ts",
 		needs: "NVIDIA GPU, a Habitat-Sim build (nvcc), the gated HSSD datasets (HF_TOKEN)",
 		modes: ["tools"],
@@ -165,7 +185,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "franka",
-		label: "Franka (real, RLinf)",
+		kind: "real",
+		label: "Franka (RLinf)",
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka, RLinf controller + Ray, an operator at the e-stop",
 		modes: ["tools", "units"],
@@ -173,7 +194,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "franka-polymetis",
-		label: "Franka (real, Polymetis NUC)",
+		kind: "real",
+		label: "Franka (Polymetis NUC)",
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
 		modes: ["tools", "units"],
@@ -181,7 +203,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "dual-franka",
-		label: "Dual Franka (real)",
+		kind: "real",
+		label: "Dual Franka",
 		extension: "src/robots/dual_franka/index.ts",
 		needs: "two real Frankas, RLinf + Ray, an operator at the e-stop",
 		modes: ["tools", "units"],
@@ -189,7 +212,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "piper",
-		label: "AgileX Piper (real)",
+		kind: "real",
+		label: "AgileX Piper",
 		extension: "src/robots/piper/index.ts",
 		needs: "Piper arm, ROS Noetic, an operator at the e-stop",
 		modes: ["tools", "units", "finetuned"],
@@ -199,7 +223,8 @@ export const ROBOTS: Robot[] = [
 	},
 	{
 		id: "ur5e",
-		label: "UR5e (real)",
+		kind: "real",
+		label: "UR5e",
 		extension: "src/robots/ur5e/index.ts",
 		needs: "UR5e with a Robotiq gripper, cameras, an operator at the e-stop",
 		modes: ["tools", "units"],
@@ -319,7 +344,7 @@ function handoff(c: Choice, settingsText: string): string {
 			: [];
 	return [
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
-		`- robot: ${c.robot.label}; setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
+		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
 		`- mode: ${MODES[c.mode]}`,
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
@@ -348,8 +373,14 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		ui.notify(NO_MODEL, "error");
 		return;
 	}
-	const robotOpts = ROBOTS.map((r) => `${r.label}: ${r.needs}`);
-	const robot = ROBOTS[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
+	const kindOpts = Object.values(KINDS);
+	const kind = (Object.keys(KINDS) as Kind[])[
+		kindOpts.indexOf((await ui.select("Simulation or real robot?", kindOpts)) ?? "")
+	];
+	if (!kind) return;
+	const robots = ROBOTS.filter((r) => r.kind === kind);
+	const robotOpts = robots.map((r) => r.label);
+	const robot = robots[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
 	if (!robot) return;
 	const modeOpts = robot.modes.map((m) => MODES[m]);
 	const mode = robot.modes[modeOpts.indexOf((await ui.select("Mode", modeOpts)) ?? "")];
@@ -400,7 +431,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	const settings = experimentSettings(choice, source, root, existing);
 	const text = `${JSON.stringify(settings, null, "\t")}\n`;
 	const summary = [
-		`${robot.label}, ${mode}${model ? `, planner ${model}` : ""}`,
+		`${robot.label} (${robot.kind}), ${mode}${model ? `, planner ${model}` : ""}`,
+		`needs: ${robot.needs}`,
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
 		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${mode === "finetuned" ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step)`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,

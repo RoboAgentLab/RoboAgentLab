@@ -6,7 +6,16 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SPECS } from "../src/infra/check.ts";
-import setup, { BUDGET, COMMAND, NO_MODEL, NOTICE, NOTICE_ENTRY, PKG, ROBOTS } from "../src/infra/setup/index.ts";
+import setup, {
+	BUDGET,
+	COMMAND,
+	KINDS,
+	NO_MODEL,
+	NOTICE,
+	NOTICE_ENTRY,
+	PKG,
+	ROBOTS,
+} from "../src/infra/setup/index.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type Answers = { select?: string[]; input?: (string | undefined)[]; confirm?: boolean[] };
@@ -113,7 +122,7 @@ test("another session of the project that recorded the notice suppresses it", as
 });
 
 test("with a robot extension active nothing is shown, recorded or configured", async () => {
-	const p = fakePi({ robot: true, answers: { select: ["LIBERO"], confirm: [true] } });
+	const p = fakePi({ robot: true, answers: { select: ["sim", "LIBERO"], confirm: [true] } });
 	await p.start();
 	assert.deepEqual(p.entries, []);
 	assert.deepEqual(p.notes, []);
@@ -134,13 +143,14 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["LIBERO-PRO", "units", "here", "openai/gpt-6"],
+			select: ["sim", "LIBERO-PRO", "units", "here", "openai/gpt-6"],
 			input: [dir],
 			confirm: [true],
 		},
 	});
 	await p.run();
 	assert.deepEqual(p.asked, [
+		"Simulation or real robot?",
 		"Robot or benchmark",
 		"Mode",
 		"Where do the services run?",
@@ -190,7 +200,7 @@ test("without a configured model /embodied-setup says how to add one and offers 
 		cwd,
 		model: { provider: "unknown", id: "unknown" },
 		available: [],
-		answers: { select: ["LIBERO", "units", "here", "unknown/unknown"], input: [""], confirm: [true] },
+		answers: { select: ["sim", "LIBERO", "units", "here", "unknown/unknown"], input: [""], confirm: [true] },
 	});
 	await p.run();
 	assert.deepEqual(p.asked, []);
@@ -204,7 +214,7 @@ test("the placeholder model is never offered as the planner", async () => {
 	const p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		model: { provider: "unknown", id: "unknown" },
-		answers: { select: ["LIBERO", "units", "here", "openai/gpt-6"], input: [""], confirm: [false] },
+		answers: { select: ["sim", "LIBERO", "units", "here", "openai/gpt-6"], input: [""], confirm: [false] },
 	});
 	await p.run();
 	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6"]);
@@ -217,7 +227,7 @@ test("tools mode asks about weights; a declined confirmation writes and sends no
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["RoboCasa", "tools", "here", "anthropic/claude-opus-5"],
+			select: ["sim", "RoboCasa", "tools", "here", "anthropic/claude-opus-5"],
 			input: [""],
 			confirm: [true, false],
 		},
@@ -234,7 +244,7 @@ test("a remote box writes nothing locally and gives the agent the settings for t
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["ManiSkill", "fine-tuned", "a remote"],
+			select: ["sim", "ManiSkill", "fine-tuned", "a remote"],
 			input: ["me@gpu", "/data/pi-embodied", ""],
 			confirm: [true],
 		},
@@ -419,4 +429,27 @@ test("setup.sh behavior builds the Isaac Sim 6.1 stack unless B1K_STACK=isaac51 
 	assert.doesNotMatch(out, /robots\/behavior\/install\.sh /);
 	assert.match(out, /export OMNIGIBSON_DATA_PATH=/);
 	assert.match(run({ B1K_STACK: "isaac51" }), /robots\/behavior\/install\.sh \S*\/b1k \S*\/BEHAVIOR-1K/);
+});
+
+test("the robot menu is two-level (sim or real, then names only); what a robot needs is in the confirmation", async () => {
+	const p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["real", "UR5e", "units", "here", "openai/gpt-6"], input: [""], confirm: [false] },
+	});
+	await p.run();
+	assert.deepEqual(p.offered["Simulation or real robot?"], Object.values(KINDS));
+	const real = ROBOTS.filter((r) => r.kind === "real");
+	assert.deepEqual(
+		p.offered["Robot or benchmark"],
+		real.map((r) => r.label),
+		"the second menu lists the chosen kind only",
+	);
+	assert.ok(real.length >= 5 && ROBOTS.filter((r) => r.kind === "sim").length >= 10);
+	for (const r of ROBOTS) {
+		assert.doesNotMatch(r.label, /\b(sim|real)\b|GPU|e-stop/, `${r.id}: the menu shows a name, not requirements`);
+		assert.ok(r.needs.length > 0, `${r.id}: needs is stated`);
+	}
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /^UR5e \(real\), units/);
+	assert.match(summary, /^needs: UR5e with a Robotiq gripper/m);
 });
