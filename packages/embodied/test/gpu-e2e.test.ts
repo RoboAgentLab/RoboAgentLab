@@ -8,7 +8,7 @@
  * under PI_EMBODIED_GPU_LOCK) and segments its first frame. `test/gpu-e2e.sh` runs it robot by robot
  * with each one's environment (docs/adding-a-robot.md, "Testing on a GPU").
  *
- * `<robot>-mm` (metaworld-mm, robosuite-mm, robocasa-mm) is MotorMind mode on a robot whose env server serves it through
+ * `<robot>-mm` (metaworld-mm, robosuite-mm, robocasa-mm, robotwin-mm) is MotorMind mode on a robot whose env server serves it through
  * services utils/motormind.py, driven without a model: the preset's pure mode, moves along base
  * axes, the gripper, a rotation (or its refusal) and the result's `motormind` block.
  *
@@ -455,6 +455,19 @@ test(
 	{ skip: skip("robocasa-mm"), timeout: 1_200_000 },
 	async () => {
 		await mmEpisode(robocasa, "robocasa", { task: "OpenDrawer", split: "target", seed: "0", rldx: "off" }, true);
+	},
+);
+
+test(
+	"robotwin-mm: beat_block_hammer in MotorMind mode moves, grips, turns and reports",
+	{ skip: skip("robotwin-mm"), timeout: 1_200_000 },
+	async () => {
+		await mmEpisode(
+			robotwin,
+			"robotwin",
+			{ task: "beat_block_hammer", "task-config": "demo_randomized", seed: "100000", lingbot: "off" },
+			true,
+		);
 	},
 );
 

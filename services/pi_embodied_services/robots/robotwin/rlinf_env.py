@@ -409,11 +409,26 @@ class RoboTwinAgentEnv(RoboTwinEnv):
             "right_tcp_pose": np.asarray(robot.get_right_tcp_pose(), dtype=np.float64),
             "left_gripper": float(robot.get_left_gripper_val()),
             "right_gripper": float(robot.get_right_gripper_val()),
+            # The fingers' measured value (the last of the real joint state), 0 closed .. 1 open.
+            "left_gripper_real": float(left_real[-1]),
+            "right_gripper_real": float(right_real[-1]),
             "qpos_target14": np.asarray(left_target + right_target, dtype=np.float64),
             "arm_qpos_real12": np.asarray(
                 left_real[:-1] + right_real[:-1], dtype=np.float64
             ),
         }
+
+    def arm_base_pose(
+        self, arm: Literal["left", "right"], env_id: int = 0
+    ) -> list[float]:
+        """``arm``'s base pose in the world, [x, y, z, qw, qx, qy, qz]: the pose RoboTwin's robot
+        was placed at for that arm (its planner's frame)."""
+        if arm not in ("left", "right"):
+            raise ValueError("arm must be 'left' or 'right'")
+        sub_env = self._sub_env(env_id)
+        with sub_env.lock:
+            pose = getattr(sub_env.task.robot, f"{arm}_entity_origion_pose")
+            return [float(v) for v in pose.p] + [float(v) for v in pose.q]
 
     def robot_state(self, env_id: int = 0) -> dict[str, Any]:
         """The robot state and episode status now, without rendering (the motion methods'

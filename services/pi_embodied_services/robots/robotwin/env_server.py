@@ -25,6 +25,14 @@ business calls while a program runs. A raw step's reply to the program carries t
 and the episode status, not the camera observation (its head frames go to the run's video); the
 run reports its native actions, the latest robot state and status (pi's ``Info``) and its video
 (``_finish_run``).
+
+MotorMind mode (``env.mm_observe`` / ``env.mm_run_step``, utils/motormind.py) drives one arm
+(``--mm-arm``; MotorMind is one-armed), the other held: its base frame is the pose RoboTwin placed
+that arm at; a tick is one native action, an ``ee`` target (the TCP moved by the tick's increments,
+turned about the TCP) or, when nothing moves, a ``qpos`` one with the gripper; RoboTwin counts
+each against its action budget. The gripper is a position target (0 closed .. 1 open) that a
+channel ramps by MM_GRIPPER_RATE a tick; the opening is the fingers' measured value times
+MM_GRIPPER_SPAN_M. The views are the head camera and that arm's wrist camera.
 """
 
 from __future__ import annotations
@@ -46,9 +54,11 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero import motormind_rig as rig
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.motormind import MotorMindMixin
 from pi_embodied_services.utils.serialization import to_numpy_tree
 
 logger = get_logger("robotwin_env_server")
@@ -70,6 +80,28 @@ DEFAULT_SUBSTEPS = 25
 #: traj_plan's start pose must be the current eef pose within this (cuRobo plans from the joints).
 START_TOL_M = 0.01
 START_TOL_RAD = 0.05
+#: MotorMind mode: the jaw opening at gripper value 1 (aloha-agilex's Piper jaws), the gripper
+#: target's change per tick (a full close or open in 8 of a gripper segment's 32 ticks), the tool
+#: frame in the eef's (approach +Z is the eef's +x, as RoboTwin's grasps approach) and the
+#: capability fields (the Piper arms reach about 0.63 m; LIBERO's timing and tilt defaults).
+MM_GRIPPER_SPAN_M = 0.07
+MM_GRIPPER_RATE = 1.0 / 8
+MM_TOOL_FROM_EE = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+MM_CAPS = {
+    "gripper_open_span_m": MM_GRIPPER_SPAN_M,
+    "gripper_pad_length_m": 0.02,
+    "reach_m": 0.6,
+    "comfortable_reach_m": 0.5,
+    "tilt_limits_deg": {
+        "roll_cw": 90.0,
+        "roll_ccw": 90.0,
+        "pitch_down": 90.0,
+        "pitch_up": 45.0,
+    },
+    "notes": (
+        "Each tick is one of RoboTwin's native actions and counts against its action budget.",
+    ),
+}
 #: Methods that step the env and answer a motion report (their frames go to a run's video).
 MOTION_METHODS = (
     "env.move_to",
@@ -217,6 +249,12 @@ def _finite(value, n: int, name: str) -> np.ndarray:
     return a
 
 
+def _quat_matrix(q_wxyz) -> np.ndarray:
+    """The rotation matrix of a wxyz quaternion (RoboTwin's pose order)."""
+    w, x, y, z = np.asarray(q_wxyz, dtype=np.float64).reshape(4)
+    return rig.quat_xyzw_matrix([x, y, z, w])
+
+
 def _qmult(a, b) -> np.ndarray:
     """Hamilton product of wxyz quaternions."""
     w1, x1, y1, z1 = a
@@ -231,13 +269,25 @@ def _qmult(a, b) -> np.ndarray:
     )
 
 
-class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
+class RoboTwinEnvFacade(MotorMindMixin, CodeRunMixin, BaseEnvFacade):
     """Expose common and typed RoboTwin environment RPC contracts."""
 
     SERVICE_NAME = "robotwin-env"
 
-    def __init__(self, env: Any, *, metadata: dict[str, Any]):
+    def __init__(
+        self,
+        env: Any,
+        *,
+        metadata: dict[str, Any],
+        mm_arm: str = "right",
+        mm_home: str = "refuse",
+        mm_truth: str | None = None,
+    ):
         self._env = env
+        # MotorMind mode: its arm, and the gripper target its channel ramps (None: read it).
+        self._mm_side = _arm(mm_arm)
+        self._mm_g: float | None = None
+        self._mm_setup(mm_home, mm_truth)
         self._metadata = dict(metadata)
         # Code mode: the run's native actions, its latest robot state and status, the joint
         # target and eef16 state its next action starts from, and its video frames.
@@ -294,6 +344,8 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
         super()._register_rpc()
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
         self._rpc["env.policy_frame"] = self.policy_frame
+        # MotorMind mode (utils/motormind.py): the observation and one segment of an action.
+        self._rpc.update(self._mm_rpc())
         for name in (
             "move_to",
             "rotate_wrist",
@@ -525,6 +577,8 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
         info["requested_seed"] = seed
         info["instruction"] = instruction
         info["instruction_source"] = instruction_source
+        self._mm_g = None
+        self._mm_new_episode()
         return self._strip_single_env_observation(observation), info
 
     def step(
@@ -607,6 +661,102 @@ class RoboTwinEnvFacade(CodeRunMixin, BaseEnvFacade):
 
     def get_task_language(self) -> str:
         return self._env.get_task_language(env_id=0)
+
+    # ---- MotorMind mode (utils/motormind.py) ----
+
+    def _mm_static(self) -> dict:
+        base = np.asarray(self._env.arm_base_pose(self._mm_side, 0), dtype=np.float64)
+        return {
+            "body": f"{self._mm_side}_arm_base",
+            "pos": base[:3].tolist(),
+            "xmat": _quat_matrix(base[3:]),
+            "max_translation_m": 0.05,
+            "max_rotation_rad": 0.5,
+            "fingers": True,
+            "caps": MM_CAPS,
+        }
+
+    def _mm_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        tcp = np.asarray(
+            self._now()["robot_state"][f"{self._mm_side}_tcp_pose"], dtype=np.float64
+        )
+        return tcp[:3], _quat_matrix(tcp[3:]) @ MM_TOOL_FROM_EE
+
+    def _mm_opening(self) -> float:
+        real = self._now()["robot_state"][f"{self._mm_side}_gripper_real"]
+        return float(np.clip(real, 0.0, 1.0)) * MM_GRIPPER_SPAN_M
+
+    def _mm_tick(self, dp_world, dr_world, grip: float, until=None) -> None:
+        """One native action: the gripper target ramped by the channel (+1 toward closed, -1
+        toward open, 0 held); with motion, an ``ee`` target (the TCP moved by ``dp_world``, the
+        eef turned by ``dr_world`` about the TCP; the other arm where it is), else a ``qpos``
+        one."""
+        rs = self._now()["robot_state"]
+        arm = self._mm_side
+        g = self._mm_g if self._mm_g is not None else float(rs[f"{arm}_gripper"])
+        g = float(np.clip(g - float(grip) * MM_GRIPPER_RATE, 0.0, 1.0))
+        self._mm_g = g
+        dp = np.asarray(dp_world, dtype=np.float64)
+        dr = np.asarray(dr_world, dtype=np.float64)
+        if np.linalg.norm(dp) + np.linalg.norm(dr) < 1e-12:
+            q = np.asarray(rs["qpos_target14"], dtype=np.float64).copy()
+            q[ARM_OFFSET[arm] + 6] = g
+            self.step(q, action_type="qpos")
+            return
+        ee = np.asarray(rs[f"{arm}_eef_pose"], dtype=np.float64)
+        tcp = np.asarray(rs[f"{arm}_tcp_pose"], dtype=np.float64)[:3]
+        turn = rig.axis_angle_matrix(dr)
+        pos = tcp + dp + turn @ (ee[:3] - tcp)
+        quat = rig.matrix_quat_wxyz(turn @ _quat_matrix(ee[3:]))
+        target = {arm: np.r_[pos, quat, g]}
+        for side in ARM_OFFSET:
+            if side != arm:
+                target[side] = np.r_[rs[f"{side}_eef_pose"], rs[f"{side}_gripper"]]
+        self.step(np.r_[target["left"], target["right"]], action_type="ee")
+
+    def _mm_status(self) -> tuple[bool, bool, int]:
+        st = self._now()["episode_status"]
+        limit = st.get("step_lim")
+        truncated = limit is not None and int(st["take_action_cnt"]) >= int(limit)
+        return bool(st["eval_success"]), truncated, int(st["take_action_cnt"])
+
+    def _mm_extra(self) -> dict:
+        """The robot state and episode status pi's tools keep (its ``info``)."""
+        return dict(self._now())
+
+    def _mm_cameras(self) -> dict:
+        return {"scene": "head", "wrist": f"{self._mm_side}_wrist"}
+
+    def _mm_shots(self, cameras: dict, size: int, depth) -> dict:
+        """The cameras' own renders (fixed sizes) with their OpenCV calibration (SAPIEN's
+        world-to-camera extrinsic, inverted)."""
+        out = {}
+        for name, cam in cameras.items():
+            want = name in depth
+            shot = self.render_camera(cam, depth=want)
+            rgb, d = shot if want else (shot, None)
+            meta = self.get_camera_meta(cam)
+            w2c = np.eye(4)
+            w2c[:3, :4] = np.asarray(meta["extrinsic_cv"], dtype=np.float64)[:3, :4]
+            out[name] = {
+                "rgb": np.ascontiguousarray(np.asarray(rgb)[..., :3]).astype(np.uint8),
+                "K": np.asarray(meta["intrinsic_K"], dtype=np.float64),
+                "cam2world": np.linalg.inv(w2c),
+                **({"depth": np.nan_to_num(np.asarray(d, np.float32))} if want else {}),
+            }
+        return out
+
+    def _mm_video_frame(self):
+        return np.ascontiguousarray(np.asarray(self.render_camera("head"))[..., :3])
+
+    def _mm_reset_scene(self) -> None:
+        self.reset()
+
+    def _mm_truth_extra(self) -> dict:
+        return {
+            "success_now": bool(self._now()["episode_status"]["eval_success"]),
+            "objects": self._env.object_poses(0),
+        }
 
     # ---- motion (pi's tools and the programs' primitives run these same methods) ----
 
@@ -1026,6 +1176,21 @@ def main() -> None:
     )
     parser.add_argument("--assets-path", required=True)
     parser.add_argument("--parent-watch", action="store_true")
+    parser.add_argument(
+        "--mm-arm",
+        choices=["left", "right"],
+        default="right",
+        help="MotorMind mode's arm (it drives one)",
+    )
+    parser.add_argument(
+        "--mm-home",
+        choices=["refuse", "reset"],
+        default="refuse",
+        help="MotorMind mode's home: refused, or the episode reset",
+    )
+    parser.add_argument(
+        "--mm-truth", default=None, help="MotorMind mode's privileged truth log (jsonl)"
+    )
     add_perception_arguments(parser, sam3=True)
     add_cuda_argument(parser)
     args = parser.parse_args()
@@ -1050,6 +1215,9 @@ def main() -> None:
             seed=args.seed,
             max_episode_steps=args.max_episode_steps,
         ),
+        mm_arm=args.mm_arm,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth.
     install_perception(

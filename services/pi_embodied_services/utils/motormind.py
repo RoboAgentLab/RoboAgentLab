@@ -51,8 +51,8 @@ The hooks a facade defines (base frame and poses in the world frame, metres, rad
 - ``_mm_status()``: ``(terminated, truncated, env_steps)`` of the episode (terminated = success
   latched);
 - ``_mm_shots(cameras, size, depth)``: per name of ``cameras`` (name -> robot camera) an upright
-  ``rgb`` uint8, ``depth`` (camera z, m) for the names in ``depth``, ``K`` and ``cam2world``
-  (4x4, OpenCV axes);
+  ``rgb`` uint8 (``size`` square, or the camera's own size when it has a fixed one), ``depth``
+  (camera z, m) for the names in ``depth``, ``K`` and ``cam2world`` (4x4, OpenCV axes);
 - ``_mm_cameras()``: MotorMind's view names (``scene``, ``side``, ``wrist``) -> robot cameras;
 - ``_mm_reset_scene()``: the robot's episode reset (``home`` with ``--mm-home reset``);
 - optional: ``_mm_video_frame()`` (one frame for the episode video, or None; called per tick);
@@ -393,8 +393,9 @@ class MotorMindMixin:
             marked.append(imgs.pop("_marked"))
             cam = {
                 "camera": views[n],
-                "width": px,
-                "height": px,
+                # The robot's render (a fixed-size camera may not be square).
+                "width": int(np.asarray(s["rgb"]).shape[1]),
+                "height": int(np.asarray(s["rgb"]).shape[0]),
                 "intrinsic": k.tolist(),
                 "cam2base": c2b.tolist(),
                 "timestamp": self._mm_clock,

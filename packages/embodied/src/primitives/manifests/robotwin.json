@@ -1,6 +1,9 @@
 {
 	"robot": "robotwin",
-	"internal": [],
+	"internal": [
+		"env.mm_observe",
+		"env.mm_run_step"
+	],
 	"primitives": [
 		{
 			"use": "sim/get_task_language"
@@ -587,6 +590,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
 		},
 		{
 			"use": "modules/xpolicy_act"
