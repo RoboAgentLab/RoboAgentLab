@@ -1,0 +1,5016 @@
+[
+	{
+		"id": "hu20262am",
+		"name": "2AM",
+		"title": "2AM: Grounding Agent-Side Memory as Guidance for Steerable Action Models in Long-Horizon Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.11308",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "artificialanalysis2026robotics",
+		"name": "AA-Robotics",
+		"title": "Welcome to the Era of Embodied AI: Introducing AA-Robotics v0.1",
+		"year": 2026,
+		"url": "https://artificialanalysis.ai/articles/aa-robotics",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "tian2026abotagentos",
+		"name": "ABot-AgentOS",
+		"title": "ABot-AgentOS: A General Robotic Agent OS with Lifelong Multi-modal Memory",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.10350",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "huo2026abotclaw",
+		"name": "ABot-Claw",
+		"title": "ABot-Claw: A Foundation for Persistent, Cooperative, and Self-Evolving Robotic Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2604.10096",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "gong2026abotn1",
+		"name": "ABot-N1",
+		"title": "ABot-N1: Toward a General Visual Language Navigation Foundation Model",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.10383",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260704162",
+		"name": "ACE",
+		"title": "ACE: Agentic Control for Embodied Manipulation via Zero-shot Workflow Reasoning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.04162v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit260905985",
+		"name": "Action Reasoning 2.0",
+		"title": "A Brain-inspired Hierarchical Framework for Zero-Shot Robot Task Reasoning and Execution",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.05985v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit260924124",
+		"name": "ActiveArena-Plan",
+		"title": "ActiveArena: Benchmarking and Understanding Active Perception in Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.24124",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "zhang2025adadrive",
+		"name": "AdaDrive",
+		"title": "AdaDrive: Self-Adaptive Slow-Fast System for Language-Grounded Autonomous Driving",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2511.06253",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "chen2026adapt",
+		"name": "ADAPT",
+		"title": "ADAPT: Benchmarking Commonsense Planning under Unspecified Affordance Constraints",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2604.14902",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "wang2026adarsi",
+		"name": "AdaRSI",
+		"title": "AdaRSI: On-Demand Recursive Self-Improvement for Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.20474",
+		"cells": [
+			"O2/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260918520",
+		"name": "AeroWeaver",
+		"title": "AeroWeaver: An Embodied-Agent Harness for Weaving Aerial Skills into Distributed, Adaptive Swarm Execution",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.18520v1",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "mao2023agentdriver",
+		"name": "Agent-Driver",
+		"title": "A Language Agent for Autonomous Driving",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.10813",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "robocoliseum2026agent2act",
+		"name": "Agent2Act",
+		"title": "Frontier LLMs Enter the World of Robotics: A Cross-Model Evaluation on RoboColiseum",
+		"year": 2026,
+		"url": "https://robocoliseum.ai/techreport/agent2act",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xu2026agentchord",
+		"name": "AgentChord",
+		"title": "From Reaction to Anticipation: Proactive Failure Recovery through Agentic Task Graph for Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2605.11951",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "agenticrobot",
+		"name": "Agentic Robot",
+		"title": "Agentic Robot: A Brain-Inspired Framework for Vision-Language-Action Models in Embodied Agents",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.23450",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "li2026agenticrsr",
+		"name": "Agentic RSR",
+		"title": "Agentic RSR: Real-to-Sim-to-Real through Scene Reconstruction and Execution-Grounded Robot Policies",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.10479",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260610577",
+		"name": "AgenticNav",
+		"title": "AgenticNav: Zero-Shot Vision-and-Language Navigation as a Tool-Calling Harness",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2606.10577v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "liu2026agenticroborl",
+		"name": "AgenticRoboRL",
+		"title": "AgenticRoboRL: Bringing Coding-Agent Post-Training to Agentic Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.28589",
+		"cells": [
+			"O1/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "agenticros2026",
+		"name": "AgenticROS",
+		"title": "AgenticROS",
+		"year": null,
+		"url": "https://github.com/agenticros/agenticros",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit260213591",
+		"name": "AgentRob",
+		"title": "AgentRob: From Virtual Forum Agents to Hijacked Physical Robots",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.13591v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "hu2024agentscodriver",
+		"name": "AgentsCoDriver",
+		"title": "AgentsCoDriver: Large Language Model Empowered Collaborative Driving with Lifelong Learning",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.06345",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "grid31",
+		"name": "AgentVLN",
+		"title": "AgentVLN: Towards Agentic Vision-and-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.17670",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "agp",
+		"name": "AGP",
+		"title": "Agent as Policy for Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.12541",
+		"cells": [
+			"O1/A3",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xiong2025aicmllm",
+		"name": "AIC MLLM",
+		"title": "Autonomous Interactive Correction MLLM for Robust Robotic Manipulation",
+		"year": 2025,
+		"url": "https://proceedings.mlr.press/v270/xiong25a.html",
+		"cells": [
+			"O1/A1C",
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "yin2026alldaynav",
+		"name": "AllDayNav",
+		"title": "AllDayNav: Lifelong Navigation via Real-World Reinforcement Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.10927",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "grid43",
+		"name": "ALRM",
+		"title": "ALRM: Agentic LLM for Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.19510",
+		"cells": [
+			"O3/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260912285",
+		"name": "AnchorVLN",
+		"title": "AnchorVLN: Geometry-Anchored Vision-Language Grounding Reasoning for Open-Vocabulary Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.12285v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "kumar2026aor",
+		"name": "AOR",
+		"title": "Act-Observe-Rewrite: Multimodal Coding Agents as In-Context Policy Learners for Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.04466",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "jiang2026appl",
+		"name": "APPL",
+		"title": "Agent Priors-guided Policy Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.35690",
+		"cells": [
+			"O3/A1M"
+		]
+	},
+	{
+		"id": "audit260923578",
+		"name": "AR-WAM",
+		"title": "AR-WAM: A Visual-Conditioned Agent-Ready World Action Model for Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.23578v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "lange2025arna",
+		"name": "ARNA",
+		"title": "General-Purpose Robotic Navigation via LVLM-Orchestrated Perception, Reasoning, and Acting",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.17462",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "art2026",
+		"name": "ART",
+		"title": "Evolve Vision-Language-Action Model into an Agent with On-the-fly Tool-use",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.14047",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "tomar2026askable",
+		"name": "Askable Arm",
+		"title": "jev-askable-arm",
+		"year": 2026,
+		"url": "https://github.com/TarunTomar122/jev-askable-arm",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "self260700272",
+		"name": "ASPIRE",
+		"title": "ASPIRE: Agentic /Skills Discovery for Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.00272",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "nvlabs2026aspirecode",
+		"name": "ASPIRE-CaP",
+		"title": "ASPIRE: Public Robot Skill Discovery Implementation",
+		"year": 2026,
+		"url": "https://github.com/NVlabs/ASPIRE/tree/fa00f0ef2bc1d91d594b9aa502c22133c9f538f7",
+		"cells": [
+			"O2/A1C",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "chen2026astrarobomme",
+		"name": "Astra on RoboMME",
+		"title": "Can Astra Solve RoboMME without Breaking the Bank?",
+		"year": 2026,
+		"url": "https://bingaochen.github.io/Astra-on-RoboMME/",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref261017350",
+		"name": "Astra-RoboMME",
+		"title": "Can a Frontier VLM Serve as a Robot Policy for Memory-Dependent Manipulation?",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.17350",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "yang2026astranomy",
+		"name": "Astranomy",
+		"title": "Astranomy: An Empirical Study of GPT-6 Astra as a Native Robot Policy",
+		"year": 2026,
+		"url": "https://research.nvidia.com/labs/srl/projects/astranomy/",
+		"cells": [
+			"O1/A1C",
+			"O1/A2"
+		]
+	},
+	{
+		"id": "zhang2026atomicvla",
+		"name": "AtomicVLA",
+		"title": "AtomicVLA: Unlocking the Potential of Atomic Skill Learning in Robots",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.07648",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "ma2026atpvpdsg",
+		"name": "ATP-VPDSG",
+		"title": "Adaptive Task Planning for Long-Horizon Robotic Manipulation Based on Video Priors and Dynamic Scene Graphs",
+		"year": 2026,
+		"url": "https://doi.org/10.3390/s26175595",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "audit260916346",
+		"name": "Auto-HSI",
+		"title": "Auto-HSI: Personalized human control of a robot swarm on demand by using LLMs for online automatic code generation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.16346v1",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "chen2023autotamp",
+		"name": "AutoTAMP",
+		"title": "AutoTAMP: Autoregressive Task and Motion Planning with LLMs as Translators and Checkers",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2306.06531",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit250312533",
+		"name": "Being-0",
+		"title": "Being-0: A Humanoid Robotic Agent with Vision-Language Models and Modular Skills",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.12533v1",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "zhang2026bigym2",
+		"name": "BiGym 2.0",
+		"title": "BiGym 2.0: Benchmarking Learned and Agent-Developed Policies for Humanoid Household Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.07594",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "leet2026bitter",
+		"name": "Bitter Lesson",
+		"title": "The Bitter Lesson Comes to Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.25287",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xref240208546",
+		"name": "BrainBody-LLM",
+		"title": "Grounding LLMs For Robot Task Planning Using Closed-loop State Feedback",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.08546",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit261003615",
+		"name": "Bridging Frontier Reasoning",
+		"title": "Bridging Frontier Reasoning and Robot Execution: From Autonomous Demonstration Generation to Dense Language Supervision",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.03615v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "bumble",
+		"name": "BUMBLE",
+		"title": "BUMBLE: Unifying Reasoning and Acting with Vision-Language Models for Building-wide Mobile Manipulation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.06237",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "capx",
+		"name": "CaP-X",
+		"title": "CaP-X: A Framework for Benchmarking and Improving Coding Agents for Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.22435",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "fan2026captain",
+		"name": "CaPtain",
+		"title": "CaPtain: A Pipeline for Post-Training Code-as-Policy Robot Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.40799",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "wang2026carryon",
+		"name": "CarryOn",
+		"title": "CarryOn: A Dual-Loop Harness for Personalized and Reliable Robot Assistance",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.21453",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "xref250301700",
+		"name": "CaSP",
+		"title": "Code-as-Symbolic-Planner: Foundation Model-Based Robot Planning via Symbolic Code Generation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.01700",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit241022225",
+		"name": "CaStL",
+		"title": "CaStL: Constraints as Specifications through LLM Translation for Long-Horizon Task and Motion Planning",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.22225",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "vemprala2024chatgpt",
+		"name": "ChatGPT for Robotics",
+		"title": "ChatGPT for Robotics: Design Principles and Model Abilities",
+		"year": 2024,
+		"url": "https://doi.org/10.1109/ACCESS.2024.3387941",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "grid28",
+		"name": "CLASP",
+		"title": "CLASP: Language-Driven Robot Skill Selection and Composition using Task-Parameterized Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.08169",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid45",
+		"name": "CLEA",
+		"title": "CLEA: Closed-Loop Embodied Agent for Enhancing Task Execution in Dynamic Environments",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.00729",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref260206967",
+		"name": "CLiMRS",
+		"title": "Leveraging Adaptive Group Negotiation for Heterogeneous Multi-Robot Collaboration with Large Language Models",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2602.06967",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit260706990",
+		"name": "Closed-Loop Multi-Agent",
+		"title": "A Closed-Loop Multi-Agent Framework for Robust Multi-Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.06990v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref260628397",
+		"name": "CLOSER-VLN",
+		"title": "CLOSER-VLN: Closed-Loop Self-Verified Retrieval-Augmented Reasoning for Aerial Vision-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2606.28397",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260930428",
+		"name": "CLUE",
+		"title": "Actively Resolving Contextual Uncertainty for Underspecified Tasks in Natural Language",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.30428v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref260307997",
+		"name": "CMMR-VLN",
+		"title": "CMMR-VLN: Vision-and-Language Navigation via Continual Multimodal Memory Retrieval",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2603.07997",
+		"cells": [
+			"O1/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "grid35",
+		"name": "Co-NavGPT",
+		"title": "Co-NavGPT: Multi-Robot Cooperative Visual Semantic Navigation Using Vision Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2310.07937",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "grid66",
+		"name": "Code as Policies",
+		"title": "Code as Policies: Language Model Programs for Embodied Control",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2209.07753",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "codebotler2026",
+		"name": "CodeBotler",
+		"title": "Deploying and Evaluating LLMs to Program Service Mobile Robots",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.11183",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260930233",
+		"name": "Coding Agents for TAMP",
+		"title": "Coding Agents for Generalized Task and Motion Planning Problems",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.30233v1",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "coela",
+		"name": "CoELA",
+		"title": "Building Cooperative Embodied Agents Modularly with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.02485",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit260931418",
+		"name": "Cognitive Reality",
+		"title": "CognitiveReality: Robot-Agnostic Semantic Gaussian Mapping with an LLM Agent for Immersive Collaborative VR Teleoperation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.31418v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref240915146",
+		"name": "COHERENT",
+		"title": "COHERENT: Collaboration of Heterogeneous Multi-Robot System with Large Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.15146",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "liu2025colmdriver",
+		"name": "CoLMDriver",
+		"title": "CoLMDriver: LLM-based Negotiation Benefits Cooperative Autonomous Driving",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.08683",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "zhi2024comerobot",
+		"name": "COME-robot",
+		"title": "Closed-Loop Open-Vocabulary Mobile Manipulation with GPT-4V",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.10220",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhang2026commcp",
+		"name": "CommCP",
+		"title": "CommCP: Efficient Multi-Agent Coordination via LLM-Based Communication with Conformal Prediction",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.06038",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit241006108",
+		"name": "ConceptAgent",
+		"title": "ConceptAgent: LLM-Driven Precondition Grounding and Tree Search for Robust Task Planning and Execution",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2410.06108",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "gu2023conceptgraphs",
+		"name": "ConceptGraphs",
+		"title": "ConceptGraphs: Open-Vocabulary 3D Scene Graphs for Perception and Planning",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.16650",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "sref260829379",
+		"name": "Constrained LLMs",
+		"title": "Bridging Semantics and Physics with Constrained LLMs for Safe and Trustworthy Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.29379",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "sref260219983",
+		"name": "Contextual Safety",
+		"title": "Contextual Safety Reasoning and Grounding for Open-World Robots",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.19983",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "copal2023",
+		"name": "CoPAL",
+		"title": "CoPAL: Corrective Planning of Robot Actions with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2310.07263",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "coral2026",
+		"name": "CoRAL",
+		"title": "CoRAL: Contact-Rich Adaptive LLM-based Control for Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2605.02600",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "sref260705377",
+		"name": "Cortex",
+		"title": "Cortex: A Bidirectionally Aligned Embodied Agent Framework for Long-horizon Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.05377",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "boiko2023coscientist",
+		"name": "Coscientist",
+		"title": "Autonomous chemical research with large language models",
+		"year": 2023,
+		"url": "https://doi.org/10.1038/s41586-023-06792-0",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "sref260305185",
+		"name": "Critic in the Loop",
+		"title": "Critic in the Loop: A Tri-System VLA Framework for Robust Long-Horizon Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.05185",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "huang2026cuarms",
+		"name": "cuArms",
+		"title": "cuArms: GPU-Accelerated Conflict-Based Planning for Multi-Arm Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.36250",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "ma2026cyclevla",
+		"name": "CycleVLA",
+		"title": "CycleVLA: Proactive Self-Correcting Vision-Language-Action Models via Subtask Backtracking and Minimum Bayes Risk Decoding",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.02295",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "sun2024dadue",
+		"name": "DaDu-E",
+		"title": "DaDu-E: Rethinking the Role of Large Language Model in Robotic Computing Pipeline",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2412.01663",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref250321969",
+		"name": "DAHLIA",
+		"title": "Robotic Long-Horizon Manipulation with Progressive In-Context Code Generation and Episodic Feedback",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.21969",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid24",
+		"name": "DeCo",
+		"title": "DeCo: Task Decomposition and Skill Composition for Zero-Shot Generalization in Long-Horizon 3D Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.00527",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit230516744",
+		"name": "Demo2Code",
+		"title": "Demo2Code: From Summarizing Demonstrations to Synthesizing Code via Extended Chain-of-Thought",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2305.16744",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "hu2026dexgpt",
+		"name": "DexGPT",
+		"title": "DexGPT: GIF to Sharpa Wave",
+		"year": 2026,
+		"url": "https://github.com/Hu-xiao-max/dexgpt",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "zhong2025dexgraspvla",
+		"name": "DexGraspVLA",
+		"title": "DexGraspVLA: A Vision-Language-Action Framework Towards General Dexterous Grasping",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2502.20900",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "yang2024diffusiones",
+		"name": "Diffusion-ES",
+		"title": "Diffusion-ES: Gradient-free Planning with Diffusion for Autonomous Driving and Zero-Shot Instruction Following",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.06559",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "wen2023dilu",
+		"name": "DiLu",
+		"title": "DiLu: A Knowledge-Driven Approach to Autonomous Driving with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.16292",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "dimos2026",
+		"name": "DimOS",
+		"title": "Dimensional: Robotics Agent Framework",
+		"year": null,
+		"url": "https://github.com/dimensionalOS/dimos/tree/0f65afc34c6012e2d7924e620fb24fcb9f171510",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref230911382",
+		"name": "DiscussNav",
+		"title": "Discuss Before Moving: Visual Language Navigation via Multi-expert Discussions",
+		"year": 2023,
+		"url": "https://arxiv.org/html/2309.11382",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit261001569",
+		"name": "Distributed UAV Context",
+		"title": "Managing Context and Communication in Distributed Agentic UAV Swarms",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2610.01569v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid46",
+		"name": "DoReMi",
+		"title": "DoReMi: Grounding Language Model by Detecting and Recovering from Plan-Execution Misalignment",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.00329",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "audit260313528",
+		"name": "Dream2Fix",
+		"title": "Learning Actionable Manipulation Recovery via Counterfactual Failure Synthesis",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.13528",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "fu2023drivelikeahuman",
+		"name": "Drive Like a Human",
+		"title": "Drive Like a Human: Rethinking Autonomous Driving with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.07162",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "cui2023drivemlm",
+		"name": "DriveMLM",
+		"title": "DriveMLM: Aligning Multi-Modal Large Language Models with Behavioral Planning States for Autonomous Driving",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2312.09245",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "tian2024drivevlmdual",
+		"name": "DriveVLM-Dual",
+		"title": "DriveVLM: The Convergence of Autonomous Driving and Large Vision-Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.12289",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "yang2024drivingstylealignment",
+		"name": "Driving Style Alignment",
+		"title": "Driving Style Alignment for LLM-powered Driver Agent",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2403.11368",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit260938948",
+		"name": "DrivingBench",
+		"title": "DrivingBench: Can Vision-Language Models Drive a Toyota Corolla?",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.38948v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "zha2023droc",
+		"name": "DROC",
+		"title": "Distilling and Retrieving Generalizable Knowledge for Robot Manipulation via Language Corrections",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.10678",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "wei2025dualvln",
+		"name": "DualVLN",
+		"title": "Ground Slow, Move Fast: A Dual-System Foundation Model for Generalizable Vision-and-Language Navigation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2512.08186",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit261002161",
+		"name": "DuoMind",
+		"title": "DuoMind: Enabling Distributed Multi-Robot Coordination with Semantic Communication",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.02161v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "sref260118492",
+		"name": "DV-VLN",
+		"title": "DV-VLN: Dual Verification for Reliable LLM-Based Vision-and-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.18492",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "dynaharness2026",
+		"name": "DynaHarness",
+		"title": "DynaHarness: A Dynamic Physical Harness for Self-Evolving Robot Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.40306",
+		"cells": [
+			"O2/A2",
+			"O3/A2"
+		]
+	},
+	{
+		"id": "eai2024",
+		"name": "EAI",
+		"title": "Embodied Agent Interface: Benchmarking LLMs for Embodied Decision Making",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.07166",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "yao2026frontier",
+		"name": "EBench-Astra",
+		"title": "How Far Does a Frontier Agent Get as an Embodied Policy?",
+		"year": 2026,
+		"url": "https://internrobotics.github.io/EBench-Astra-Tech-Report/",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "monwilliams2025ellmer",
+		"name": "ELLMER",
+		"title": "Embodied large language models enable robots to complete complex tasks in unpredictable environments",
+		"year": 2025,
+		"url": "https://doi.org/10.1038/s42256-025-01005-x",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xdof2026ember",
+		"name": "Ember-0",
+		"title": "Ember-0: A benchmark for LLMs in the real world",
+		"year": 2026,
+		"url": "https://www.xdof.ai/blog/evaluating-llms",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "audit261000854",
+		"name": "Embodied Agent Arena",
+		"title": "Are Frontier VLM Agents Ready to Be Robot Generalists? An Empirical Study with the Embodied Agent Arena",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.00854v3",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "embodiedagents2026",
+		"name": "Embodied Agents",
+		"title": "Embodied Agents",
+		"year": null,
+		"url": "https://github.com/automatika-robotics/embodied-agents",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "embodiedfirstexam2026",
+		"name": "Embodied First Exam",
+		"title": "Embodied First Exam",
+		"year": 2026,
+		"url": "https://github.com/mll-lab-nu/embodied-first-exam",
+		"cells": [
+			"O1/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "chen2026embodiedplayground",
+		"name": "Embodied Playground",
+		"title": "Embodied Playground: A Long-Horizon Agentic Robotics Benchmark for Physical, Strategic, and Spatial Reasoning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.27039",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "zhou2026embodiedtool",
+		"name": "Embodied Tools",
+		"title": "Enabling Extensible Embodied Capabilities with Tools",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2605.26637",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid34",
+		"name": "Embodied-Navigator",
+		"title": "Embodied-Navigator: Point, Think, Memorize, and Align for Efficient Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.17512",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "embodiedbench",
+		"name": "EmbodiedBench",
+		"title": "EmbodiedBench: Comprehensive Benchmarking Multi-modal Large Language Models for Vision-Driven Embodied Agents",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2502.09560",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit250111858",
+		"name": "EmbodiedEval",
+		"title": "EmbodiedEval: Evaluate Multimodal LLMs as Embodied Agents",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.11858",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "li2026embodiedevo",
+		"name": "EmbodiedEvo",
+		"title": "EmbodiedEvo: Self-Evolving Coding Agent For Physical Intelligence",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.18867",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "embodiedjev",
+		"name": "EmbodiedJev",
+		"title": "EmbodiedJev",
+		"year": null,
+		"url": "https://github.com/FBddcz/embodied-jev",
+		"cells": [
+			"O1/A1C",
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "gao2026embodiedlab",
+		"name": "EmbodiedLab",
+		"title": "EmbodiedLab: Benchmarking Embodied Agents That Act to Know",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.35385",
+		"cells": [
+			"O1/A3",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "embodiedswe2026",
+		"name": "EmbodiedSWE",
+		"title": "EmbodiedSWE: Coding Agents for Long Horizon Dexterous Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.27308",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "embodirsi2026",
+		"name": "EmbodiRSI",
+		"title": "EmbodiRSI: Recursive Self-Improvement for Data-Efficient Robot Adaptation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.38905",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "berman2026embody",
+		"name": "Embody",
+		"title": "Claude plays robotics",
+		"year": 2026,
+		"url": "https://www.anthropic.com/research/claude-plays-robotics",
+		"cells": [
+			"O1/A1C",
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "liang2026embodiedmemory",
+		"name": "EMem",
+		"title": "EmbodiedMemory-Bench: Benchmarking Embodied Memory for Long-Horizon Embodied Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.28236",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit260829896",
+		"name": "EMERGE-Policy",
+		"title": "EMERGE-Policy: A Robot Mind Emerges Beyond a Single Policy",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2608.29896v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid41",
+		"name": "EMOS",
+		"title": "EMOS: Embodiment-aware Heterogeneous Multi-robot Operating System with LLM Agents",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.22662",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit260937359",
+		"name": "Encore",
+		"title": "Encore: Few-Shot Agentic Discovery of Manipulation Strategies",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.37359v1",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "xref260204419",
+		"name": "EPoG",
+		"title": "Integrated Exploration and Sequential Manipulation on Scene Graph with LLM-based Situated Replanning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.04419",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "esibench2026",
+		"name": "ESI-Bench",
+		"title": "ESI-Bench: Towards Embodied Spatial Intelligence that Closes the Perception-Action Loop",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2605.18746",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "hu2026coap",
+		"name": "ETM",
+		"title": "Embodied Turing Machines: Stateful Code for Robot Recursive Self-Improvement",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.12369",
+		"cells": [
+			"O1/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "si260603509",
+		"name": "EvoMemNav",
+		"title": "EvoMemNav: Efficient Self-Evolving Fine-Grained Memory for Zero-Shot Embodied Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.03509",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "dai2026evonavvln",
+		"name": "EvoNav (VLN)",
+		"title": "History to Future: Evolving Agent with Experience and Thought for Zero-shot Vision-and-Language Navigation",
+		"year": 2026,
+		"url": "https://openaccess.thecvf.com/content/CVPR2026/html/Dai_History_to_Future_Evolving_Agent_with_Experience_and_Thought_for_CVPR_2026_paper.html",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260120334",
+		"name": "FAEA",
+		"title": "Demonstration-Free Robotic Control via LLM Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.20334v1",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260114681",
+		"name": "FARE",
+		"title": "FARE: Fast-Slow Agentic Robotic Exploration",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2601.14681v1",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "lin2026fastharness",
+		"name": "FastHarness",
+		"title": "FastHarness: Experience-Driven Review Scheduling for Vision-Language-Action Policies",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.31427",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid53",
+		"name": "FLARE (2024)",
+		"title": "Multi-Modal Grounded Planning and Efficient Replanning For Learning Embodied Agents with A Few Examples",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2412.17288",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260213081",
+		"name": "Flexible but Fragile",
+		"title": "Agentic AI for Robot Control: Flexible but still Fragile",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.13081v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref250302698",
+		"name": "FlowPlan",
+		"title": "FlowPlan: Zero-Shot Task Planning with LLM Flow Engineering for Robotic Instruction Following",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.02698",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "grid29",
+		"name": "FluxVLA",
+		"title": "FluxVLA Engine: A One-Stop VLA Engineering Platform for Embodied Intelligence",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.17210",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "lee2026flybycodeembodiedcodingagents",
+		"name": "Fly-by-Code",
+		"title": "Fly-by-Code: Embodied Coding Agents for Aerial Manipulation with Active Visual and Physical Feedback",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.12549",
+		"cells": [
+			"O1/A3",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xref240406413",
+		"name": "Foundation Models to the Rescue",
+		"title": "Foundation Models to the Rescue: Deadlock Resolution in Connected Multi-Robot Systems",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2404.06413",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "ghasemzadehkakroudi2026conversational",
+		"name": "Franka-LLM",
+		"title": "A Conversational Framework for Human-Robot Collaborative Manipulation with Distributed Generative AI models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.06061",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "shentu2024fromllmstoactions",
+		"name": "From LLMs to Actions",
+		"title": "From LLMs to Actions: Latent Codes as Bridges in Hierarchical Robot Control",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2405.04798",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit250508548",
+		"name": "FSD",
+		"title": "From Seeing to Doing: Bridging Reasoning and Decision for Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.08548",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "wu2026galatea",
+		"name": "GALATEA",
+		"title": "Grounding Generated Video Plans in Simulation Towards Versatile Dexterous Controllers",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.10050",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "jiang2025galaxeag0",
+		"name": "Galaxea G0",
+		"title": "Galaxea Open-World Dataset and G0 Dual-System VLA Model",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2509.00576",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "chen2026gap",
+		"name": "GaP",
+		"title": "GaP: A Graph-as-Policy Multi-Agent Self-Learning Harness For Variational Automation Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.05369",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "wang2026gavel",
+		"name": "GAVEL",
+		"title": "GAVEL: Graph World Models for Verified and Efficient Long-Horizon LLM Task Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.19315",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "rao2026argon",
+		"name": "Gemini 4 Argon",
+		"title": "Gemini 4 Argon for Robotics",
+		"year": 2026,
+		"url": "https://developers.googleblog.com/gemini-4-argon-for-robotics/",
+		"cells": [
+			"O1/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit250320020",
+		"name": "Gemini ER",
+		"title": "Gemini Robotics: Bringing AI into the Physical World",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.20020",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "geminiroboticsteam2025geminirobotics15",
+		"name": "Gemini Robotics 1.5",
+		"title": "Gemini Robotics 1.5: Pushing the Frontier of Generalist Robots with Advanced Embodied Reasoning, Thinking, and Motion Transfer",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2510.03342",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref240406645",
+		"name": "GenCHiP",
+		"title": "GenCHiP: Generating Robot Policy Code for High-Precision and Contact-Rich Manipulation Tasks",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.06645",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "song2026glide",
+		"name": "GLIDE",
+		"title": "Learning Beyond What Humans Can Demonstrate",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.24996",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "chen2025goalvla",
+		"name": "Goal-VLA",
+		"title": "Goal-VLA: Image-Generative VLMs as Object-Centric World Models Empowering Zero-shot Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2506.23919",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid25",
+		"name": "Goal2Skill",
+		"title": "Goal2Skill: Long-Horizon Manipulation with Adaptive Planning and Reflection",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2604.13942",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "su2026astra",
+		"name": "GPT-as-Policy",
+		"title": "GPT 6 Astra as an Embodied Policy",
+		"year": 2026,
+		"url": "https://github.com/anonymous-report-421/GPT-as-Policy",
+		"cells": [
+			"O1/A1C",
+			"O1/A2"
+		]
+	},
+	{
+		"id": "zhou2026gptgear",
+		"name": "GPT-GEAR",
+		"title": "Large Multimodal Models for Direct Robot Control: GPT-6 as a Beginning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.28259",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "gptpolicy2026",
+		"name": "GPT-Policy",
+		"title": "In-Context Robot Learning with VLM Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.19138",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "wang2026gpttactile",
+		"name": "GPT-Tactile",
+		"title": "GPT-6-Astra Understands Touch and Outperform Vision--Tactile--Language--Action Models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.28457",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "lee2025graspcorrect",
+		"name": "GraspCorrect",
+		"title": "GraspCorrect: Robotic Grasp Correction via Vision-Language Model-Guided Feedback",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.15035",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit230300855",
+		"name": "Grounded Decoding",
+		"title": "Grounded Decoding: Guiding Text Generation with Grounded Models for Embodied Agents",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2303.00855",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "audit260909808",
+		"name": "GTA-2",
+		"title": "GTA-2: A Multi-VLM Framework for Synthesizing Robot Manipulation Skills via Grounded Task Axes",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.09808",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid26",
+		"name": "Guava",
+		"title": "Guava: Distilling Frontier VLM Agents into a Compact Model with a Manipulation Harness",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.18363",
+		"cells": [
+			"O2/A1C",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "schakkal2025hierarchical",
+		"name": "H-VLP",
+		"title": "Hierarchical Vision-Language Planning for Multi-Step Humanoid Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.22827",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "parakh2023halp",
+		"name": "HALP",
+		"title": "Lifelong Robot Learning with Human Assisted Language Planners",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.14321",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260729600",
+		"name": "HAM-VLN",
+		"title": "HAM-VLN: Harnessing Hierarchical Agentic Memory for Zero-Shot Vision-and-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2607.29600v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "li2025hamster",
+		"name": "HAMSTER",
+		"title": "HAMSTER: Hierarchical Action Models For Open-World Robot Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2502.05485",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "luo2026handson",
+		"name": "HandsOn",
+		"title": "HandsOn: A Large-Scale Simulation Benchmark for Generalizable Dexterous Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.26765",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "chen2026harnessvln",
+		"name": "HarnessVLN",
+		"title": "HarnessVLN: Unifying Training-Free Embodied Navigation through an Agent Harness",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.15195",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "gu2026harnesswam",
+		"name": "HarnessWAM",
+		"title": "HarnessWAM: Bridging Prediction and Deliberation in World Action Models",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2608.09516",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "grid63",
+		"name": "HATS",
+		"title": "HATS: A Human-Agent Teleoperation System for Multi-Arm Data Collection",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.16491",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "teo2026heuristic",
+		"name": "Heuristic Grasping",
+		"title": "From False Positives to Failure Topologies: Heuristic Learning for Auditable Dexterous Grasping Development",
+		"year": 2026,
+		"url": "https://doi.org/10.5281/zenodo.20922238",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "gao2026hexashell",
+		"name": "HexaShell",
+		"title": "HexaShell: A Thin Harness for Exploring the Limits of VLM Agents as Robot Coding Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.23479",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260926360",
+		"name": "HFLEX-EQA",
+		"title": "Hierarchical Floorplan-Guided Vision-Language Exploration for Embodied Question Answering",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.26360v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid22",
+		"name": "Hi Robot",
+		"title": "Hi Robot: Open-Ended Instruction Following with Hierarchical Vision-Language-Action Models",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2502.19417",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260610267",
+		"name": "Hi-VLA study",
+		"title": "What Matters in Orchestrating Robot Policies: A Systematic Study of Hierarchical VLA Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.10267v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260703449",
+		"name": "HiMe",
+		"title": "HiMe: Hierarchical Embodied Memory for Long-Horizon Vision-Language-Action Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.03449v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref260314807",
+		"name": "HiMemVLN",
+		"title": "HiMemVLN: Enhancing Reliability of Open-Source Zero-Shot Vision-and-Language Navigation with Hierarchical Memory System",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.14807",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "sref260902653",
+		"name": "HINT",
+		"title": "HINT: Human-Intent Inception for Long-Horizon Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.02653",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref230915943",
+		"name": "HMAS",
+		"title": "Scalable Multi-Robot Collaboration with Large Language Models: Centralized or Decentralized Systems?",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.15943",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "holoagent",
+		"name": "HoloAgent-0",
+		"title": "HoloAgent-0: A Unified Embodied Agent Framework with 3D Spatial Memory",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.23565",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "huh2026homebody",
+		"name": "HomeBody",
+		"title": "HomeBody: A Humanoid That Explores, Remembers, and Acts on Its Own",
+		"year": 2026,
+		"url": "https://tml.stanford.edu/homebody/",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "humanclaw",
+		"name": "HumanCLAW",
+		"title": "HumanCLAW: Can Vision-Language Models Act Through a Body?",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.27180",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260706501",
+		"name": "HUME",
+		"title": "Hypothesis-driven Model Expansion under Uncertainty for Open-World Robot Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2607.06501v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref250421716",
+		"name": "IDRA-H",
+		"title": "LLM-Empowered Embodied Agent for Memory-Augmented Task Planning in Household Robotics",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2504.21716",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "wang2025imaginenav",
+		"name": "ImagineNav++",
+		"title": "ImagineNav++: Prompting Vision-Language Models as Embodied Navigator through Scene Imagination",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2512.17435",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "audit260302669",
+		"name": "IMR-LLM",
+		"title": "IMR-LLM: Industrial Multi-Robot Task Planning and Program Generation using Large Language Models",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2603.02669v1",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit240205188",
+		"name": "InCoRo",
+		"title": "InCoRo: In-Context Learning for Robotics Control with Feedback Loops",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.05188v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "liu2026industrialsdi",
+		"name": "Industrial SDI",
+		"title": "Agentic Neuro-Symbolic Planning and Commissioning for Human-in-the-Loop Industrial Robotics with Digital Twins",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.08214",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "innate2026imitation",
+		"name": "Innate ICL",
+		"title": "Imitating a recorded demonstration with GPT-6 Astra",
+		"year": 2026,
+		"url": "https://github.com/innate-inc/innate-os/pull/817",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "innermonologue",
+		"name": "Inner Monologue",
+		"title": "Inner Monologue: Embodied Reasoning through Planning with Language Models",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2207.05608",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "wang2026insight",
+		"name": "InSight",
+		"title": "InSight: Self-Guided Skill Acquisition via Steerable VLAs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.24884",
+		"cells": [
+			"O1/A1C",
+			"O1/A1M",
+			"O1/A2"
+		]
+	},
+	{
+		"id": "inspectrobots2026",
+		"name": "Inspect Robots",
+		"title": "Inspect Robots: Evaluating the Capabilities and Safety of Embodied AI",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.06306",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "luo2026instagent",
+		"name": "InstAgent",
+		"title": "InstAgent: A Recursively Self-Improving Agent Operating System for Heterogeneous Robot Collaboration",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.23098",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid57",
+		"name": "Instruct2Act",
+		"title": "Instruct2Act: Mapping Multi-modality Instructions to Robotic Actions with Large Language Model",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2305.11176",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "sun2023interactiveplanning",
+		"name": "Interactive Planning",
+		"title": "Interactive Planning Using Large Language Models for Partially Observable Robotics Tasks",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2312.06876",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "han2024interpret",
+		"name": "InterPreT",
+		"title": "InterPreT: Interactive Predicate Learning from Language Feedback for Generalizable Task Planning",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2405.19758",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref260303897",
+		"name": "IROSA",
+		"title": "IROSA: Interactive Robot Skill Adaptation using Natural Language",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.03897",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "lu2025isbench",
+		"name": "IS-Bench",
+		"title": "IS-Bench: Evaluating Interactive Safety of VLM-Driven Embodied Agents in Daily Household Tasks",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.16402",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "li2025itp",
+		"name": "ITP",
+		"title": "Interactive Task Planning with Language Models",
+		"year": 2025,
+		"url": "https://openreview.net/forum?id=VmfWywWuYQ",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "ali2026jevarm",
+		"name": "Jev Arm Demo",
+		"title": "Jev vs LLM: Robot Arm Control",
+		"year": 2026,
+		"url": "https://github.com/FazalAAli/jev-robotics-demo",
+		"cells": [
+			"O3/A1C",
+			"O3/A2"
+		]
+	},
+	{
+		"id": "jevevaluation2026",
+		"name": "Jev Control",
+		"title": "Code Owns the Simulation, Jev Owns the Evaluation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.01834",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "jevdrone2026",
+		"name": "Jev Drone",
+		"title": "jev-drone",
+		"year": 2026,
+		"url": "https://github.com/RomanSlack/jev-drone",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "jevlibero2026",
+		"name": "Jev LIBERO",
+		"title": "jev-libero",
+		"year": 2026,
+		"url": "https://github.com/Dimweaker/jev-libero",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "openroboto2026",
+		"name": "Jev Robot Control",
+		"title": "jev-robot-control",
+		"year": 2026,
+		"url": "https://github.com/openroboto-ai/jev-robot-control",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit260425788",
+		"name": "KinDER",
+		"title": "KinDER: A Physical Reasoning Benchmark for Robot Learning and Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2604.25788",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "chen2026kino",
+		"name": "KINO",
+		"title": "KINO: A Keyframe Interface for VLM Planning and Whole-Body Control in Humanoid Loco-Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.18869",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "kachaev2025kitchenr",
+		"name": "Kitchen-R",
+		"title": "Mind and Motion Aligned: A Joint Evaluation IsaacSim Benchmark for Task Planning and Low-Level Policies in Mobile Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2508.15663",
+		"cells": [
+			"O3/A1M"
+		]
+	},
+	{
+		"id": "lou2026knowbody",
+		"name": "KnowBody",
+		"title": "Know Your Body: A Harness for Direct and Self-Improving Robot Control with VLMs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.28530",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "knowin2026knowinagent",
+		"name": "KnowinAgent",
+		"title": "GLOW: A Generative Learning Framework for General-Purpose Embodied Intelligence",
+		"year": 2026,
+		"url": "https://www.knowinai.com/en/tech.html",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "grid49",
+		"name": "KnowNo",
+		"title": "Robots That Ask For Help: Uncertainty Alignment for Large Language Model Planners",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.01928",
+		"cells": [
+			"O2/A1M",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "jiang2024koma",
+		"name": "KoMA",
+		"title": "KoMA: Knowledge-driven Multi-agent Framework for Autonomous Driving with Large Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2407.14239",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "wang2026kpi",
+		"name": "KPI",
+		"title": "KPI: A Promptable Kernel for Physical Interaction on Humanoids",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.36151",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "grid61",
+		"name": "LABOR Agent",
+		"title": "Large Language Models for Orchestrating Bimanual Robots",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.02018",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit251102239",
+		"name": "LACY",
+		"title": "LACY: A Vision-Language Model-based Language-Action Cycle for Self-Improving Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2511.02239",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "zhang2024lammap",
+		"name": "LaMMA-P",
+		"title": "LaMMA-P: Generalizable Multi-Agent Long-Horizon Task Allocation and Planning with LM-Driven PDDL Planner",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.20560",
+		"cells": [
+			"O3/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "ma2023lampilot",
+		"name": "LaMPilot",
+		"title": "LaMPilot: An Open Benchmark Dataset for Autonomous Driving with Language Model Programs",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2312.04372",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "autonomous2026lampos",
+		"name": "lampOS",
+		"title": "lampOS: The open-source operating system for physical AI",
+		"year": 2026,
+		"url": "https://github.com/autonomous-ai/lampOS",
+		"cells": [
+			"O1/A2",
+			"O2/A2"
+		]
+	},
+	{
+		"id": "tao2025lams",
+		"name": "LAMS",
+		"title": "LAMS: LLM-Driven Automatic Mode Switching for Assistive Teleoperation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.08558",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit230211649",
+		"name": "Lang2LTL",
+		"title": "Grounding Complex Natural Language Commands for Temporal Tasks in Unseen Environments",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2302.11649",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260303148",
+		"name": "Language to Action",
+		"title": "From Language to Action: Can LLM-Based Agents Be Used for Embodied Robot Cognition?",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2603.03148v1",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "language2rewards2023",
+		"name": "Language to Rewards",
+		"title": "Language to Rewards for Robotic Skill Synthesis",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2306.08647",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "sha2023languagempc",
+		"name": "LanguageMPC",
+		"title": "LanguageMPC: Large Language Models as Decision Makers for Autonomous Driving",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2310.03026",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit230303480",
+		"name": "LGX",
+		"title": "Can an Embodied Agent Find Your \"Cat-shaped Mug\"? LLM-Guided Exploration for Zero-Shot Object Navigation",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2303.03480",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260939507",
+		"name": "LIBERO-Agent",
+		"title": "LIBERO-Agent: Evaluating General-Purpose Agents for Direct Embodied Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.39507v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "fu2024limsim",
+		"name": "LimSim++",
+		"title": "LimSim++: A Closed-Loop Platform for Deploying Multimodal LLMs in Autonomous Driving",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.01246",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "lim2026lithe",
+		"name": "LITHE",
+		"title": "LITHE: Bridging Best-Effort Python and Real-Time C++ for Hot-Swapping Robotic Control Laws on Commodity Linux",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.07442",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "grid40",
+		"name": "LLaMAR",
+		"title": "LLaMAR: Long-Horizon Planning for Multi-Agent Robots in Partially Observable Environments",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2407.10031",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "xref240910444",
+		"name": "LLM-BT-Planner",
+		"title": "LLM-as-BT-Planner: Leveraging LLMs for Behavior Tree Generation in Robot Task Planning",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2409.10444",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "espinola2026llmlibero",
+		"name": "LLM-LIBERO",
+		"title": "From Reasoning to Action: Benchmarking Frontier AI Models on LIBERO-10 Robot Manipulation Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.30051",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "llmpersonalize2024",
+		"name": "LLM-Personalize",
+		"title": "LLM-Personalize: Aligning LLM Planners with Human Preferences via Reinforced Self-Training for Housekeeping Robots",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.14285",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "grid56",
+		"name": "LLM-Planner",
+		"title": "LLM-Planner: Few-Shot Grounded Planning for Embodied Agents with Large Language Models",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2212.04088",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "grid54",
+		"name": "LLM-State",
+		"title": "LLM-State: Open World State Representation for Long-horizon Task Planning with Large Language Model",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.17406",
+		"cells": [
+			"O2/A1M",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "grid50",
+		"name": "LLM3",
+		"title": "LLM3:Large Language Model-based Task and Motion Planning with Motion Failure Reasoning",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2403.11552",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "li2025lmm3dp",
+		"name": "LMM-3DP",
+		"title": "Integrating LMM Planners and 3D Skill Policies for Generalizable Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.18733",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "liang2024lmpc",
+		"name": "LMPC",
+		"title": "Learning to Learn Faster from Human Feedback with Language Model Predictive Control",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.11450",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260926499",
+		"name": "Local Coding Agent",
+		"title": "Generalizing Manipulation Skills with a Local Coding Agent",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.26499v1",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhang2026localrecovery",
+		"name": "Local Recovery",
+		"title": "Recursive Self-Improvement of Visuomotor Policies through Local Recovery Supervision",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.05151",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "audit260627871",
+		"name": "LocalNav",
+		"title": "LocalNav: Distilling Frontier VLMs and Embodied RL for On-Device Object Goal Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2606.27871v1",
+		"cells": [
+			"O2/A2",
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit231012020",
+		"name": "LoHoRavens",
+		"title": "LoHoRavens: A Long-Horizon Language-Conditioned Benchmark for Robotic Tabletop Manipulation",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2310.12020",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "lotabench2024",
+		"name": "LoTa-Bench",
+		"title": "LoTa-Bench: Benchmarking Language-oriented Task Planners for Embodied Agents",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.08178",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "self240618746",
+		"name": "LRLL",
+		"title": "Lifelong Robot Library Learning: Bootstrapping Composable and Generalizable Skills for Embodied Control with Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2406.18746",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "sref260411975",
+		"name": "M2HRI",
+		"title": "M2HRI: An LLM-Driven Multimodal Multi-Agent Framework for Personalized Human-Robot Interaction",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2604.11975",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260828300",
+		"name": "MaCoPlanner",
+		"title": "MaCoPlanner: LLM-Assisted Manual-Compiled Task Planning with Proactive Safety Verification for Robotic Industrial Panel Operation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.28300v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "shi2025maestro",
+		"name": "MAESTRO",
+		"title": "Maestro: Orchestrating Robotics Modules with Vision-Language Models for Zero-Shot Generalist Robots",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2511.00917",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xref241117636",
+		"name": "MALMM",
+		"title": "MALMM: Multi-Agent Large Language Models for Zero-Shot Robotics Manipulation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2411.17636",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit251011660",
+		"name": "ManiAgent",
+		"title": "ManiAgent: An Agentic Framework for General Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/html/2510.11660",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "li2024manipllm",
+		"name": "ManipLLM",
+		"title": "ManipLLM: Embodied Multimodal Large Language Model for Object-Centric Robotic Manipulation",
+		"year": 2024,
+		"url": "https://openaccess.thecvf.com/content/CVPR2024/html/Li_ManipLLM_Embodied_Multimodal_Large_Language_Model_for_Object-Centric_Robotic_Manipulation_CVPR_2024_paper.html",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xref240618915",
+		"name": "Manipulate-Anything",
+		"title": "Manipulate-Anything: Automating Real-World Robots using Vision-Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2406.18915",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "yu2026maniskillformer",
+		"name": "ManiSkillFormer",
+		"title": "ManiSkillFormer: Demonstration-Free Compositional Manipulation via Geometric Contracts and Agentic Skill Graph",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.16331",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260911561",
+		"name": "MaP-WAM",
+		"title": "Memory as Plans: World-Action Modeling with Memory-Grounded Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.11561",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref240107314",
+		"name": "MapGPT",
+		"title": "MapGPT: Map-Guided Prompting with Adaptive Path Planning for Vision-and-Language Navigation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2401.07314",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "xref240510620",
+		"name": "MC-GPT",
+		"title": "MC-GPT: Empowering Vision-and-Language Navigation with Memory Map and Reasoning Chains",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2405.10620",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "si260924271",
+		"name": "ME-Brain",
+		"title": "ME-Brain-1.0: Memory, Cognition and Action for Evolving Embodied Intelligence",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.24271",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "audit260120577",
+		"name": "MeCo",
+		"title": "MeCo: Enhancing LLM-Empowered Multi-Robot Collaboration via Similar Task Memoization",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.20577",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "torne2026mem",
+		"name": "MEM",
+		"title": "MEM: Multi-Scale Embodied Memory for Vision Language Action Models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.03596",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "chen2026rmbench",
+		"name": "Mem-0",
+		"title": "RMBench: Memory-Dependent Robotic Manipulation Benchmark with Insights into Policy Design",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.01229",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "sridhar2026memer",
+		"name": "MemER",
+		"title": "MemER: Scaling Up Memory for Robot Control via Experience Retrieval",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2510.20328",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "yu2026memora",
+		"name": "MEMORA",
+		"title": "MEMORA: Embodied Action Memory from Egocentric Videos for Reasoning and Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.14252",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "gonzalezsantamarta2023merlin2",
+		"name": "MERLIN2",
+		"title": "Integration of Large Language Models within Cognitive Architectures for Autonomous Robots",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.14945",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit260402318",
+		"name": "MetaNav",
+		"title": "Stop Wandering: Efficient Vision-Language Navigation via Metacognitive Reasoning",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2604.02318v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260913335",
+		"name": "MetaToolROS",
+		"title": "Bridging Thought and Action: Taming Long-Horizon Instability in Open-Source LLM Agents with a MetaTool-Enhanced ROS Framework",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.13335v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "anthropic2026mhs",
+		"name": "MHS",
+		"title": "Previewing the Model Hardware Standard",
+		"year": 2026,
+		"url": "https://www.anthropic.com/news/model-hardware-standard-research-preview",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "grid30",
+		"name": "MIP",
+		"title": "Embodied Agents Take Control: Minimal-Interface Zero-Shot Agents Rival Industrial-Scale Policies in Vision-and-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.26148",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260722014",
+		"name": "MissionBench",
+		"title": "Zero-Shot Mission-Level Evaluation for Aerial MLLM Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.22014v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit261003476",
+		"name": "MobiAgent",
+		"title": "MobiAgent: Dual-Loop Recursive Policy Self-Improvement for Long-Horizon Mobile Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.03476",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "liu2024moka",
+		"name": "MOKA",
+		"title": "MOKA: Open-World Robotic Manipulation through Mark-Based Visual Prompting",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2403.03174",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "grid38",
+		"name": "MoMa-LLM",
+		"title": "Language-Grounded Dynamic Scene Graphs for Interactive Object Search with Mobile Manipulation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2403.08605",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit240218796",
+		"name": "MOSAIC",
+		"title": "MOSAIC: A Modular System for Assistive and Interactive Cooking",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2402.18796v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "motormind2026",
+		"name": "MotorMind",
+		"title": "MotorMind: Scaffolding General Vision Language Models for Zero-Shot Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.38078",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref250924160",
+		"name": "MTP",
+		"title": "Memory Transfer Planning: LLM-driven Context-Aware Code Adaptation for Robot Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2509.24160",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "duan2024multimodaldrivingtokens",
+		"name": "Multimodal Driving Tokens",
+		"title": "Prompting Multi-Modal Tokens to Enhance End-to-End Autonomous Driving Imitation Learning with LLMs",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.04869",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xref230516986",
+		"name": "NavGPT",
+		"title": "NavGPT: Explicit Reasoning in Vision-and-Language Navigation with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2305.16986",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "zhou2026navgpt3",
+		"name": "NavGPT-3",
+		"title": "NavGPT-3: Harnessing Context in a Hierarchical Navigation Runtime",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.10787",
+		"cells": [
+			"O1/A1C",
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260939915",
+		"name": "NavHarness",
+		"title": "NavHarness: Adaptive Goals for Agentic Vision-Language Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.39915v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260920388",
+		"name": "Navi-Agent",
+		"title": "Navi-Agent: Unlocalized Monocular Navigation Agent",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.20388v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "cheng2024navila",
+		"name": "NaVILA",
+		"title": "NaVILA: Legged Robot Vision-Language-Action Model for Navigation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2412.04453",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260830396",
+		"name": "NavMCP",
+		"title": "Scaffolding Foundation Models into Physical-World Agents Pushes the Frontier of Long-Horizon Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2608.30396v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit260927526",
+		"name": "NavProbe",
+		"title": "NavProbe: Evidence-Grounded Reasoning with Active Memory Retrieval for Zero-Shot Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.27526v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "ahn2025nesyro",
+		"name": "NeSyRo",
+		"title": "Towards Reliable Code-as-Policies: A Neuro-Symbolic Framework for Embodied Task Planning",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2510.21302",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "chen2022nlmap",
+		"name": "NLMap–SayCan",
+		"title": "Open-vocabulary Queryable Scene Representations for Real World Planning",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2209.09874",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "xref260220119",
+		"name": "NovaPlan",
+		"title": "NovaPlan: Zero-Shot Long-Horizon Manipulation via Closed-Loop Video Language Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.20119",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "wang2025odyssey",
+		"name": "ODYSSEY",
+		"title": "ODYSSEY: Open-World Quadrupeds Exploration and Manipulation for Long-Horizon Tasks",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2508.08240",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "he2025omnih2o",
+		"name": "OmniH2O",
+		"title": "OmniH2O: Universal and Dexterous Human-to-Humanoid Whole-Body Teleoperation and Learning",
+		"year": 2025,
+		"url": "https://proceedings.mlr.press/v270/he25b.html",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "omnimanip2025",
+		"name": "OmniManip",
+		"title": "OmniManip: Towards General Robotic Manipulation via Object-Centric Interaction Primitives as Spatial Constraints",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.03841",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "omnisim2026",
+		"name": "OmniSim",
+		"title": "OmniSim",
+		"year": null,
+		"url": "https://github.com/omnilink-tech/omnisim",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit260310682",
+		"name": "OnFly",
+		"title": "OnFly: Onboard Zero-Shot Aerial Vision-Language Navigation toward Safety and Efficiency",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.10682v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xie2026opengeminiharness",
+		"name": "Open Gemini Harness",
+		"title": "Open Gemini 4 Argon Robot Harness — A Zero-Shot Bimanual Handover Case Study",
+		"year": 2026,
+		"url": "https://ehehee.github.io/blog/open-gemini-harness/",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "xref240918794",
+		"name": "Open-Nav",
+		"title": "Open-Nav: Exploring Zero-Shot Vision-and-Language Navigation in Continuous Environment with Open-Source LLMs",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.18794",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "openeta",
+		"name": "OpenETA",
+		"title": "ETA: A New Agentic Paradigm for Embodied Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.03924",
+		"cells": [
+			"O2/A1C",
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit261002459",
+		"name": "OpenRUA",
+		"title": "OpenRUA: Robot-Use Agents Are Zero-Shot Visuomotor Policies",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.02459v1",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "audit240106949",
+		"name": "ORGANA",
+		"title": "ORGANA: A Robotic Assistant for Automated Chemistry Experimentation and Characterization",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2401.06949",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "ouyang2024ouyangetal",
+		"name": "Ouyang et al.",
+		"title": "Long-horizon Locomotion and Manipulation on a Quadrupedal Robot with Large Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.05291",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit230303378",
+		"name": "PaLM-E",
+		"title": "PaLM-E: An Embodied Multimodal Language Model",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2303.03378v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "partnr",
+		"name": "PARTNR",
+		"title": "PARTNR: A Benchmark for Planning and Reasoning in Embodied Multi-agent Tasks",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2411.00081",
+		"cells": [
+			"O3/A1C",
+			"O3/A1M"
+		]
+	},
+	{
+		"id": "audit260600104",
+		"name": "PEACE",
+		"title": "PEACE: A Planner-Executor Agent with Constraint Enforcement for UAVs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.00104v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit230902561",
+		"name": "PG-VLM",
+		"title": "Physically Grounded Vision-Language Models for Robotic Manipulation",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.02561",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xia2025phoenix",
+		"name": "Phoenix",
+		"title": "Phoenix: A Motion-based Self-Reflection Framework for Fine-grained Robotic Action Correction",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2504.14588",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "tian2026physevo",
+		"name": "PhysEvo",
+		"title": "PhysEvo: Astra Can Act, Let It",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.08995",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260822657",
+		"name": "Physical Agentic AI",
+		"title": "Physical Agentic AI: An Architecture for Orchestrating a Robot Crew with LLMs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.22657v1",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "physicalcoding2026",
+		"name": "Physical Coding",
+		"title": "Self-Evolving Coding Agents: From Digital Programs to Physical-World Intelligence",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.35432",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "lykov2025physicalagent",
+		"name": "PhysicalAgent",
+		"title": "PhysicalAgent: Towards General Cognitive Robotics with Foundation World Models",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2509.13903",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "yu2026physladder",
+		"name": "PhysLadder",
+		"title": "How High Can GPT-6 Astra Climb in Contact-Rich Manipulation? PhysLadder: A Hierarchical, Matched Sim-Real Benchmark for Physical Interaction",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.34527",
+		"cells": [
+			"O1/A1C",
+			"O1/A2"
+		]
+	},
+	{
+		"id": "pigey",
+		"name": "Pigey",
+		"title": "Addressing the Orchestration Gap in Generalist Robots via Physical Agency",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.21725",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "nasiriany2024pivot",
+		"name": "PIVOT",
+		"title": "PIVOT: Iterative Visual Prompting Elicits Actionable Knowledge for VLMs",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.07872",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "sref260201662",
+		"name": "PLanAR",
+		"title": "PLanAR: Planning-Language-Grounded Agentic Reasoning for Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.01662",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "yin2026playworld",
+		"name": "PlayWorld",
+		"title": "PlayWorld: Learning Robot World Models from Autonomous Play",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.09030",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "qu2025pragmabot",
+		"name": "PragmaBot",
+		"title": "A Pragmatist Robot: Learning to Plan Tasks by Experiencing the Real World",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2507.16713",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260817129",
+		"name": "PROBE",
+		"title": "PROBE: Manipulation-Grounded Visual Question Answering with VLM Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2608.17129v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit240605572",
+		"name": "PRoC3S",
+		"title": "Trust the PRoC3S: Solving Long-Horizon Robotics Problems with LLMs and Constraint Satisfaction",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2406.05572v1",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "grid65",
+		"name": "ProgPrompt",
+		"title": "ProgPrompt: Generating Situated Robot Task Plans using Large Language Models",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2209.11302",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit230909969",
+		"name": "Prompt2Walk",
+		"title": "Prompt a Robot to Walk with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.09969",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "li2025propriomllm",
+		"name": "Proprio-MLLM",
+		"title": "Towards Proprioception-Aware Embodied Planning for Dual-Arm Humanoid Robots",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2510.07882",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "petkov2026ladder",
+		"name": "PSP-Agent",
+		"title": "LADDER: A Long-Horizon Robot Manipulation Benchmark",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.18053",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "si2026fewer",
+		"name": "PyRUA-Lean",
+		"title": "Fewer Tokens, Better Action: GPT-6 Astra Robot Agents with 14% Higher Success Rate but 65% Fewer Tokens",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.01939",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid79",
+		"name": "quackd",
+		"title": "quackd",
+		"year": null,
+		"url": "https://github.com/rokbenko/quackd",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260618112",
+		"name": "Qwen-RobotNav",
+		"title": "Qwen-RobotNav Technical Report: A Scalable Navigation Model Designed for an Agentic Navigation System",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2606.18112v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "racap2026",
+		"name": "RACaP",
+		"title": "RACaP: Agentic Reasoning, Acting, and Coding as Policies for Evolvable Robot Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.29394",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xref260305621",
+		"name": "RACAS",
+		"title": "RACAS: Controlling Diverse Robots With a Single Agentic System",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.05621",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "rai",
+		"name": "RAI",
+		"title": "RAI: Flexible Agent Framework for Embodied AI",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.07532",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "rapid2026",
+		"name": "RAPID",
+		"title": "RAPID: Robot Agentic Programming from Demonstrations",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.30249",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "rats2026",
+		"name": "RATs",
+		"title": "Playful Agentic Robot Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.19419",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "huang2026rax",
+		"name": "RAX",
+		"title": "Scaling Online Exploration for Robot Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.22496",
+		"cells": [
+			"O1/A3",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhang2026re0",
+		"name": "RE-0",
+		"title": "RE-0: Verified Recursive Improvement of Embodied Code-as-Policy Agents through Local On-Policy Distillation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.32416",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhou2026rea",
+		"name": "REA",
+		"title": "REA: A Routed Embodied Agent Runtime for Asynchronous Brain-Cerebellum Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.42053",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260910895",
+		"name": "ReactHuman",
+		"title": "ReactHuman: A Physics-Grounded Benchmark for Human-Like Reactive Decision-Making in Embodied Multimodal LLMs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.10895",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "zhang2025read",
+		"name": "ReAd",
+		"title": "Towards Efficient LLM Grounding for Embodied Multi-Agent Collaboration",
+		"year": 2025,
+		"url": "https://aclanthology.org/2025.findings-acl.84/",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "real2026",
+		"name": "REAL",
+		"title": "Exploratory, Communicative, and Deployable: Vision-Driven Embodied Agents for Open-World Mobile Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.13653",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "real2gym2026",
+		"name": "Real2Gym",
+		"title": "Real2Gym: Building Gyms from Videos, Bringing Skills to Robots",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.37089",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "activeperceptionreal2sim2026",
+		"name": "Real2Sim Active Perception",
+		"title": "Real2Sim via Active Perception with Behavior Trees Automatically Generated by VLMs",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2601.08454",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "recova2026",
+		"name": "Recova",
+		"title": "Recova: Agent-Guided Failure Recovery for Autonomous Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.01178",
+		"cells": [
+			"O1/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid47",
+		"name": "REFLECT",
+		"title": "REFLECT: Summarizing Robot Experiences for Failure Explanation and Correction",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2306.15724",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit250216707",
+		"name": "Reflective Planning",
+		"title": "Reflective Planning: Vision-Language Models for Multi-Stage Long-Horizon Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/html/2502.16707v1",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "si260927612",
+		"name": "RegenHarness",
+		"title": "RegenHarness: A Robot Agent Harness with Evidence-Gated Recursive Self-Improvement",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.27612",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "rekep2024",
+		"name": "ReKep",
+		"title": "ReKep: Spatio-Temporal Reasoning of Relational Keypoint Constraints for Robotic Manipulation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.01652",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "xref240913682",
+		"name": "ReMEmbR",
+		"title": "ReMEmbR: Building and Reasoning Over Long-Horizon Spatio-Temporal Memory for Robot Navigation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.13682",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref240104157",
+		"name": "RePLan",
+		"title": "RePLan: Robotic Replanning with Perception and Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2401.04157",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xref240721762",
+		"name": "ReplanVLM",
+		"title": "ReplanVLM: Replanning Robotic Tasks with Visual Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2407.21762",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhang2025responsiblerobotbench",
+		"name": "ResponsibleRobotBench",
+		"title": "ResponsibleRobotBench: Benchmarking Responsible Robot Manipulation using Multi-modal Large Language Models",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2512.04308",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref261015814",
+		"name": "ReTrace",
+		"title": "ReTrace: Cross-Stage Failure Attribution for Self-Improving Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.15814",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "zhao2026retriever",
+		"name": "Retriever",
+		"title": "Retriever: Composing the Perception-Reasoning-Action Loop for Long-Horizon Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.17213",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zhu2024rfst",
+		"name": "RFST",
+		"title": "Language-Conditioned Robotic Manipulation with Fast and Slow Thinking",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2401.04181",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "rho2026",
+		"name": "RHO",
+		"title": "RHO: Your Coding Agent is Secretly a Roboticist",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.16458",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid59",
+		"name": "RobiButler",
+		"title": "Robi Butler: Multimodal Remote Interaction with a Household Robot Assistant",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.20548",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "fang2025robix",
+		"name": "Robix",
+		"title": "Robix: A Unified Model for Robot Interaction, Reasoning and Planning",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2509.01106",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "zhang2026robocop",
+		"name": "Robo-COP",
+		"title": "Co-Evolving Robot Orchestrators and Policies through Deployment",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.09228",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid83",
+		"name": "robo-harness",
+		"title": "robo-harness",
+		"year": null,
+		"url": "https://github.com/grmkris/robo-harness",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "li2026roboharnessk1",
+		"name": "Robo-Harness K1",
+		"title": "Robo-Harness K1: Harnessing Robot-Use Agents via Perception Augmentation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.29389",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "sref260407774",
+		"name": "RoboAgent",
+		"title": "RoboAgent: Chaining Basic Capabilities for Embodied Task Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2604.07774",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "wei2026roboatom",
+		"name": "RoboAtom",
+		"title": "RoboAtom: Large-scale Atomic-Action Supervision for Robot Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.40207",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "robocerebra2025",
+		"name": "RoboCerebra",
+		"title": "RoboCerebra: A Large-scale Benchmark for Long-horizon Robotic Manipulation Evaluation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.06677",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "zhang2025robochemist",
+		"name": "RoboChemist",
+		"title": "RoboChemist: Long-Horizon and Safety-Compliant Robotic Chemical Experimentation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2509.08820",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "roboclaw",
+		"name": "RoboClaw",
+		"title": "RoboClaw: An Agentic Framework for Scalable Long-Horizon Robotic Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.11558",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "liu2026robocoach",
+		"name": "RoboCoach (Liu)",
+		"title": "RoboCoach: World Models as Active Coaches for Compositional Robot Skills",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.39685",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "mu2024robocodex",
+		"name": "RoboCodeX",
+		"title": "RoboCodeX: Multimodal Code Generation for Robotic Behavior Synthesis",
+		"year": 2024,
+		"url": "https://proceedings.mlr.press/v235/mu24a.html",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260922966",
+		"name": "RoboDawn",
+		"title": "Transferring the Intelligence of VLMs to Robotic Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.22966v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "liu2025robodexvlm",
+		"name": "RoboDexVLM",
+		"title": "RoboDexVLM: Visual Language Model-Enabled Task Planning and Motion Control for Dexterous Robot Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.01616",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "yu2026robodoctor",
+		"name": "RoboDoctor",
+		"title": "RoboDoctor: Training-Free Recursive Self-Improvement for Robot Policies",
+		"year": 2026,
+		"url": "https://robodoctor-rsi.github.io/",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "ye2025robofac",
+		"name": "RoboFAC",
+		"title": "RoboFAC: A Comprehensive Framework for Robotic Failure Analysis and Correction",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.12224",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "liang2026robofoundry",
+		"name": "RoboFoundry",
+		"title": "RoboFoundry: System-as-Policy Evolution for Self-Learning Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.32862",
+		"cells": [
+			"O1/A3",
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "chen2023robogpt",
+		"name": "RoboGPT",
+		"title": "RoboGPT: an intelligent agent of making embodied long-term decisions for daily instruction tasks",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.15649",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "ravichandran2025roboguard",
+		"name": "RoboGuard",
+		"title": "Safety Guardrails for LLM-Enabled Robots",
+		"year": 2025,
+		"url": "https://arxiv.org/html/2503.07885",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "roboharnevo2026",
+		"name": "RoboHarn-Evo",
+		"title": "RoboHarn-Evo: Evolving Hierarchical Physical Knowledge for Self-Improving Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.37583",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "bincequ2026roboharness",
+		"name": "RoboHarness (BinceQu)",
+		"title": "RoboHarness: A Simple Harness Outperforms VLA and World Action Models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.14018",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "grid27",
+		"name": "RoboHarness (Huang)",
+		"title": "RoboHarness: Memory-Driven Orchestration of Heterogeneous Robot Policies for Long-Horizon Planning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.18060",
+		"cells": [
+			"O2/A2",
+			"O3/A2"
+		]
+	},
+	{
+		"id": "roboicl2026",
+		"name": "RoboICL",
+		"title": "RoboICL: Embodied In-Context Learning with GPT-6 Astra",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.34261",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "robojev2026",
+		"name": "RoboJEV",
+		"title": "RoboJEV",
+		"year": 2026,
+		"url": "https://github.com/lykycy123/RoboJEV",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "audit260510921",
+		"name": "RoboMemArena",
+		"title": "RoboMemArena: A Comprehensive and Challenging Robotic Memory Benchmark",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2605.10921",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref250801415",
+		"name": "RoboMemory",
+		"title": "RoboMemory: A Brain-inspired Multi-memory Agentic Framework for Interactive Environmental Learning in Physical Embodied Systems",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2508.01415",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit250503673",
+		"name": "RoboOS",
+		"title": "RoboOS: A Hierarchical Embodied Framework for Cross-Embodiment and Multi-Agent Collaboration",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.03673",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "yuan2025robopoint",
+		"name": "RoboPoint",
+		"title": "RoboPoint: A Vision-Language Model for Spatial Affordance Prediction in Robotics",
+		"year": 2025,
+		"url": "https://proceedings.mlr.press/v270/yuan25c.html",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xref250104268",
+		"name": "RoboPro",
+		"title": "Robotic Programmer: Video Instructed Policy Code Generation for Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.04268",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "roboprobe2026",
+		"name": "RoboProbe",
+		"title": "An Unexpected Robot Policy: Early Evaluations of GPT-6 Astra on RoboDojo and Beyond",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.24170",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit261010388",
+		"name": "RoboQuest",
+		"title": "RoboQuest: Generalist Physical Agents that Search, Inspect and Test",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2610.10388v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "xref250109307",
+		"name": "RoboReflect",
+		"title": "RoboReflect: A Robotic Reflective Reasoning Framework for Grasping Ambiguous-Condition Objects",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2501.09307",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "sref251221220",
+		"name": "RoboSafe",
+		"title": "RoboSafe: Safeguarding Embodied Agents via Executable Safety Logic",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2512.21220",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "grid58",
+		"name": "RoboScript",
+		"title": "RoboScript: Code Generation for Free-Form Manipulation Tasks across Real and Simulation",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2402.14623",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "chen2026robosimstudio",
+		"name": "RoboSimStudio",
+		"title": "RoboSimStudio: An Interactive Toolkit for Human and Agent Rapid Real2Sim of Robot Manipulation Tasks",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.18835",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "roboskill2026",
+		"name": "RoboSkill",
+		"title": "Explore, Execute, Evolve: A Skill Acquisition and Reuse Loop for Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.37810",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "openrobokit2026roboskills",
+		"name": "RoboSkills",
+		"title": "RoboSkills: A minimal set of agent workflows and tools for robotics",
+		"year": 2026,
+		"url": "https://github.com/openrobokit/roboskills",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "song2025robospatial",
+		"name": "RoboSpatial",
+		"title": "RoboSpatial: Teaching Spatial Understanding to 2D and 3D Vision-Language Models for Robotics",
+		"year": 2025,
+		"url": "https://openaccess.thecvf.com/content/CVPR2025/html/Song_RoboSpatial_Teaching_Spatial_Understanding_to_2D_and_3D_Vision-Language_Models_CVPR_2025_paper.html",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "sref260312939",
+		"name": "RoboStream",
+		"title": "RoboStream: Weaving Spatio-Temporal Reasoning with Memory in Vision-Language Models for Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.12939",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "suresh2026needforspeed",
+		"name": "Robot Whips",
+		"title": "The need for speed",
+		"year": 2026,
+		"url": "https://krishnasuresh.org/blog/2026/robot-whips/",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "liu2026robotaembed",
+		"name": "Robota-Embed",
+		"title": "Robota-Embed: Unified VLA Embeddings for Robot In-Context Learning and Evolution",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.19495",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "mao2026robotagentbench",
+		"name": "RobotAgentBench",
+		"title": "RobotAgentBench: Towards Open-world Robot Autonomy",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.34649",
+		"cells": [
+			"O3/A1M",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit260923997",
+		"name": "RoboTalk",
+		"title": "RoboTalk: Learning Multi-Robot Communication and Coordination from Multimodal Demonstrations",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.23997v1",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "audit231013065",
+		"name": "RoboTool",
+		"title": "Creative Robot Tool Use with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/html/2310.13065v1",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "lin2025robotsmithgenerativerobotictool",
+		"name": "RobotSmith",
+		"title": "RobotSmith: Generative Robotic Tool Design for Acquisition of Complex Manipulation Skills",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.14763",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "mu2025robotwin",
+		"name": "RoboTwin",
+		"title": "RoboTwin: Dual-Arm Robot Benchmark with Generative Digital Twins",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2504.13059",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "yang2026robotworld",
+		"name": "RobotWorld",
+		"title": "RobotWorld: Benchmarking Multimodal Agents for Robot Use Across Diverse Tasks and Embodiments",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.10409",
+		"cells": [
+			"O1/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "boyle2025robotxr1",
+		"name": "RobotxR1",
+		"title": "RobotxR1: Enabling Embodied Robotic Intelligence on Large Language Models through Closed-Loop Reinforcement Learning",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.03238",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "li2026robouse",
+		"name": "RoboUse",
+		"title": "Robo Use: agent as a policy for embodied agents",
+		"year": 2026,
+		"url": "https://robouse.ai/",
+		"cells": [
+			"O1/A2",
+			"O1/A3",
+			"O3/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "xie2026robovista",
+		"name": "RoboVista",
+		"title": "RoboVista: Evaluating Vision Language Models for Diverse Robot Applications",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.04610",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid44",
+		"name": "RoBridge",
+		"title": "RoBridge: A Hierarchical Architecture Bridging Cognition and Execution for General Robotic Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2505.01709",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "roco",
+		"name": "RoCo",
+		"title": "RoCo: Dialectic Multi-Robot Collaboration with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.04738",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "grid42",
+		"name": "ROS-LLM",
+		"title": "ROS-LLM: A ROS framework for embodied AI with task feedback and structured reasoning",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2406.19741",
+		"cells": [
+			"O2/A1C",
+			"O2/A1M",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "rosapaper2024",
+		"name": "ROSA",
+		"title": "Enabling Novel Mission Operations and Interactions with ROSA: The Robot Operating System Agent",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.06472",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "cardenas2026rosclaw",
+		"name": "ROSClaw",
+		"title": "ROSClaw: An OpenClaw ROS 2 Framework for Agentic Robot Control and Interaction",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.26997",
+		"cells": [
+			"O1/A2",
+			"O2/A2"
+		]
+	},
+	{
+		"id": "harnessvla",
+		"name": "RPent",
+		"title": "Harness VLA: Steering Frozen VLAs into Reliable Manipulation Primitives via Memory-Guided Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.08448",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "rpg2026",
+		"name": "RPG",
+		"title": "Reconstruct, Practice, Go Real: Guided Self-Improvement for Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.02204",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "gu2023rttrajectory",
+		"name": "RT-Trajectory",
+		"title": "RT-Trajectory: Robotic Task Generalization via Hindsight Trajectory Sketches",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.01977",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "xu2026safeharness",
+		"name": "SafeHarness",
+		"title": "Coding Agents with Harness for Safe Robot Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.20822",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260908444",
+		"name": "SafeMem",
+		"title": "Safe Task Planning with Long-Term Graph Memory for Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.08444v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "xref250315707",
+		"name": "SAFER",
+		"title": "Safety Aware Task Planning via Large Language Models in Robotics",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.15707",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "audit230909919",
+		"name": "Safety Chip",
+		"title": "Plug in the Safety Chip: Enforcing Constraints for LLM-driven Robot Agents",
+		"year": 2023,
+		"url": "https://arxiv.org/html/2309.09919v1",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "wang2023safetyawaredriving",
+		"name": "Safety-Aware Driving",
+		"title": "Empowering Autonomous Driving with Large Language Models: A Safety Perspective",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2312.00812",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "sail2026",
+		"name": "SAIL",
+		"title": "SAIL: Test-Time Scaling for In-Context Imitation Learning with VLM",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.08269",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "saycan2022",
+		"name": "SayCan",
+		"title": "Do As I Can, Not As I Say: Grounding Language in Robotic Affordances",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2204.01691",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "xref230904077",
+		"name": "SayNav",
+		"title": "SayNav: Grounding Large Language Models for Dynamic Planning to Navigation in New Environments",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.04077",
+		"cells": [
+			"O2/A1M",
+			"O3/A1M"
+		]
+	},
+	{
+		"id": "sayplan2023",
+		"name": "SayPlan",
+		"title": "SayPlan: Grounding Large Language Models using 3D Scene Graphs for Scalable Robot Task Planning",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.06135",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "peng2026slowbrain",
+		"name": "SBFP",
+		"title": "Slow Brain, Fast Planner: Latency-Resilient VLM-Augmented Urban Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.20458",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "gupta2026scaleplan",
+		"name": "Scale-Plan",
+		"title": "Scale-Plan: Scalable Language-Enabled Task Planning for Heterogeneous Multi-Robot Teams",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.08814",
+		"cells": [
+			"O3/A2",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "grid64",
+		"name": "Scaling Up",
+		"title": "Scaling Up and Distilling Down: Language-Guided Robot Skill Acquisition",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.14535",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "sref260602951",
+		"name": "SCOPE",
+		"title": "SCOPE: Real-Time Natural Language Camera Agent at the Edge",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.02951",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "wei2026scoper",
+		"name": "SCOPER",
+		"title": "Towards a Systematic Study of Embodied System 2 over Full Task Execution Cycles",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.17657",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "se3labs2026agentic",
+		"name": "SE3 Labs",
+		"title": "Where Should a Robot's Intelligence Live? Code-as-Policy versus Agentic Control",
+		"year": 2026,
+		"url": "https://se3labs.ai/blog/agentic-vs-code-as-policy/",
+		"cells": [
+			"O1/A1C",
+			"O1/A3"
+		]
+	},
+	{
+		"id": "wang2026sear",
+		"name": "SEAR",
+		"title": "SEAR: Self-Evolving Agentic Robotics",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.18792",
+		"cells": [
+			"O2/A2",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "selp2024",
+		"name": "SELP",
+		"title": "SELP: Generating Safe and Efficient Task Plans for Robot Agents with Large Language Models",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.19471",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "rui2026semantichandoff",
+		"name": "Semantic Handoff",
+		"title": "Diagnosing Semantic Handoff Failures in Agent-Orchestrated Vision-Language-Action Skill Composition",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.06256",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "jiang2024senna",
+		"name": "Senna",
+		"title": "Senna: Bridging Large Vision-Language Models and End-to-End Autonomous Driving",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.22313",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "sensenova2026embodied",
+		"name": "SenseNova-RoboRSI",
+		"title": "Has GPT-6-Astra Achieved Embodied Intelligence?",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.22471",
+		"cells": [
+			"O1/A1C",
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "li2026sentinelvla",
+		"name": "Sentinel-VLA",
+		"title": "Sentinel-VLA: A Metacognitive VLA Model with Active Status Monitoring for Dynamic Reasoning and Error Recovery",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2605.01191",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "du2026sera",
+		"name": "SERA",
+		"title": "From VLM Planners to Robotic Agents: Self-Evolving Harnesses for History-Dependent Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.29560",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260302772",
+		"name": "SERP",
+		"title": "Agentic Self-Evolutionary Replanning for Embodied Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2603.02772v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid62",
+		"name": "SHAPER",
+		"title": "Self-Evolving Embodied Agents via Skill-Harness Evolution",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.11350",
+		"cells": [
+			"O1/A1C",
+			"O1/A1M",
+			"O1/A3"
+		]
+	},
+	{
+		"id": "showharness",
+		"name": "Show-Harness",
+		"title": "Show-Harness: Just a VLM Agent Can Play Robots",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.10522",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "si250606658",
+		"name": "SILVR",
+		"title": "Self-Improving Loops for Visual Robotic Planning",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.06658",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260204157",
+		"name": "Situated Conversation",
+		"title": "A Modern System Recipe for Situated Embodied Human-Robot Conversation with Real-Time Multimodal LLMs and Tool-Calling",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2602.04157v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "bai2026skillrsi",
+		"name": "Skill-RSI",
+		"title": "Compile Once, Run Cheap: Frozen, Portable Skills for Embodied Agents, and What Recursive Self-Improvement Adds",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.25114",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "skillclaw2026",
+		"name": "SkillClaw",
+		"title": "SkillClaw: Collectively Self-Improving Robot Agents",
+		"year": 2026,
+		"url": "https://github.com/lilyzhng/SkillClaw",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "grid39",
+		"name": "SMART-LLM",
+		"title": "SMART-LLM: Smart Multi-Agent Robot Task Planning using Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2309.10062",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "audit220400598",
+		"name": "Socratic Models",
+		"title": "Socratic Models: Composing Zero-Shot Multimodal Reasoning with Language",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2204.00598",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "shin2024socraticplanner",
+		"name": "Socratic Planner",
+		"title": "Socratic Planner: Self-QA-Based Zero-Shot Planning for Embodied Instruction Following",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2404.15190",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "audit250213143",
+		"name": "SoFar",
+		"title": "SoFar: Language-Grounded Orientation Bridges Spatial Reasoning and Object Manipulation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2502.13143v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "grid32",
+		"name": "SpaceVLN",
+		"title": "SpaceVLN: A Zero-Shot Vision-and-Language Navigation Agent with Online Spatial Cognitive Memory and Reasoning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.08992",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "memmel2026sphere",
+		"name": "Sphere Retargeting",
+		"title": "Human sphere-handling video to a Sharpa robot trajectory",
+		"year": 2026,
+		"url": "https://x.com/memmelma/status/2113601346280804846",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "grid37",
+		"name": "SPINE (2024)",
+		"title": "SPINE: Online Semantic Planning for Missions with Incomplete Natural Language Specifications in Unstructured Environments",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2410.03035",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "li2026spotter",
+		"name": "Spotter",
+		"title": "Spotter: Let the Embodied Model Lead, and the VLM Reflect for It",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.36808",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "yoneda2023statler",
+		"name": "Statler",
+		"title": "Statler: State-Maintaining Language Models for Embodied Reasoning",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2306.17840",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260213193",
+		"name": "Steerable Policies",
+		"title": "Steerable Vision-Language-Action Policies for Embodied Reasoning and Hierarchical Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.13193v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "step2026",
+		"name": "STeP",
+		"title": "STeP: Signal Temporal Logic for Precise Specifications for Action Generation with Vision Language Models",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2607.18580",
+		"cells": [
+			"O2/A1C",
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "strandsrobots2026",
+		"name": "Strands Robots",
+		"title": "Strands Robots",
+		"year": null,
+		"url": "https://github.com/strands-labs/robots",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "zhang2026supernav",
+		"name": "SuperNav",
+		"title": "SuperNav: An Agentic Navigation System for Any Task in Any Scene",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2610.12126",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "black2024susie",
+		"name": "SuSIE",
+		"title": "Zero-Shot Robotic Manipulation with Pretrained Image-Editing Diffusion Models",
+		"year": 2024,
+		"url": "https://openreview.net/forum?id=c0chJTSbci",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "grid33",
+		"name": "SysNav",
+		"title": "SysNav: Multi-Level Systematic Cooperation Enables Real-World, Cross-Embodiment Object Navigation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.06914",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "yang2026tactalent",
+		"name": "TacTalent",
+		"title": "GPT-6 Astra Is a Native Visuo-Tactile Policy for Contact-Rich Manipulation",
+		"year": 2026,
+		"url": "https://tactalent.github.io/",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "wang2026tactileeta",
+		"name": "Tactile-ETA",
+		"title": "Embodied Task Agents Can Perform Fine Manipulation through Tactile In-Context Learning",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.27613",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "tanaka2026taczero",
+		"name": "TacZero",
+		"title": "TacZero: Training-Free Peg Insertion Using a General-Purpose Vision-Language Model with Tactile Feedback",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.07621",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "tencentroboticsxte2025tairos",
+		"name": "TAIROS",
+		"title": "TAIROS: An Embodied AI Platform for Robotics Applications",
+		"year": 2025,
+		"url": "https://cdn.tairos.tencent-cloud.com/downloads/tools/pdf/tairos.pdf",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "tanahashi2023tanahashietal",
+		"name": "Tanahashi et al.",
+		"title": "Evaluation of Large Language Models for Decision Making in Autonomous Driving",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2312.06351",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xu2026tarsphere",
+		"name": "TARSphere",
+		"title": "TARSphere: A Robot-Oriented Full-Stack Framework for Long-Horizon Embodied Agents in Evolving Physical and Social Environments",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.30043",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid67",
+		"name": "Text2Motion",
+		"title": "Text2Motion: From Natural Language Instructions to Feasible Plans",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2303.12153",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "thea2026",
+		"name": "THEA",
+		"title": "Towards the Harness of Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.11246",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "grid68",
+		"name": "TidyBot",
+		"title": "TidyBot: Personalized Robot Assistance with Large Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2305.05658",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "xref240308833",
+		"name": "TINA",
+		"title": "TINA: Think, Interaction, and Action Framework for Zero-Shot Vision Language Navigation",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2403.08833",
+		"cells": [
+			"O3/A1C"
+		]
+	},
+	{
+		"id": "sun2025trinityhumanoid",
+		"name": "Trinity Humanoid",
+		"title": "Trinity: A Modular Humanoid Robot AI System",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.08338",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "chen2026typego",
+		"name": "TypeGo",
+		"title": "TypeGo: An OS Runtime for Embodied Agents",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.05482",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "si260302623",
+		"name": "Uni-Skill",
+		"title": "Uni-Skill: Building Self-Evolving Skill Repository for Generalizable Robotic Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2603.02623",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "yang2024unisim",
+		"name": "UniSim",
+		"title": "Learning Interactive Real-World Simulators",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2310.06114",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "yuan2026ups",
+		"name": "UPS",
+		"title": "When to Act, Ask, or Learn: Uncertainty-Aware Policy Steering",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2602.22474",
+		"cells": [
+			"O2/A1M"
+		]
+	},
+	{
+		"id": "ge2026urai",
+		"name": "URAI",
+		"title": "Make Code as Policy Great Again: Frontier Agents Write, Call, and Evolve Robot Tools",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.39018",
+		"cells": [
+			"O2/A1C",
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260919554",
+		"name": "VABench",
+		"title": "VABench: Measuring Embodied Spatial Intelligence through Visual Demonstrations, Active Perception, and Metric Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.19554v1",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "zhang2026veritas",
+		"name": "VERITAS",
+		"title": "Visual Verification Enables Inference-time Steering and Autonomous Policy Improvement",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.18247",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "via",
+		"name": "VIA",
+		"title": "VIA: Visual Interface Agent for Robot Control",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.11119",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid60",
+		"name": "ViLa",
+		"title": "Look Before You Leap: Unveiling the Power of GPT-4V in Robotic Vision-Language Planning",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.17842",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "shirai2023vilain",
+		"name": "ViLaIn",
+		"title": "Vision-Language Interpreter for Robot Task Planning",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2311.00967",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "sref260612299",
+		"name": "VLA Steering",
+		"title": "Learning What to Say to Your VLA: Mostly Harmless Vision Language Action Model Steering",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.12299",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit250617561",
+		"name": "VLA-OS",
+		"title": "VLA-OS: Structuring and Dissecting Planning Representations and Paradigms in Vision-Language-Action Models",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2506.17561",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "vlabench2024",
+		"name": "VLABench",
+		"title": "VLABench: A Large-Scale Benchmark for Language-Conditioned Robotics Manipulation with Long-Horizon Reasoning Tasks",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2412.18194",
+		"cells": [
+			"O3/A2"
+		]
+	},
+	{
+		"id": "vlaastools2026",
+		"name": "VLAs-as-Tools",
+		"title": "Towards Long-horizon Embodied Agents with Tool-Aligned Vision-Language-Action Models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2605.13119",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "xref260816978",
+		"name": "VLCP",
+		"title": "VLCP: Vision Language Control Policy Closed-Loop Code Replanning for Robot Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.16978",
+		"cells": [
+			"O3/A3"
+		]
+	},
+	{
+		"id": "xref240903966",
+		"name": "VLM-FR",
+		"title": "Automating Robot Failure Recovery Using Vision-Language Models With Optimized Prompts",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2409.03966",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "long2024vlmmpc",
+		"name": "VLM-MPC",
+		"title": "VLM-MPC: Vision Language Foundation Model (VLM)-Guided Model Predictive Controller (MPC) for Autonomous Driving",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2408.04821",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit221005714",
+		"name": "VLMaps",
+		"title": "Visual Language Maps for Robot Navigation",
+		"year": 2022,
+		"url": "https://arxiv.org/abs/2210.05714",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit241105755",
+		"name": "VLMnav",
+		"title": "End-to-End Navigation with Vision Language Models: Transforming Spatial Reasoning into Question-Answering",
+		"year": 2024,
+		"url": "https://arxiv.org/html/2411.05755",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "grid23",
+		"name": "VoLo",
+		"title": "VoLo: A Physical Orchestrator for Open-Vocabulary Long-Horizon Manipulation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2606.07723",
+		"cells": [
+			"O1/A2"
+		]
+	},
+	{
+		"id": "voxposer2023",
+		"name": "VoxPoser",
+		"title": "VoxPoser: Composable 3D Value Maps for Robotic Manipulation with Language Models",
+		"year": 2023,
+		"url": "https://arxiv.org/abs/2307.05973",
+		"cells": [
+			"O2/A3",
+			"O3/A3"
+		]
+	},
+	{
+		"id": "waa",
+		"name": "WAA",
+		"title": "World Action Agent: Harnessing VLMs for Robot Manipulation via World Action Rehearsal",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.29964",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "waddle2026introducing",
+		"name": "Waddle",
+		"title": "Introducing Waddle: Agents that Control Robots",
+		"year": 2026,
+		"url": "https://waddlelabs.ai/research/introducing-waddle",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260722999",
+		"name": "WCM",
+		"title": "WCM: World-Cognition Model for Generalizable Human-Robot Interaction",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2607.22999v1",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "oikawa2026wetrobo",
+		"name": "WetRobo",
+		"title": "WetRobo: A Reproducible Robot Kit for Coding Agents in Biological Laboratories",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.18435",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "xref250302247",
+		"name": "WMNav",
+		"title": "WMNav: Integrating Vision-Language Models into World Models for Object Goal Navigation",
+		"year": 2025,
+		"url": "https://arxiv.org/abs/2503.02247",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "grid52",
+		"name": "Wonderful Team",
+		"title": "Wonderful Team: Zero-Shot Physical Task Planning with Visual LLMs",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2407.19094",
+		"cells": [
+			"O1/A1C"
+		]
+	},
+	{
+		"id": "audit260727599",
+		"name": "World Action Planner",
+		"title": "World Action Planner: Generalizable Decision-Making with Action-Conditioned World Models",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2607.27599v1",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit260923841",
+		"name": "WORLDS",
+		"title": "Structured World-State Reasoning for Agentic Robotic Search",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2609.23841v1",
+		"cells": [
+			"O2/A1C"
+		]
+	},
+	{
+		"id": "audit260931770",
+		"name": "XLeRobot-Astra",
+		"title": "Robot Manipulation with GPT-6-Astra: Body Knowledge, Experience Reuse, Emergent Skills, and Sim2Real Transfer",
+		"year": 2026,
+		"url": "https://arxiv.org/html/2609.31770v1",
+		"cells": [
+			"O1/A3"
+		]
+	},
+	{
+		"id": "shi2024yell",
+		"name": "YAY Robot",
+		"title": "Yell At Your Robot: Improving On-the-Fly from Language Corrections",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2403.12910",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "pikus2026pretrainingknowswhatsimulation",
+		"name": "ZAP",
+		"title": "Pretraining Knows What, Simulation Teaches How: Compositional Generalization in a Sim-Trained Robot Agent",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2610.35817",
+		"cells": [
+			"O2/A2"
+		]
+	},
+	{
+		"id": "dong2024zeroshotdriving",
+		"name": "Zero-Shot Driving",
+		"title": "Generalizing End-To-End Autonomous Driving In Real-World Environments Using Zero-Shot LLMs",
+		"year": 2024,
+		"url": "https://arxiv.org/abs/2411.14256",
+		"cells": [
+			"O1/A1M"
+		]
+	},
+	{
+		"id": "audit231011604",
+		"name": "Zero-Shot Trajectories",
+		"title": "Language Models as Zero-Shot Trajectory Generators",
+		"year": 2023,
+		"url": "https://arxiv.org/html/2310.11604",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "zetta2026",
+		"name": "Zetta",
+		"title": "Zetta ζ: An Efficient Closed-Loop Embodied Harness for Self-Evolving Physical Intelligence",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.16590",
+		"cells": [
+			"O2/A3"
+		]
+	},
+	{
+		"id": "audit260816885",
+		"name": "τ0-VLA",
+		"title": "$\\tau_0$-VLA: a Hierarchical Robot Foundation Model with World-Model-Guided Test-Time Computation",
+		"year": 2026,
+		"url": "https://arxiv.org/abs/2608.16885",
+		"cells": [
+			"O1/A1M"
+		]
+	}
+]
