@@ -262,24 +262,18 @@ export const papersFor = (robot: { id: string; axes: Axes }, c: Cell): Paper[] =
 			(!p.robots || p.robots.some((r) => robot.id.startsWith(r))),
 	);
 
-/** The work picker's entries: none, the ported settings of the cell, then the survey's other works there (not runnable as such). */
-export type Pick = { id: string; text: string; paper?: Paper; work?: Work; ported: boolean };
-export function pickEntries(papers: Paper[], works: Work[], none: string): Pick[] {
-	const ported = new Set(papers.map((p) => p.work));
+/**
+ * The work picker's entries: none, then the ported settings of the cell. The survey's other works filed
+ * there (worksIn) are not offered until they are ported; the grid counts them.
+ */
+export type Pick = { id: string; text: string; paper?: Paper };
+export function pickEntries(papers: Paper[], none: string): Pick[] {
 	return [
-		{ id: "none", text: none, ported: true },
-		...papers.map((p) => ({ id: p.id, text: `${p.id}: ${p.name}, ${p.note} (${p.flag})`, paper: p, ported: true })),
-		...works
-			.filter((w) => !ported.has(w.id))
-			.map((w) => ({
-				id: w.id,
-				text: `${w.name}${w.year ? ` (${w.year})` : ""}: ${w.title}`,
-				work: w,
-				ported: false,
-			})),
+		{ id: "none", text: none },
+		...papers.map((p) => ({ id: p.id, text: `${p.id}: ${p.name}, ${p.note} (${p.flag})`, paper: p })),
 	];
 }
-/** The entries a typed filter keeps: the id or the text (name, title) contains it (case-insensitive). */
+/** The entries a typed filter keeps: the id or the text (name, note) contains it (case-insensitive). */
 export function pickMatches(entries: Pick[], q: string): Pick[] {
 	const s = q.trim().toLowerCase();
 	if (!s) return entries;
@@ -292,10 +286,9 @@ export function pickerLines(title: string, entries: Pick[], q: string, idx: numb
 	const shown = pickMatches(entries, q);
 	const start = Math.max(0, Math.min(idx - Math.floor(WINDOW / 2), shown.length - WINDOW));
 	const end = Math.min(shown.length, start + WINDOW);
-	const rows = shown.slice(start, end).map((e, k) => {
-		const text = e.ported ? e.text : `${e.text} · not ported`;
-		return start + k === idx ? paint.accent(`→ ${text}`) : `  ${e.ported ? text : paint.dim(text)}`;
-	});
+	const rows = shown
+		.slice(start, end)
+		.map((e, k) => (start + k === idx ? paint.accent(`→ ${e.text}`) : `  ${e.text}`));
 	return [
 		paint.bold(title),
 		`${paint.dim("  type to filter: ")}${q}_${paint.dim(`   ${shown.length} of ${entries.length}`)}`,
@@ -304,6 +297,6 @@ export function pickerLines(title: string, entries: Pick[], q: string, idx: numb
 		...(shown.length ? rows : [paint.dim("  nothing matches; backspace erases")]),
 		...(end < shown.length ? [paint.dim(`  … ${shown.length - end} below`)] : []),
 		"",
-		paint.dim("↑↓ move   enter select   esc cancel   type to filter   ported = runs as a preset or tier"),
+		paint.dim("↑↓ move   enter select   esc cancel   type to filter"),
 	];
 }

@@ -18,6 +18,7 @@
  * any session of the project (the session directory) that holds one suppresses it.
  */
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -27,6 +28,7 @@ import {
 	type Axes,
 	type Cell,
 	cellFlags,
+	cellKey,
 	cellLabel,
 	cellName,
 	EXECUTION,
@@ -34,6 +36,7 @@ import {
 	gridMove,
 	keyOf,
 	OBSERVATION,
+	PAPERS,
 	type Paint,
 	type Paper,
 	type Pick,
@@ -41,11 +44,23 @@ import {
 	pickEntries,
 	pickerLines,
 	pickMatches,
+	supported,
 	supportedCells,
 	typed,
-	type Work,
-	worksIn,
 } from "./axes.ts";
+import { parseRequest, requestCell } from "./request.ts";
+import {
+	type Experiment,
+	episodeFlags,
+	experimentLabel,
+	gpuLabel,
+	gpus,
+	headlessCommand,
+	RECORD,
+	runCommand,
+	type SetupRecord,
+	scanExperiments,
+} from "./run.ts";
 
 /** The package root and the services checkout next to it (absent in an npm install). */
 export const PKG = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
@@ -54,6 +69,15 @@ const REPO = "https://github.com/RoboAgentLab/RoboAgentLab.git";
 const SKILL = join(PKG, "skills/embodied-quickstart/SKILL.md");
 export const NOTICE_ENTRY = "pi-embodied-setup-notice";
 export const COMMAND = "embodied-setup";
+/** The same command under the skill's name, for `/embodied-quickstart <request>`. */
+export const ALIAS = "embodied-quickstart";
+/** Start an episode of an installed experiment. */
+export const RUN = "embodied-run";
+export const RUN_HOW = {
+	here: "here: pi takes this terminal until the episode ends (trust prompt, then type Solve the task.)",
+	headless: "headless: the agent runs pi -a -p now, in the background, and reports the result",
+	print: "print: show the command, I run it myself",
+} as const;
 export const NOTICE =
 	"pi-embodied: run /embodied-setup to pick a robot, its observation × execution cell and where the services run; the agent then installs and checks them.";
 /** Without a model the agent cannot run the install, and the planner modes have nothing to plan with. */
@@ -296,8 +320,6 @@ export type Choice = {
 	cell: Cell;
 	/** A ported work's setting, run as its preset or tier. */
 	paper?: Paper;
-	/** A work of the survey to reproduce that is not ported: the cell's flags, and the agent reads the paper. */
-	work?: Work;
 	remote?: { host: string; checkout: string };
 	services: string;
 	weights: boolean;
@@ -381,8 +403,7 @@ const realModel = (m: { provider: string; id: string } | undefined) =>
 export const settingLine = (c: Choice) => {
 	const O = OBSERVATION[c.cell.o];
 	const A = EXECUTION[c.cell.a];
-	const work = c.paper ? `, ${c.paper.name}'s setting` : c.work ? `, reproducing ${c.work.name}` : "";
-	return `${cellName(c.cell)} (${O.section} ${O.name} × ${A.section} ${A.name})${work}`;
+	return `${cellName(c.cell)} (${O.section} ${O.name} × ${A.section} ${A.name})${c.paper ? `, ${c.paper.name}'s setting` : ""}`;
 };
 
 function handoff(c: Choice, settingsText: string): string {
@@ -395,12 +416,6 @@ function handoff(c: Choice, settingsText: string): string {
 	const settings = c.remote
 		? `write this to <experiment dir on the box>/.pi/settings.json (the package paths become ${c.remote.checkout}/packages/embodied):\n${settingsText}`
 		: `${join(c.dir, ".pi/settings.json")} is written`;
-	// A work that is not ported: the agent starts from the cell's flags and reads the paper.
-	const work = c.work
-		? [
-				`- work: reproduce "${c.work.title}"${c.work.url ? ` (${c.work.url})` : ""}, which the survey files in ${cellName(c.cell)}; it is not ported: start from the cell's flags above, read the paper, and tell me what its setting needs beyond them before installing anything extra`,
-			]
-		: [];
 	// O2: the perception server the flags attach to.
 	const perception =
 		c.cell.o === "O2"
@@ -422,7 +437,6 @@ function handoff(c: Choice, settingsText: string): string {
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
 		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
 		`- setting: ${settingLine(c)}; flags \`${settingFlags(c) || "none"}\``,
-		...work,
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
 		...perception,
@@ -476,20 +490,20 @@ function keyFrom(data: string, keybindings: { matches(data: string, id: string):
 					: keyOf(data, vi);
 }
 
-type Picked = { paper?: Paper; work?: Work };
+type Picked = { paper?: Paper };
 /**
- * The work to reproduce: the cell's ported settings and the survey's other works filed there, a searchable
- * list (typing filters by name or title) in the TUI, a select elsewhere. Cancelled: undefined.
+ * The work to reproduce: the cell's ported settings, a searchable list (typing filters by the short name)
+ * in the TUI, a select elsewhere. Cancelled: undefined.
  */
-async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], works: Work[]): Promise<Picked | undefined> {
-	const entries = pickEntries(papers, works, NO_PAPER);
+async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<Picked | undefined> {
+	const entries = pickEntries(papers, NO_PAPER);
 	if (ctx.mode !== "tui") {
 		const picked = await ctx.ui.select(
 			PAPER,
 			entries.map((e) => e.text),
 		);
 		const e = entries.find((x) => x.text === picked);
-		return e ? { paper: e.paper, work: e.work } : undefined;
+		return e ? { paper: e.paper } : undefined;
 	}
 	return ctx.ui.custom<Picked | undefined>((_tui, theme, keybindings, done) => {
 		let q = "";
@@ -506,7 +520,7 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], works: Wo
 				const shown: Pick[] = pickMatches(entries, q);
 				const key = keyFrom(data, keybindings, false);
 				if (key === "enter") {
-					if (shown[idx]) done({ paper: shown[idx].paper, work: shown[idx].work });
+					if (shown[idx]) done({ paper: shown[idx].paper });
 				} else if (key === "escape") done(undefined);
 				else if (key === "up") idx = Math.max(0, idx - 1);
 				else if (key === "down") idx = Math.min(shown.length - 1, idx + 1);
@@ -522,7 +536,7 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], works: Wo
 	});
 }
 
-async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
 	if (robotActive(pi)) {
 		ctx.ui.notify("A robot is already loaded here; run /embodied-setup from a directory without one.", "warning");
 		return;
@@ -538,28 +552,83 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		ui.notify(NO_MODEL, "error");
 		return;
 	}
-	const kindOpts = Object.values(KINDS);
-	const kind = (Object.keys(KINDS) as Kind[])[
-		kindOpts.indexOf((await ui.select("Simulation or real robot?", kindOpts)) ?? "")
-	];
-	if (!kind) return;
-	const robots = ROBOTS.filter((r) => r.kind === kind);
-	const robotOpts = robots.map((r) => r.label);
-	const robot = robots[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
+	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
+	const req = parseRequest(args, ROBOTS, available);
+	if (req.unknown.length)
+		ui.notify(
+			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
+			"warning",
+		);
+	let kind = req.kind;
+	if (!kind) {
+		const kindOpts = Object.values(KINDS);
+		kind = (Object.keys(KINDS) as Kind[])[
+			kindOpts.indexOf((await ui.select("Simulation or real robot?", kindOpts)) ?? "")
+		];
+		if (!kind) return;
+	}
+	// One named robot is taken; several named (franka) narrow the menu to them.
+	const robots = req.robots ?? ROBOTS.filter((r) => r.kind === kind);
+	let robot: Robot | undefined = robots.length === 1 ? robots[0] : undefined;
+	if (!robot) {
+		const robotOpts = robots.map((r) => r.label);
+		robot = robots[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
+	}
 	if (!robot) return;
-	const cell = await pickCell(ctx, robot);
+	// The cell: the named setting's, else one of a named work's cells on this robot (its ported settings, when it
+	// has some, narrow the picker; a work that is not ported is a notice), else the named levels', else the grid.
+	let cell: Cell | undefined;
+	let paper: Paper | undefined;
+	if (req.paper && papersFor(robot, req.paper.cell).includes(req.paper)) {
+		cell = req.paper.cell;
+		paper = req.paper;
+	} else if (req.paper) {
+		ui.notify(`${req.paper.name}'s setting is not on ${robot.label}; pick a cell`, "warning");
+	}
+	const ports = req.work ? PAPERS.filter((p) => p.work === req.work?.id) : [];
+	if (!cell && req.work) {
+		const cells = supportedCells(robot.axes).filter(
+			(c) =>
+				req.work?.cells.includes(cellKey(c)) &&
+				(!ports.length || ports.some((p) => p.cell.o === c.o && p.cell.a === c.a)),
+		);
+		if (!ports.length)
+			ui.notify(
+				`${req.work.name} is not ported yet (the survey files it in ${req.work.cells.map((k) => k.replace("/", " × ")).join(", ")}); pick a cell, the agent starts from its flags`,
+				"warning",
+			);
+		else if (cells.length === 1) cell = cells[0];
+		else if (cells.length > 1) {
+			const opts = cells.map(cellLabel);
+			cell = cells[opts.indexOf((await ui.select(`Cell for ${req.work.name}`, opts)) ?? "")];
+			if (!cell) return;
+		} else ui.notify(`${robot.label} has none of ${req.work.name}'s cells; pick a cell`, "warning");
+	}
+	const named = requestCell(req);
+	if (!cell && named && supported(robot.axes, named)) cell = named;
+	if (!cell) cell = await pickCell(ctx, robot);
 	if (!cell) return;
-	// The work to reproduce: a ported setting of the cell, or one of the survey's works filed there.
-	const picked = await pickWork(ctx, papersFor(robot, cell), worksIn(cell));
-	if (!picked) return;
-	const { paper, work } = picked;
+	// The work to reproduce: one of the cell's ported settings; a named work narrows them to its own.
+	if (!paper) {
+		const papers = papersFor(robot, cell).filter((p) => !ports.length || p.work === req.work?.id);
+		if (papers.length) {
+			const picked = await pickWork(ctx, papers);
+			if (!picked) return;
+			paper = picked.paper;
+		}
+	}
 
-	const where = await ui.select("Where do the services run?", ["here (this machine)", "a remote GPU box over ssh"]);
+	const where =
+		req.where === "remote"
+			? "a remote"
+			: req.where === "here"
+				? "here"
+				: await ui.select("Where do the services run?", ["here (this machine)", "a remote GPU box over ssh"]);
 	if (!where) return;
 	let remote: Choice["remote"];
 	let services = SERVICES;
 	if (where.startsWith("a remote")) {
-		const host = (await ui.input("ssh host", "user@gpu-box"))?.trim();
+		const host = req.host ?? (await ui.input("ssh host", "user@gpu-box"))?.trim();
 		if (!host) return;
 		const checkout = (await ui.input("pi-embodied checkout on the box", "~/pi-embodied"))?.trim() || "~/pi-embodied";
 		remote = { host, checkout };
@@ -574,7 +643,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	// The planner: a model of the registry, or (A1 Code, no preset) the robot's fine-tuned adapter.
 	const planners = [...new Set([...(current ? [current] : []), ...available])];
 	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
-	const planner = await ui.select("Planner model", planners);
+	const planner = req.model ?? (await ui.select("Planner model", planners));
 	if (!planner) return;
 	const finetuned = planner === FINETUNED;
 	const model = finetuned ? undefined : planner;
@@ -588,7 +657,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	// The title names the default: an empty input field shows no placeholder in every TUI.
 	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
 	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
-	const choice: Choice = { robot, cell, paper, work, remote, services, weights, model, finetuned, dir };
+	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir };
 
 	const file = join(dir, ".pi", "settings.json");
 	let existing: Settings = {};
@@ -605,6 +674,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	const settings = experimentSettings(choice, source, root, existing);
 	const text = `${JSON.stringify(settings, null, "\t")}\n`;
 	const summary = [
+		...(req.settled.length ? [`from your request: ${req.settled.join("; ")}`] : []),
+		...(req.unknown.length ? [`not recognized (maybe not supported yet): ${req.unknown.join(", ")}`] : []),
 		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
 		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${model ?? FINETUNED}`,
 		`needs: ${robot.needs}`,
@@ -620,6 +691,18 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	if (!remote) {
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, text);
+		// What /embodied-run reads back: the robot, the setting and its flags.
+		const record: SetupRecord = {
+			robot: robot.id,
+			cell,
+			paper: paper?.id,
+			flags: settingFlags(choice),
+			task: robot.task,
+			services,
+			planner: model ?? "finetuned",
+			created: new Date().toISOString(),
+		};
+		writeFileSync(join(dir, RECORD), `${JSON.stringify(record, null, "\t")}\n`);
 		ui.notify(`Wrote ${file}`, "info");
 	}
 	pi.sendUserMessage(handoff(choice, text), {
@@ -628,11 +711,156 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	});
 }
 
+/**
+ * /embodied-run [request]: an episode of an installed experiment. The experiment directories here (this
+ * one and its subdirectories) are listed; a request naming a robot picks among them. The setting is the
+ * recorded one, else the grid and the picker as in /embodied-setup. Then the task flags, a GPU, the budget,
+ * and how: in this terminal (pi takes it over until the episode ends), headless by the agent, or printed.
+ */
+/** What /embodied-run reads off the machine; a test replaces it. */
+export const runDeps = { gpus };
+
+async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
+	if (robotActive(pi)) {
+		ctx.ui.notify("A robot is already loaded here: this is an episode session; type Solve the task.", "warning");
+		return;
+	}
+	if (!ctx.hasUI) {
+		ctx.ui.notify("/embodied-run needs an interactive session", "error");
+		return;
+	}
+	const ui = ctx.ui;
+	const all = scanExperiments(ctx.cwd, ROBOTS);
+	if (!all.length) {
+		ui.notify(
+			`no experiment here: no .pi/settings.json loading a robot in ${ctx.cwd} or its subdirectories; run /embodied-setup first`,
+			"error",
+		);
+		return;
+	}
+	const req = parseRequest(
+		args,
+		ROBOTS,
+		ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`),
+	);
+	const named = req.robots ? all.filter((e) => req.robots?.some((r) => e.robots.includes(r))) : all;
+	const pool = named.length ? named : all;
+	if (req.robots && !named.length)
+		ui.notify(`no experiment here for ${req.robots.map((r) => r.label).join(" / ")}; these are installed`, "warning");
+	let exp: Experiment<Robot> | undefined = pool.length === 1 ? pool[0] : undefined;
+	if (!exp) {
+		const opts = pool.map(experimentLabel);
+		exp = pool[opts.indexOf((await ui.select("Experiment", opts)) ?? "")];
+	}
+	if (!exp) return;
+	if (!exp.env) {
+		ui.notify(
+			`${exp.robot.label} is not installed: ${exp.services}/.venv-${exp.robot.id}/pi-embodied.env is missing; run /embodied-setup`,
+			"error",
+		);
+		return;
+	}
+	// The setting: recorded, else chosen as in /embodied-setup (a request's setting or levels count).
+	let setting = exp.record?.flags;
+	let settingName = exp.record ? `${cellName(exp.record.cell)}${exp.record.paper ? `, ${exp.record.paper}` : ""}` : "";
+	if (setting === undefined || req.paper || requestCell(req)) {
+		const robot = exp.robot;
+		let cell: Cell | undefined;
+		let paper: Paper | undefined;
+		if (req.paper && papersFor(robot, req.paper.cell).includes(req.paper)) {
+			cell = req.paper.cell;
+			paper = req.paper;
+		} else {
+			const n = requestCell(req);
+			cell = n && supported(robot.axes, n) ? n : await pickCell(ctx, robot);
+			if (!cell) return;
+			const papers = papersFor(robot, cell);
+			if (papers.length) {
+				const picked = await pickWork(ctx, papers);
+				if (!picked) return;
+				paper = picked.paper;
+			}
+		}
+		setting = paper ? paper.flag : cellFlags(robot.axes, cell);
+		settingName = `${cellName(cell)}${paper ? `, ${paper.id}` : ""}`;
+	}
+	const task = (
+		await ui.input(`Task flags (empty: ${exp.record?.task ?? exp.robot.task})`, exp.record?.task ?? exp.robot.task)
+	)?.trim();
+	if (task === undefined) return;
+	const taskFlags = task || exp.record?.task || exp.robot.task;
+	// A GPU, the freest first; none when nvidia-smi says nothing.
+	let gpu: number | undefined;
+	const devices = runDeps.gpus();
+	if (devices.length > 1) {
+		const opts = [...devices.map(gpuLabel), "any: no CUDA_VISIBLE_DEVICES"];
+		const g = await ui.select("GPU", opts);
+		if (g === undefined) return;
+		gpu = devices[opts.indexOf(g)]?.index;
+	} else if (devices.length === 1) gpu = devices[0].index;
+	const budget = (await ui.input(`Episode budget (empty: ${BUDGET})`, BUDGET))?.trim();
+	if (budget === undefined) return;
+	const flags = episodeFlags(taskFlags, setting, budget || BUDGET);
+	const command = runCommand(exp, flags, gpu);
+	const hows =
+		ctx.mode === "tui" ? [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print] : [RUN_HOW.headless, RUN_HOW.print];
+	const how = await ui.select("How to run?", hows);
+	if (!how) return;
+	const summary = [
+		`${exp.robot.label}: ${settingName}; planner ${exp.planner ?? exp.record?.planner ?? "the session's model"}`,
+		`task: ${taskFlags}`,
+		gpu === undefined ? "GPU: any" : `GPU ${gpu}`,
+		how.split(":")[0] === "headless" ? headlessCommand(exp, flags, gpu) : command,
+	].join("\n");
+	if (!(await ui.confirm("Start the episode?", summary))) {
+		ui.notify("Nothing started.", "info");
+		return;
+	}
+	if (how === RUN_HOW.print) {
+		ui.notify(command, "info");
+		return;
+	}
+	if (how === RUN_HOW.headless) {
+		pi.sendUserMessage(
+			[
+				`/skill:embodied-quickstart Run one episode now, in the background, and report its result: \`${headlessCommand(exp, flags, gpu)}\``,
+				"- it prints the dashboard URL at startup and the robot's result at the end; when it is over, read the session's robot_result (terminated is the environment's verdict, claimed the agent's) and tell me both, with the dashboard URL and the session file",
+				"- do not install or change anything; if it fails to start, show me the error and stop",
+			].join("\n"),
+			{ expandPromptTemplates: true, ...(ctx.isIdle() ? {} : { deliverAs: "followUp" as const }) },
+		);
+		return;
+	}
+	// Here: the TUI stops, pi runs the episode in this terminal, the TUI returns when it exits.
+	const status = await ui.custom<number | null>((tui, _theme, _kb, done) => {
+		tui.stop?.();
+		process.stdout.write("\x1b[2J\x1b[H");
+		const r = spawnSync(process.env.SHELL || "/bin/bash", ["-lc", command], { stdio: "inherit", env: process.env });
+		tui.start?.();
+		tui.requestRender?.(true);
+		done(r.status);
+		return { render: () => [], invalidate: () => {} };
+	});
+	ui.notify(
+		status === 0 ? `episode session ended (${exp.dir})` : `pi exited with ${status ?? "a signal"}: ${command}`,
+		status === 0 ? "info" : "warning",
+	);
+}
+
 export default function embodiedSetup(pi: ExtensionAPI) {
+	pi.registerCommand(RUN, {
+		description:
+			"Start an episode of an installed experiment: the directory, its recorded setting, task flags, a GPU, then in this terminal, headless by the agent, or printed",
+		handler: (args, ctx) => run(pi, ctx, args),
+	});
 	pi.registerCommand(COMMAND, {
 		description:
-			"Set up pi-embodied: pick a robot, its observation × execution cell, where services run and the planner; the agent installs",
-		handler: (_args, ctx) => setup(pi, ctx),
+			"Set up pi-embodied: pick a robot, its observation × execution cell, where services run and the planner; the agent installs. A request after it (robot, work, cell, planner, host) settles what it names",
+		handler: (args, ctx) => setup(pi, ctx, args),
+	});
+	pi.registerCommand(ALIAS, {
+		description: "The same as /embodied-setup: `/embodied-quickstart reproduce RPent on LIBERO-PRO`",
+		handler: (args, ctx) => setup(pi, ctx, args),
 	});
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui" || !ctx.hasUI || robotActive(pi) || noticeSeen(ctx)) return;
