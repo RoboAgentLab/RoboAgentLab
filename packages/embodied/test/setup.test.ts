@@ -677,6 +677,10 @@ test("the modes and grid levels of every robot are read from its spec, not liste
 	}
 	for (const r of ROBOTS.filter((r) => r.kind === "sim" && r.id !== "humanclaw"))
 		assert.ok(r.modes.includes("code") && supported(r.axes, cell("O1", "A3")), `${r.id}: code`);
+	// MotorMind's setting follows the spec: a robot that gains `motormind` is offered it with no change here.
+	const gains = { ...robot("maniskill"), modes: [...robot("maniskill").modes, "motormind" as const] };
+	assert.deepEqual(ids(papersFor(gains, cell("O2", "A1C"))), ["motormind"]);
+	assert.deepEqual(ids(papersFor(robot("libero"), cell("O2", "A1C"))), ["motormind"]);
 	// Every real arm has code too; only HumanCLAW lacks it (its survey cell is A1 Model).
 	assert.deepEqual(
 		ROBOTS.filter((r) => !r.modes.includes("code")).map((r) => r.id),

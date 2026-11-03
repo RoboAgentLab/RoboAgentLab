@@ -69,7 +69,7 @@ whether it is ported and the preset:
 | short name | work | cell | flags | robots |
 | --- | --- | --- | --- | --- |
 | showharness | Show-Harness | O1 × A1 Code | `--preset showharness` | any with units |
-| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | any whose spec has `motormind` (LIBERO today) |
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
 | rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
 | openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
