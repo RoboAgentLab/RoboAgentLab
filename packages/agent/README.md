@@ -568,4 +568,4 @@ These low-level streams are observational. They preserve event order, but they d
 
 ## License
 
-Apache-2.0 (the repository `LICENSE`). Based on [pi](https://github.com/earendil-works/pi) by Mario Zechner, MIT (`LICENSE-MIT`).
+MIT

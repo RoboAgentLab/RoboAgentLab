@@ -47,8 +47,5 @@ plans/
 collect.sh
 packages/agent/docs/extensions/pi-server-artifact/index.md
 
-# pi-embodied evaluation outputs
-packages/embodied/runs/
-
 # Machine-local models, environments, runs, and historical checkouts
 /.local/

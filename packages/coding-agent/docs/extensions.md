@@ -1254,11 +1254,6 @@ pi.on("tool_result", async (event, ctx) => {
 
 Control flow helpers. `ctx.isIdle()` is false while Pi is processing an agent run, automatic retry, auto-compaction retry, or queued continuation.
 
-### ctx.withdrawQueuedMessage() / ctx.exportSession()
-
-`ctx.hasPendingMessages()` reports queued steering or follow-up messages; `ctx.withdrawQueuedMessage(text)` takes one back out (its text as queued) while the agent has not taken it yet, and returns `false` once it is gone.
-`ctx.exportSession("jsonl" | "html", outputPath)` exports the current branch as `/export` does and resolves to the written path.
-
 ### ctx.shutdown()
 
 Request a graceful shutdown of pi.

@@ -1,0 +1,47 @@
+name: Fork CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The fork's CI. Upstream's workflows in this directory are kept verbatim so "Sync fork" never conflicts, and are
+# disabled in this repository's Actions settings; this is the only workflow meant to run here.
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-node
+      - run: python3 -m pip install --user -q uv==0.12.17 # setup.sh's dry runs need uv
+      # Generates the model data from the catalog sources, as upstream's CI does. The pi.dev catalog pin in
+      # nix/model-catalog.json lags upstream's source (a revision is published only after main has used a new
+      # provider or model type), so build:offline on the pin can fail to type-check.
+      - run: npm run build
+      - run: npm run check
+      - name: Agent queue compatibility
+        working-directory: packages/agent
+        run: node ../../node_modules/vitest/dist/cli.js --run test/agent.test.ts
+      - name: Extension and session export compatibility
+        working-directory: packages/coding-agent
+        run: node ../../node_modules/vitest/dist/cli.js --run test/trigger-compact-extension.test.ts test/export-jsonl-share.test.ts
+      - name: embodied tests
+        working-directory: packages/embodied
+        run: node --test --experimental-strip-types test/*.test.ts
+
+  services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 -m pip install --user -q uv==0.12.17
+      # As root, like a deployed env server: run_code isolates programs under their own uid, which needs root.
+      - run: sudo env "PATH=$PATH" services/test.sh
