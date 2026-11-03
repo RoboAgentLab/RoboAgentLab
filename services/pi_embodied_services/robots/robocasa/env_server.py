@@ -102,11 +102,12 @@ GRIPPER_STEPS = 15
 #: three (the Flywheel's observation while recording).
 VIDEO_SIZE = 256
 VLA_CAMERAS = ("robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand")
-#: MotorMind mode's views (the robot-mounted left agentview, the right one on the base's other
-#: side, the wrist) and capability fields (LIBERO's Panda, motormind_rig.libero_caps).
+#: MotorMind mode's views (the robot-mounted center agentview over the arm, the left one on the
+#: base's +Y side where MotorMind's side camera stands, the wrist) and capability fields (LIBERO's
+#: Panda, motormind_rig.libero_caps).
 MM_CAMERAS = {
-    "scene": "robot0_agentview_left",
-    "side": "robot0_agentview_right",
+    "scene": "robot0_agentview_center",
+    "side": "robot0_agentview_left",
     "wrist": "robot0_eye_in_hand",
 }
 MM_CAPS = {

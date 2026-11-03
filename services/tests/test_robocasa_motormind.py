@@ -34,7 +34,7 @@ ORIGIN_R = rig.axis_angle_matrix(
     [0, 0, math.radians(120)]
 )  # the base turned in the kitchen
 DOWN = np.diag([1.0, -1.0, -1.0])
-CAMERAS = ["robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand"]
+CAMERAS = ["robot0_agentview_center", "robot0_agentview_left", "robot0_eye_in_hand"]
 COUNTER_Z = 0.92
 
 
