@@ -21,8 +21,10 @@ pi
 ```
 
 Inside pi, configure an image-capable planner with `/login`, then run `/embodied-setup`.
-The wizard selects a robot, mode, deployment, and experiment directory, installs services,
-and runs preflight checks. Follow the printed launch command, then enter `Solve the task.`.
+The wizard selects a robot, its cell in the survey's observation × execution grid (O1–O3 × A1–A3),
+optionally a paper's setting in that cell, the deployment, the planner and the experiment directory;
+the agent then installs the services and runs the preflight checks, and nothing else. Afterwards,
+run the printed launch command yourself and enter `Solve the task.`.
 
 See the [full Quickstart](https://roboagentlab.github.io/docs/quickstart.html) for installation, one LIBERO episode, and the dashboard.
 

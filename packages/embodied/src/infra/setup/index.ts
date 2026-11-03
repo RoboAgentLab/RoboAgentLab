@@ -1,9 +1,12 @@
 /**
  * Onboarding: the package's only default extension. It points a new user to `/embodied-setup` once
- * per project, and `/embodied-setup` asks for the robot, the mode, where the services run and the
- * planner, writes the experiment directory's `.pi/settings.json`, and hands the install to the agent
- * (the embodied-quickstart skill), which runs services/setup.sh and the preflight with its own tools
- * once the user has confirmed the plan (pi does not gate each tool call).
+ * per project, and `/embodied-setup` asks for the robot, its cell in the survey's observation ×
+ * execution grid (./axes.ts: O1–O3 × A1–A3), optionally a paper's setting in that cell, where the
+ * services run and the planner, writes the experiment directory's `.pi/settings.json`, and hands
+ * the install to the agent (the embodied-quickstart skill), which runs services/setup.sh and the
+ * preflight with its own tools once the user has confirmed the plan (pi does not gate each tool
+ * call). The install and the experiment are separate: the agent installs and checks, and ends with
+ * the launch command the user runs afterwards; it starts no episode.
  *
  * A robot extension replaces the coding tools, so robots never load by default: the experiment
  * directory's settings load one robot (and the dashboard) through `extensions`, and a delta entry
@@ -20,6 +23,28 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	type Axes,
+	type Cell,
+	cellFlags,
+	cellLabel,
+	cellName,
+	EXECUTION,
+	gridLines,
+	gridMove,
+	keyOf,
+	OBSERVATION,
+	type Paint,
+	type Paper,
+	type Pick,
+	paperFlags,
+	papersFor,
+	pickEntries,
+	pickerLines,
+	pickMatches,
+	supportedCells,
+	typed,
+} from "./axes.ts";
 
 /** The package root and the services checkout next to it (absent in an npm install). */
 export const PKG = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
@@ -29,14 +54,18 @@ const SKILL = join(PKG, "skills/embodied-quickstart/SKILL.md");
 export const NOTICE_ENTRY = "pi-embodied-setup-notice";
 export const COMMAND = "embodied-setup";
 export const NOTICE =
-	"pi-embodied: run /embodied-setup to pick a robot, a mode and where the services run; the agent then installs and checks them.";
+	"pi-embodied: run /embodied-setup to pick a robot, its observation × execution cell and where the services run; the agent then installs and checks them.";
 /** Without a model the agent cannot run the install, and the planner modes have nothing to plan with. */
 export const NO_MODEL =
 	"/embodied-setup: no model is configured. The agent that runs the install (and the planner) needs one: run /login, or add a provider to ~/.pi/agent/models.json (pi's docs/models.md), then /embodied-setup again.";
 /** The quickstart's episode budget: an interactive episode has none by default and can run (and bill) for an hour. */
 export const BUDGET = "--max-turns 40 --time-limit 900";
+export const GRID = "Observation × Execution";
+export const PAPER = "Paper setting (optional)";
+export const NO_PAPER = "none: the cell's plain flags";
+/** The planner option that runs the robot's fine-tuned adapter instead of a model of the registry (A1 only). */
+export const FINETUNED = "fine-tuned: a small VLM + LoRA picks each unit (served by vLLM)";
 
-type Mode = "tools" | "units" | "finetuned" | "flash";
 export type Kind = "sim" | "real";
 export const KINDS: Record<Kind, string> = {
 	sim: "sim: a simulator or benchmark on a GPU",
@@ -52,18 +81,24 @@ export type Robot = {
 	/** The robot extension, relative to the package. */
 	extension: string;
 	needs: string;
-	modes: Mode[];
+	/** The levels of the grid this robot has, and their flags (./axes.ts). */
+	axes: Axes;
 	/** Example task flags for the launch command. */
 	task: string;
-	/** What `setup.sh --weights` fetches (tools mode). */
+	/** What `setup.sh --weights` fetches (the VLA of A2, SAM3 of O2). */
 	weights?: string;
-	/** Fine-tuned mode: model and flags. */
+	/** Fine-tuned planner (A1): model and flags. */
 	finetuned?: string;
-	/** Fine-tuned mode: the released adapter `setup.sh finetuned` fetches (FT_ADAPTER); unset when the user serves their own. */
+	/** Fine-tuned planner: the released adapter `setup.sh finetuned` fetches (FT_ADAPTER); unset when the user serves their own. */
 	adapter?: string;
 };
 
+/** A simulator with ground truth, units and code mode. */
+const SIM: Axes = { O2: "--detections", O3: "--privileged", A1: "--units=true", A3: "--code=true" };
+/** A real arm: SAM3 through its own --segment, no ground truth. */
+const ARM: Axes = { O2: "--segment", A1: "--units=true", A3: "--code=true" };
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
+const LIBERO_FT = "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero";
 export const ROBOTS: Robot[] = [
 	{
 		id: "libero",
@@ -71,10 +106,10 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		modes: ["tools", "units", "finetuned", "flash"],
+		axes: SIM,
 		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
-		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+		finetuned: LIBERO_FT,
 	},
 	{
 		id: "libero-pro",
@@ -82,10 +117,10 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO-PRO",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		modes: ["tools", "units", "finetuned", "flash"],
+		axes: SIM,
 		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
-		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+		finetuned: LIBERO_FT,
 	},
 	{
 		id: "libero-plus",
@@ -93,10 +128,10 @@ export const ROBOTS: Robot[] = [
 		label: "LIBERO-plus",
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), ~9.5 GB scene assets, system ImageMagick (libmagickwand)",
-		modes: ["tools", "units", "finetuned"],
+		axes: SIM,
 		task: "--libero-type plus --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
-		finetuned: "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+		finetuned: LIBERO_FT,
 	},
 	{
 		id: "maniskill",
@@ -104,7 +139,7 @@ export const ROBOTS: Robot[] = [
 		label: "ManiSkill 3",
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
-		modes: ["tools", "units", "finetuned"],
+		axes: SIM,
 		task: "--task PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
@@ -115,7 +150,7 @@ export const ROBOTS: Robot[] = [
 		label: "Metaworld",
 		extension: "src/robots/metaworld/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
-		modes: ["tools", "units"],
+		axes: SIM,
 		task: "--task reach-v3 --seed 0",
 	},
 	{
@@ -124,7 +159,7 @@ export const ROBOTS: Robot[] = [
 		label: "Robosuite",
 		extension: "src/robots/robosuite/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), SAM3 for segment; the CaP-X tasks",
-		modes: ["tools", "units"],
+		axes: SIM,
 		task: "--task Lift --seed 0",
 	},
 	{
@@ -133,7 +168,7 @@ export const ROBOTS: Robot[] = [
 		label: "Genesis",
 		extension: "src/robots/genesis/index.ts",
 		needs: "NVIDIA GPU (a cu128 torch on RTX 50xx); a Franka, cube_pick",
-		modes: ["tools", "units"],
+		axes: SIM,
 		task: "--task cube_pick --seed 0",
 	},
 	{
@@ -142,7 +177,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboCasa365",
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
-		modes: ["tools"],
+		axes: { O2: "--detections", O3: "--privileged", A3: "--code=true" },
 		task: "--task OpenDrawer --split target --seed 0",
 		weights: "RLDX-1-FT-RC365 VLA",
 	},
@@ -152,7 +187,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboTwin 2",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build; two arms",
-		modes: ["tools"],
+		axes: { O2: "--detections", O3: "--privileged", A3: "--code=true" },
 		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
 	},
@@ -162,7 +197,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboLab",
 		extension: "src/robots/robolab/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0",
-		modes: ["tools", "units", "finetuned"],
+		axes: SIM,
 		task: "--task BananaInBowlTask --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
@@ -173,7 +208,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboDojo",
 		extension: "src/robots/robodojo/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets; two arms",
-		modes: ["tools", "units"],
+		axes: SIM,
 		task: "--task stack_bowls --seed 0",
 	},
 	{
@@ -182,7 +217,7 @@ export const ROBOTS: Robot[] = [
 		label: "BEHAVIOR-1K",
 		extension: "src/robots/behavior/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 (OmniGibson), a BEHAVIOR-1K checkout and its data (license key); the R1Pro robot",
-		modes: ["tools", "units"],
+		axes: SIM,
 		task: "--task turning_on_radio --seed 0",
 	},
 	{
@@ -191,7 +226,8 @@ export const ROBOTS: Robot[] = [
 		label: "HumanCLAW",
 		extension: "src/robots/humanclaw/index.ts",
 		needs: "NVIDIA GPU, a Habitat-Sim build (nvcc), the gated HSSD datasets (HF_TOKEN); a humanoid in HSSD homes",
-		modes: ["tools"],
+		// The paper's mode: units next to the tools (A2), no SAM3.
+		axes: { O3: "--privileged" },
 		task: "--units=both --humanclaw-mode pi --episode one",
 	},
 	{
@@ -200,7 +236,7 @@ export const ROBOTS: Robot[] = [
 		label: "Franka (RLinf)",
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka, RLinf controller + Ray, an operator at the e-stop",
-		modes: ["tools", "units"],
+		axes: ARM,
 		task: "--robot-config <yaml> --task 0 --operator=true",
 	},
 	{
@@ -209,7 +245,7 @@ export const ROBOTS: Robot[] = [
 		label: "Franka (Polymetis)",
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
-		modes: ["tools", "units"],
+		axes: ARM,
 		task: "--backend polymetis --robot-config <yaml> --operator=true",
 	},
 	{
@@ -218,7 +254,7 @@ export const ROBOTS: Robot[] = [
 		label: "Dual Franka",
 		extension: "src/robots/dual_franka/index.ts",
 		needs: "two real Frankas, RLinf + Ray, an operator at the e-stop",
-		modes: ["tools", "units"],
+		axes: ARM,
 		task: "--robot-config <yaml> --operator=true",
 	},
 	{
@@ -227,7 +263,7 @@ export const ROBOTS: Robot[] = [
 		label: "AgileX Piper",
 		extension: "src/robots/piper/index.ts",
 		needs: "Piper arm, ROS Noetic, an operator at the e-stop",
-		modes: ["tools", "units", "finetuned"],
+		axes: { O2: "--detections", A1: "--units=true", A3: "--code=true" },
 		task: "--robot-config <yaml> --task banana_plate --operator=true",
 		finetuned: "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
 		adapter: "qwen3_5_2b",
@@ -238,26 +274,23 @@ export const ROBOTS: Robot[] = [
 		label: "UR5e",
 		extension: "src/robots/ur5e/index.ts",
 		needs: "UR5e with a Robotiq gripper, cameras, an operator at the e-stop",
-		modes: ["tools", "units"],
+		axes: ARM,
 		task: "--arm <controller serial> --robot-config <yaml> --task <task> --operator=true",
 	},
 ];
 
-const MODES: Record<Mode, string> = {
-	tools: "tools: the planner calls the robot's own tools (VLA, segmentation, motion)",
-	units: "units: Show-Harness action units (act: move, rotate, grasp, release); no VLA needed",
-	finetuned: "fine-tuned: a small VLM + LoRA picks each unit (served by vLLM)",
-	flash: "flash: replay a recorded plan with live grounding, no LLM",
-};
-
 type Settings = Record<string, unknown> & { packages?: unknown[]; extensions?: unknown[] };
 export type Choice = {
 	robot: Robot;
-	mode: Mode;
+	cell: Cell;
+	paper?: Paper;
 	remote?: { host: string; checkout: string };
 	services: string;
 	weights: boolean;
+	/** The planner of the registry, or none when `finetuned`. */
 	model?: string;
+	/** The robot's fine-tuned adapter is the planner (A1). */
+	finetuned: boolean;
 	dir: string;
 };
 
@@ -282,24 +315,22 @@ function packageSource(pi: ExtensionAPI): string {
 	return PKG;
 }
 
+/** The setting's flags: the paper's, else the cell's, then the fine-tuned planner's. */
+export function settingFlags(c: Choice): string {
+	const cell = c.paper ? paperFlags(c.robot.axes, c.cell, c.paper) : cellFlags(c.robot.axes, c.cell);
+	return [cell, c.finetuned ? c.robot.finetuned : undefined].filter(Boolean).join(" ");
+}
+
 /** The launch flags for a choice (after `pi`), with the quickstart's episode budget. */
 export function launchFlags(c: Choice): string {
-	const mode =
-		c.mode === "units"
-			? "--units=true"
-			: c.mode === "finetuned"
-				? `--units=true ${c.robot.finetuned ?? ""}`
-				: c.mode === "flash"
-					? "--model flash/replay"
-					: "";
-	return [c.robot.task, mode, BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
+	return [c.robot.task, settingFlags(c), BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
 }
 
 /** The experiment directory's settings: this package without onboarding, the robot, the dashboard, the planner. */
 export function experimentSettings(c: Choice, source: string, root: string, existing: Settings = {}): Settings {
 	const src = (p: string) => `${root}/${p}`;
 	const extensions = [src(c.robot.extension), src("src/capabilities/dashboard/index.ts")];
-	if (c.mode === "finetuned") extensions.push(src("src/modes/finetuned/index.ts"));
+	if (c.finetuned) extensions.push(src("src/modes/finetuned/index.ts"));
 	const same = (p: unknown) => {
 		const s = typeof p === "string" ? p : (p as { source?: unknown })?.source;
 		return s === source || s === root;
@@ -332,6 +363,10 @@ export function launchCommand(c: Choice): string {
 const realModel = (m: { provider: string; id: string } | undefined) =>
 	m && !(m.provider === "unknown" && m.id === "unknown") ? `${m.provider}/${m.id}` : undefined;
 
+/** The setting in one line: the cell, its levels, the paper. */
+export const settingLine = (c: Choice) =>
+	`${cellName(c.cell)} (${OBSERVATION[c.cell.o].name} × ${EXECUTION[c.cell.a].name})${c.paper ? `, ${c.paper.name}'s setting` : ""}`;
+
 function handoff(c: Choice, settingsText: string): string {
 	const setup = `${c.services}/setup.sh ${c.robot.id}${c.weights ? " --weights" : ""}`;
 	const where = c.remote
@@ -342,30 +377,120 @@ function handoff(c: Choice, settingsText: string): string {
 	const settings = c.remote
 		? `write this to <experiment dir on the box>/.pi/settings.json (the package paths become ${c.remote.checkout}/packages/embodied):\n${settingsText}`
 		: `${join(c.dir, ".pi/settings.json")} is written`;
-	// Fine-tuned mode: the adapter and its base model, and the vLLM server services.finetuned (default :8010) names.
-	const ft = c.robot.adapter ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
-	const finetuned =
-		c.mode === "finetuned"
+	// O2: the perception server the flags attach to.
+	const perception =
+		c.cell.o === "O2"
 			? [
-					ft
-						? `- adapter: \`${ft}\` (finetuned/download.py fetches the adapter and its base model, pinned and verified)`
-						: "- adapter: none is released for this robot; ask me which adapter to serve and where its files are",
-					`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}services.finetuned defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
+					`- perception (O2): a SAM3 server at the deployment's services.sam3 must be running for the episodes (\`--serve-models sam3\` per episode, or the robot's serve.sh; SAM3 is gated: HF_TOKEN)`,
 				]
 			: [];
+	// Fine-tuned planner: the adapter and its base model, and the vLLM server services.finetuned (default :8010) names.
+	const ft = c.robot.adapter ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
+	const finetuned = c.finetuned
+		? [
+				ft
+					? `- adapter: \`${ft}\` (finetuned/download.py fetches the adapter and its base model, pinned and verified)`
+					: "- adapter: none is released for this robot; ask me which adapter to serve and where its files are",
+				`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}services.finetuned defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
+			]
+		: [];
 	return [
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
 		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
-		`- mode: ${MODES[c.mode]}`,
+		`- setting: ${settingLine(c)}; flags \`${settingFlags(c) || "none"}\``,
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
-		c.model ? `- planner: ${c.model}` : "- planner: the policy named in the launch flags",
+		...perception,
+		c.model ? `- planner: ${c.model}` : `- planner: ${FINETUNED}`,
 		...finetuned,
 		`- experiment dir: ${c.dir}; ${settings}`,
-		`- launch: \`${launchCommand(c)}\``,
+		`- launch: \`${launchCommand(c)}\` (I start episodes with it myself, afterwards)`,
 		"- trust: the first pi in the experiment dir asks whether to trust the project (its .pi/settings.json loads the robot extension); I answer yes there, or the robot does not load (/trust saves the decision)",
-		"Run the install, then the preflight, fix what fails, and end with the launch command. Ask me before sudo, anything touching real hardware, or downloads not listed here.",
+		"Run the install, then the preflight, fix what fails, and end with the launch command. Do not start an episode. Ask me before sudo, anything touching real hardware, or downloads not listed here.",
 	].join("\n");
+}
+
+/** The grid: a custom component in the TUI, a list of the supported cells elsewhere. */
+async function pickCell(ctx: ExtensionCommandContext, robot: Robot): Promise<Cell | undefined> {
+	const cells = supportedCells(robot.axes);
+	const title = `${GRID} for ${robot.label}`;
+	if (ctx.mode !== "tui") {
+		const opts = cells.map(cellLabel);
+		return cells[opts.indexOf((await ctx.ui.select(title, opts)) ?? "")];
+	}
+	return ctx.ui.custom<Cell | undefined>((_tui, theme, keybindings, done) => {
+		let cur = cells[0];
+		const paint: Paint = {
+			accent: (s) => theme.fg("accent", s),
+			dim: (s) => theme.fg("dim", s),
+			bold: (s) => theme.bold(s),
+		};
+		return {
+			render: () => gridLines(title, robot.axes, cur, paint),
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				const key = keyFrom(data, keybindings, true);
+				if (key === "enter") done(cur);
+				else if (key === "escape") done(undefined);
+				else if (key) cur = gridMove(robot.axes, cur, key);
+			},
+		};
+	});
+}
+
+/** The select keybindings and the arrows, as one key; `vi`: h/j/k/l/q too (not where text is typed). */
+function keyFrom(data: string, keybindings: { matches(data: string, id: string): boolean }, vi: boolean) {
+	return keybindings.matches(data, "tui.select.up")
+		? "up"
+		: keybindings.matches(data, "tui.select.down")
+			? "down"
+			: keybindings.matches(data, "tui.select.confirm")
+				? "enter"
+				: keybindings.matches(data, "tui.select.cancel")
+					? "escape"
+					: keyOf(data, vi);
+}
+
+/** A paper's setting: a searchable list (typing filters by the short name) in the TUI, a select elsewhere. Cancelled: undefined. */
+async function pickPaper(ctx: ExtensionCommandContext, papers: Paper[]): Promise<{ paper?: Paper } | undefined> {
+	const entries = pickEntries(papers, NO_PAPER);
+	if (ctx.mode !== "tui") {
+		const picked = await ctx.ui.select(
+			PAPER,
+			entries.map((e) => e.text),
+		);
+		const e = entries.find((x) => x.text === picked);
+		return e ? { paper: e.paper } : undefined;
+	}
+	return ctx.ui.custom<{ paper?: Paper } | undefined>((_tui, theme, keybindings, done) => {
+		let q = "";
+		let idx = 0;
+		const paint: Paint = {
+			accent: (s) => theme.fg("accent", s),
+			dim: (s) => theme.fg("dim", s),
+			bold: (s) => theme.bold(s),
+		};
+		return {
+			render: () => pickerLines(PAPER, entries, q, idx, paint),
+			invalidate: () => {},
+			handleInput: (data: string) => {
+				const shown: Pick[] = pickMatches(entries, q);
+				const key = keyFrom(data, keybindings, false);
+				if (key === "enter") {
+					if (shown[idx]) done({ paper: shown[idx].paper });
+				} else if (key === "escape") done(undefined);
+				else if (key === "up") idx = Math.max(0, idx - 1);
+				else if (key === "down") idx = Math.min(shown.length - 1, idx + 1);
+				else {
+					const t = typed(data);
+					if (t === "erase") q = q.slice(0, -1);
+					else if (t) q += t.char;
+					else return;
+					idx = 0;
+				}
+			},
+		};
+	});
 }
 
 async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -393,9 +518,16 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	const robotOpts = robots.map((r) => r.label);
 	const robot = robots[robotOpts.indexOf((await ui.select("Robot or benchmark", robotOpts)) ?? "")];
 	if (!robot) return;
-	const modeOpts = robot.modes.map((m) => MODES[m]);
-	const mode = robot.modes[modeOpts.indexOf((await ui.select("Mode", modeOpts)) ?? "")];
-	if (!mode) return;
+	const cell = await pickCell(ctx, robot);
+	if (!cell) return;
+	// A paper's setting in this cell, when one is ported: typing filters the list by its short name.
+	let paper: Paper | undefined;
+	const papers = papersFor(robot, cell);
+	if (papers.length) {
+		const picked = await pickPaper(ctx, papers);
+		if (!picked) return;
+		paper = picked.paper;
+	}
 
 	const where = await ui.select("Where do the services run?", ["here (this machine)", "a remote GPU box over ssh"]);
 	if (!where) return;
@@ -414,18 +546,24 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 		services = `${(checkout || "~/pi-embodied").replace(/^~(?=\/|$)/, homedir())}/services`;
 	}
 
-	let model: string | undefined;
-	if (mode === "tools" || mode === "units") {
-		model = await ui.select("Planner model", [...new Set([...(current ? [current] : []), ...available])]);
-		if (!model?.includes("/")) return;
-	}
+	// The planner: a model of the registry, or (A1, no paper preset) the robot's fine-tuned adapter.
+	const planners = [...new Set([...(current ? [current] : []), ...available])];
+	if (cell.a === "A1" && robot.finetuned && !paper) planners.push(FINETUNED);
+	const planner = await ui.select("Planner model", planners);
+	if (!planner) return;
+	const finetuned = planner === FINETUNED;
+	const model = finetuned ? undefined : planner;
+	if (!finetuned && !model?.includes("/")) return;
+	// The weights setup.sh --weights fetches serve A2's VLA and O2's SAM3.
 	const weights =
-		mode === "tools" && robot.weights ? await ui.confirm("Model weights", `Also download ${robot.weights}?`) : false;
+		robot.weights && (cell.a === "A2" || cell.o === "O2")
+			? await ui.confirm("Model weights", `Also download ${robot.weights}?`)
+			: false;
 	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
 	// The title names the default: an empty input field shows no placeholder in every TUI.
 	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
 	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
-	const choice: Choice = { robot, mode, remote, services, weights, model, dir };
+	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir };
 
 	const file = join(dir, ".pi", "settings.json");
 	let existing: Settings = {};
@@ -442,12 +580,13 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 	const settings = experimentSettings(choice, source, root, existing);
 	const text = `${JSON.stringify(settings, null, "\t")}\n`;
 	const summary = [
-		`${robot.label} (${robot.kind}), ${mode}${model ? `, planner ${model}` : ""}`,
+		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
+		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${model ?? FINETUNED}`,
 		`needs: ${robot.needs}`,
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
-		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${mode === "finetuned" ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step)`,
+		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${finetuned ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step), then the preflight; no episode is started`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,
-		`launch: ${launchCommand(choice)}`,
+		`launch (you run it afterwards): ${launchCommand(choice)}`,
 	].join("\n");
 	if (!(await ui.confirm("Set up pi-embodied?", summary))) {
 		ui.notify("Nothing written or installed.", "info");
@@ -466,7 +605,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<vo
 
 export default function embodiedSetup(pi: ExtensionAPI) {
 	pi.registerCommand(COMMAND, {
-		description: "Set up pi-embodied: pick a robot, a mode, where services run and the planner; the agent installs",
+		description:
+			"Set up pi-embodied: pick a robot, its observation × execution cell, where services run and the planner; the agent installs",
 		handler: (_args, ctx) => setup(pi, ctx),
 	});
 	pi.on("session_start", (_event, ctx) => {
