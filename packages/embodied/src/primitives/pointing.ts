@@ -12,13 +12,13 @@
  * optionally, the world point of a pixel.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { service } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import { RpcClient } from "../infra/rpc.ts";
 import { type Json, mark, message, round } from "../robot.ts";
+import { StringEnum } from "../string-enum.ts";
 import type { GraspToolDef } from "./grasp.ts";
 
 /** The most images one `molmo.ground_set` takes (MolmoPoint's MAX_IMAGES). */

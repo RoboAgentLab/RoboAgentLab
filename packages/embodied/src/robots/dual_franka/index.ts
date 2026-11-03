@@ -26,7 +26,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { dir, python, service, servicesDir } from "../../infra/config.ts";
@@ -70,6 +69,7 @@ import {
 	vec,
 	workspaceLimits,
 } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 import { alias, inlineWrist, policy, REWRITE, SETUP_PY, type Setup, type Step } from "./config.ts";
 import { mountPerception } from "./perception.ts";
 import { mountSkills } from "./skills.ts";

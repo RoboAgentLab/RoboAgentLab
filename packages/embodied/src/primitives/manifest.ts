@@ -19,8 +19,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
+import { StringEnum } from "../string-enum.ts";
 
 export type Side = "env" | "ts" | "code";
 export type Tier = "high" | "low" | "raw" | "privileged";

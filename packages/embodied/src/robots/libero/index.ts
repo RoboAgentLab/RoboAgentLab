@@ -14,7 +14,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
@@ -72,6 +71,7 @@ import {
 import { waypointsTool } from "../../primitives/waypoints.ts";
 import { alignWristTool, projectPoints } from "../../primitives/wrist.ts";
 import { attach, defineRobot, mark, median, message, rgbOf } from "../../robot.ts";
+import { StringEnum } from "../../string-enum.ts";
 import { liberoFlash } from "./flash.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));

@@ -92,9 +92,9 @@
  * subgoal,deepplan,mem_text,coords,mcq,action_ablation} ported as pi tools; the final task check and plugins/video_ref in ./vlm.ts.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
+import { StringEnum } from "../../string-enum.ts";
 import { checkParam, customSchema, splitUnit, unitLabel } from "./custom.ts";
 import { ABLATION_MODES, Ablation, type AblationMode, mcqOptions, symbol, unsymbol } from "./experimental.ts";
 import { DEFAULT_VIEWS, DEFAULT_VIEWS_NO_WRIST, renderPrompt } from "./prompt.ts";

@@ -30,13 +30,13 @@
  */
 
 import { readFileSync } from "node:fs";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { trackedFlags } from "../../infra/params.ts";
 import { RpcUnavailable } from "../../infra/rpc.ts";
 import { norm as flagValue, PRESETS } from "../../infra/tiers.ts";
 import { template } from "../../planner/context-version.ts";
+import { StringEnum } from "../../string-enum.ts";
 import type { ToolRegistrar } from "../units/types.ts";
 import { CommandError, measured, parseAction, poseOf, posePlain, report, segmentsFor, toDelta } from "./command.ts";
 import {

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- The daemon's `process` operation runs a program with plain pipes for stdin, stdout and stderr, for programs that speak a protocol on stdin and stdout such as MCP servers: `processWrite` and `processCloseStdin` feed its stdin in arrival order, output arrives as raw bytes per stream, and cancelling or a lost connection kills its process group. `hello` reports it in `features`. `openProcess()` returns a `RemoteProcess`; daemons released before it fail the open with `not_supported`. Unlike terminals, it works on Windows too.
+
+### Fixed
+
+- On Windows, an `exec` command's output readers stop once the command has settled, also while a descendant keeps a pipe open without writing; they stayed blocked until it exited, because cancelling a blocked read did not reach the standard library's overlapped pipe I/O.
+
+## [1.5.0] - 2026-11-02
+
+### Breaking Changes
+
+- `RemoteWatcher` follows Durable's `FileWatcher`: `close(context)` is `stop(context)`, and its changes are tagged (`{ kind: "paths", paths }`, `{ kind: "overflow" }`, `{ kind: "failed", error }`). The daemon's `watch` protocol is unchanged. Migration: `await watcher.close(ctx)` becomes `await watcher.stop(ctx)`; test `change.kind` instead of `"overflow" in change` or `"error" in change`.
+
+### Fixed
+
+- `exec` and `pty` fail with `spawn_error` instead of hanging when the daemon cannot start a helper thread (for example at a cgroup task limit); the started command is killed and reaped ([#11433](https://github.com/earendil-works/pi/issues/11433)).
+- `Connection.close()` on Unix no longer leaves running commands behind: the daemon used to die from the client's `SIGTERM` before killing its process groups. It now kills them on `SIGTERM`, `SIGINT` or `SIGHUP` before exiting.
+
+## [1.4.0] - 2026-10-21
+
 ## [1.3.0] - 2026-10-15
 
 ## [1.2.0] - 2026-10-12

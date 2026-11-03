@@ -6,7 +6,7 @@ Runs the official [MCP conformance suite](https://github.com/modelcontextprotoco
 npm run test:mcp-conformance
 ```
 
-CI runs it as the last step of the `node` job in `.github/workflows/ci.yml`. Requires network access the first time, to fetch the pinned suite (`@modelcontextprotocol/conformance@0.2.0-alpha.11`) with `npx`. Install scripts are disabled. Needs a POSIX shell.
+CI runs it in the `mcp-conformance` job of `.github/workflows/ci.yml`. Requires network access the first time, to fetch the pinned suite (`@modelcontextprotocol/conformance@0.2.0-alpha.11`) with `npx`. Install scripts are disabled. Needs a POSIX shell.
 
 ## How it works
 
@@ -39,7 +39,7 @@ node packages/coding-agent/test/mcp-conformance/run.ts --update-baseline
 ## Known failures
 
 - `elicitation-sep1034-client-defaults`: pi does not support elicitation.
-- `auth/basic-cimd`: pi registers clients dynamically instead of using a Client ID Metadata Document.
+- `auth/basic-cimd`: pi uses its Client ID Metadata Document on pi.dev, not the suite's `https://conformance-test.local/client-metadata.json`.
 - `auth/scope-retry-limit`: `pi-client` fails by design; the server never accepts the granted scope.
 
 2026-07-28 is not covered: it is a stateless protocol pi does not implement.

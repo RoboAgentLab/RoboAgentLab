@@ -15,13 +15,13 @@
  * expires them, a stale id is refused and recorded as a `detections_expired` session entry.
  */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { requireService, service } from "../infra/config.ts";
 import { encodePng } from "../infra/png.ts";
 import { NdArray } from "../infra/rpc.ts";
 import { type Json, message, rgbOf, round } from "../robot.ts";
+import { StringEnum } from "../string-enum.ts";
 import { DETECTIONS_EXPIRED_ENTRY, type GraspToolDef } from "./grasp.ts";
 
 export const MASK_TOOLS = ["detect", "select_detection", "reject_detection"] as const;
