@@ -65,6 +65,8 @@ export type MmServer = {
 	config: Json;
 	caps?: Partial<Caps>;
 	views?: string[];
+	/** The robot's own fields of every observation (its `_mm_extra`), from the server's state. */
+	extra?: (s: { steps: number; success: boolean; successStep: number | null }) => Json;
 };
 
 /**
@@ -81,10 +83,12 @@ export async function fakeMmServer(o: MmServer, base: (c: Call) => unknown) {
 		pos: [0.45, 0, 0.3],
 		rot: IDENTITY as number[][],
 		success: false,
+		successStep: null as number | null,
 		segments: [] as Json[],
 		homes: 0,
 	};
-	const fresh = () => Object.assign(s, { steps: 0, success: false, pos: [0.45, 0, 0.3], rot: IDENTITY });
+	const fresh = () =>
+		Object.assign(s, { steps: 0, success: false, successStep: null, pos: [0.45, 0, 0.3], rot: IDENTITY });
 	const caps = () => mmCaps({ ...o.caps, supports_home: o.config.mm_home === "reset" });
 	const view = () => ({ marked768: JPEG, marked512: JPEG, raw512: JPEG });
 	const observation = (images: boolean) => ({
@@ -102,6 +106,7 @@ export async function fakeMmServer(o: MmServer, base: (c: Call) => unknown) {
 		terminated: s.success,
 		truncated: false,
 		episode_over: s.success,
+		...o.extra?.(s),
 		degraded: { table_z: false, side_mount: false, side_mount_reason: null },
 		camera_names: o.views ?? ["scene", "side", "wrist"],
 		home_mode: o.config.mm_home,
@@ -119,7 +124,10 @@ export async function fakeMmServer(o: MmServer, base: (c: Call) => unknown) {
 		const frames = [];
 		for (let k = 0; k < ticks; k++) {
 			s.steps += per;
-			if (o.successAt && s.steps >= o.successAt) s.success = true;
+			if (o.successAt && s.steps >= o.successAt && !s.success) {
+				s.success = true;
+				s.successStep = s.steps;
+			}
 			frames.push(frame());
 		}
 		return frames;

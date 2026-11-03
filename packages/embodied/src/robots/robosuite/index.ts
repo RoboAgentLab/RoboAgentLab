@@ -17,10 +17,13 @@
  * off-table rule), latched at its first step and recorded in `robot_result`. The two-arm tasks
  * take an `arm` on every motion tool (robot0 | robot1), like dual_franka's left | right.
  * --collect-flywheel-data records every control step of a motion (services robots/robosuite/flywheel.py).
+ * MotorMind mode (`--mm=true`, ../../modes/motormind) runs robot0 of the one-arm tasks on the server's
+ * `env.mm_observe` / `env.mm_run_step` (services utils/motormind.py); the two-arm tasks refuse it.
  */
 
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
@@ -30,6 +33,7 @@ import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
 import { finishMove, type Move, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
@@ -174,6 +178,10 @@ export default function robosuite(pi: ExtensionAPI) {
 	let successStep: number | null = null;
 	let envStep = 0;
 	let language = "";
+	/** MotorMind mode: the env server's privileged truth log for this session (the server's own when attached). */
+	let truthLog: string | undefined;
+	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
+	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
 	/** The gripper command units mode holds between units, per arm. */
 	const grip = new Map<string, "open" | "close">();
 	const worldMaps = new Map<string, WorldMap>();
@@ -232,6 +240,8 @@ export default function robosuite(pi: ExtensionAPI) {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
 			primitives: ["move_to", "move_delta", "set_gripper", "act"],
 			published: false,
+			// The prompt's `{{memory}}` is its only memory: --memory-profile off (MotorMind's preset) leaves it empty.
+			optional: true,
 		},
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
@@ -313,6 +323,19 @@ export default function robosuite(pi: ExtensionAPI) {
 			wrist: true,
 			emptyWidthM: EMPTY_WIDTH_M,
 		},
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the
+		// episode's env steps and latched success (a timed-out segment's steps are counted at the next
+		// call); a segment's video frames come with it; `home` (--mm-home reset) is the episode reset.
+		motormind: {
+			observe: async (aim = {}) => mmReply(await call<Json>("env.mm_observe", aim)),
+			runStep: async (seg, { timeoutMs, observe, ...aim }) =>
+				mmReply(await call<Json>("env.mm_run_step", { seg, observe, ...aim }, [], robot.signal, timeoutMs)),
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
+			task: () => language,
+			expect: () => ({ mm_home: mmHome() }),
+		},
 		finish: {
 			description:
 				"End the episode after checking the latest state. Success is robosuite's own check, not this call.",
@@ -328,6 +351,7 @@ export default function robosuite(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	const mem = robot.mem!;
 	/**
 	 * Start a Flywheel episode at a reset (raw/robosuite/<task>/seed_NNN, services robots/robosuite/flywheel.py):
 	 * the reset rendered at 256 px. Only under --collect-flywheel-data.
@@ -366,6 +390,22 @@ export default function robosuite(pi: ExtensionAPI) {
 		successStep = o.success_step === null || o.success_step === undefined ? null : Number(o.success_step);
 		envStep = Number(o.env_steps);
 		worldMaps.clear();
+	}
+
+	/**
+	 * A MotorMind reply (an observation, or a segment with its `observation`): its video frames to the
+	 * episode video, the episode's env steps and latched success (and its step) from it.
+	 */
+	function mmReply(r: Json): Json {
+		const { frames, ...out } = r as Json & { frames?: NdArray[] };
+		for (const f of frames ?? []) video.frame(f);
+		const o = (out.observation ?? out) as Json;
+		if (typeof o.env_steps === "number") envStep = o.env_steps;
+		success = o.terminated === true;
+		successStep = typeof o.success_step === "number" ? o.success_step : null;
+		const config = o.config as { truth?: unknown } | undefined;
+		if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
+		return out;
 	}
 
 	/** A motion call's result: its video frames go to the episode video, the observation is absorbed. */
@@ -756,7 +796,16 @@ export default function robosuite(pi: ExtensionAPI) {
 		if (!TASKS.includes(task as Task)) throw new Error(`unknown --task ${task}: ${TASKS.join(", ")}`);
 		if (TWO_ARM.includes(task as Task) && pi.getFlag("geometry") === true)
 			throw new Error(`--geometry needs a one-arm task; ${task} has two arms`);
+		const mm = flagValue(pi.getFlag("mm")) === "true";
+		if (mm && TWO_ARM.includes(task as Task))
+			throw new Error(`MotorMind mode (--mm) drives one arm; ${task} has two`);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
+		truthLog =
+			mm && !endpoint ? join(mem.render("{{output_dir}}") || tmpdir(), `${tag(seed)}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);
@@ -774,6 +823,9 @@ export default function robosuite(pi: ExtensionAPI) {
 					// The server takes --sam3 for its own segment already.
 					...detectionArgs(pi, { sam3: false }),
 					...(TWO_ARM.includes(task as Task) ? [] : geometryArgs(pi)),
+					// MotorMind mode: its home and its truth log.
+					...(mm ? ["--mm-home", mmHome()] : []),
+					...(truthLog ? ["--mm-truth", truthLog] : []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, MUJOCO_GL: "egl" },
