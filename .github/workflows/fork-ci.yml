@@ -41,4 +41,8 @@ jobs:
       - name: embodied tests
         working-directory: packages/embodied
         run: node --test --experimental-strip-types test/*.test.ts
+      - name: embodied tests (again)
+        if: always()
+        working-directory: packages/embodied
+        run: node --test --experimental-strip-types test/*.test.ts
 

@@ -68,6 +68,8 @@
 # variant has invalid cells, mixes configurations, or misses --min-success. RoboCasa's Target50
 # validator score needs a serial `robocasa/eval.sh <dir> all` afterwards (it skips every valid cell).
 set -uo pipefail
+# TEMPORARY (repro): trace every worker's loop into $EVAL_PARALLEL_TRACE, one line per command, tagged with the worker's pid.
+if [ -n "${EVAL_PARALLEL_TRACE:-}" ]; then exec 7>>"$EVAL_PARALLEL_TRACE" && BASH_XTRACEFD=7 && PS4='+[$BASHPID] ' && set -x; fi
 here=$(cd "$(dirname "$0")" && pwd)
 usage() { echo "usage: eval-parallel.sh [--durable] [-j N] [--gpus LIST] [--variant NAME=ARGS]... [--max-api-concurrency M] [--dashboard-ports LIST] [--pass-k LIST] [--min-success N|P%] <robot> <out-dir> <selection...> [pi args...]" >&2 && exit 2; }
 die() { echo "eval-parallel.sh: $*" >&2 && exit 2; }

@@ -50,6 +50,7 @@ function sandbox() {
 		PI: pi,
 		TIME_LIMIT: "0",
 		FAKE_LOG: join(dir, "calls.log"),
+		EVAL_PARALLEL_TRACE: join(dir, "trace.log"),
 	};
 	delete env.CUDA_VISIBLE_DEVICES;
 	delete env.LOCK;
@@ -152,6 +153,7 @@ test("N=1 and N=4 run the same cells, each once, with the same summary", () => {
 			`stdout:\n${four.stdout}`,
 			`stderr:\n${four.stderr}`,
 			`bash: ${spawnSync("bash", ["-c", "echo $BASH_VERSION"], { encoding: "utf8" }).stdout}`,
+			`trace (n4 only):\n${readFileSync(join(s.dir, "trace.log"), "utf8").split("\n").filter((l) => l.includes("/n4/") || /\] (read|i=|mkdir|local i)/.test(l)).join("\n")}`,
 		].join("\n");
 	};
 	assert.equal(n4.length, 16, diag());
