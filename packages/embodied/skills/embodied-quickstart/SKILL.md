@@ -14,7 +14,14 @@ every command over `ssh <host>`; pi and the experiment directory live on the box
 
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
 observation × execution grid (Figure A1a), optionally the work to reproduce in that cell, where
-services run, the planner and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
+services run, the planner and the experiment directory. A request after the command
+(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language,
+the names in ASCII) settles what it names, and only the rest is asked: a robot by id or label (a
+name several share, `franka`, narrows the menu to them), a ported setting or a work of the survey
+by short name or id (a work with several cells on the robot asks which; its ported settings narrow
+the picker), levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `here` / `remote` / an ssh
+host, a planner (`openai/gpt-6-astra` or `gpt-6-astra`). The confirmation starts with what the
+request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
 flags; the task and the setting go on the command line. With no model configured it writes nothing and
@@ -43,13 +50,16 @@ request at a time to the VLA, or composing tools); the result row records what i
 
 ### The work to reproduce
 
-After the cell, `/embodied-setup` lists every work the survey files in it (`src/infra/setup/works.json`,
-493 works over the 12 cells, generated from the survey site's papers.json by
-`src/scripts/works-catalog.mjs <papers.json>`; regenerate it when the survey's classification changes).
-Typing filters by name or title. The ported works run as a `--preset` / `--tier` (`src/infra/tiers.ts`
-expands it to the flags of that setting and refuses a flag given with another value; the cell adds none
-of its own); the others are listed as "not ported": choosing one keeps the cell's flags and tells the
-agent to read the paper and say what its setting needs beyond them.
+After the cell, `/embodied-setup` lists the ported settings the survey files in it (typing filters by
+the short name); a cell with none skips the question. A ported setting runs as a `--preset` / `--tier`
+(`src/infra/tiers.ts` expands it to the flags of that setting and refuses a flag given with another
+value; the cell adds none of its own). The survey's other works (`src/infra/setup/works.json`, 493 works
+over the 12 cells, generated from the survey site's papers.json by `src/scripts/works-catalog.mjs
+<papers.json>`; regenerate it when the survey's classification changes) are counted under the grid and
+recognized in a request, but not offered until they are ported: a request naming one gets a notice with
+its cells, then the grid, and the agent starts from the cell's flags. A name in a request that is no
+robot, ported setting, survey work, level or planner is called out as possibly not supported yet, in a
+notice and in the confirmation.
 
 When the user names a work ("run it like Show-Harness", "the CaP-X S2 setting", "reproduce RPent",
 "the configuration of paper X"), first say which cell the survey files it in and the cell's flags, then
@@ -150,6 +160,17 @@ node packages/embodied/src/infra/check.ts <robot> [--deployment NAME] [--units] 
 Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `setup.sh`). Inside a robot session the same check is `/robot-check`.
 
 ## 4. One episode
+
+`/embodied-run [request]` (in the directory above the experiment directories, where /embodied-setup
+ran) starts one: it lists the experiment directories found (this one and its subdirectories whose
+`.pi/settings.json` loads a robot), takes the setting from the `.pi/embodied-setup.json` record
+/embodied-setup wrote (else asks the grid and the picker), asks the task flags, a GPU (nvidia-smi,
+the freest first) and the budget, then how: in this terminal (pi takes it over until the episode
+ends; the trust prompt, then `Solve the task.`), headless (the agent runs `pi -a -p ... "Solve the
+task."` in the background and reports `robot_result`), or printed. A request names the robot
+(`/embodied-run libero`) or overrides the setting (`metaworld privileged code`). An experiment
+whose venv is missing is refused: run /embodied-setup. The command it builds is the one below.
+
 
 The launch command `/embodied-setup` hands over (`[setting flags]`: the cell's flags from the table
 in section 1, or a paper's `--preset` / `--tier`, plus the fine-tuned planner's `--model finetuned/...`

@@ -9,7 +9,7 @@ const packageJsonFiles = [];
 function collectPackageJsonFiles(directory) {
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
 		if (entry.isDirectory()) {
-			if (!ignoredDirectories.has(entry.name)) {
+			if (!ignoredDirectories.has(entry.name) && !entry.name.startsWith(".venv")) {
 				collectPackageJsonFiles(join(directory, entry.name));
 			}
 			continue;

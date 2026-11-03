@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SPECS } from "../src/infra/check.ts";
@@ -37,7 +37,21 @@ import setup, {
 	PAPER,
 	PKG,
 	ROBOTS,
+	RUN,
+	RUN_HOW,
+	runDeps,
 } from "../src/infra/setup/index.ts";
+import { parseRequest } from "../src/infra/setup/request.ts";
+import {
+	episodeFlags,
+	experimentLabel,
+	gpus,
+	headlessCommand,
+	RECORD,
+	readExperiment,
+	runCommand,
+	scanExperiments,
+} from "../src/infra/setup/run.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 /** `keys`: the raw terminal input each custom component (the grid, then the paper picker) receives, in order; enter picks the cursor's entry. */
@@ -146,6 +160,7 @@ function fakePi(
 	};
 	setup(pi);
 	return {
+		ctx,
 		entries,
 		sent,
 		notes,
@@ -158,7 +173,7 @@ function fakePi(
 			for (const fn of handlers.get("session_start") ?? [])
 				await fn({ type: "session_start", reason: "startup" }, ctx);
 		},
-		run: () => commands.get(COMMAND)?.handler("", ctx) ?? Promise.resolve(),
+		run: (args = "") => commands.get(COMMAND)?.handler(args, ctx) ?? Promise.resolve(),
 	};
 }
 
@@ -673,7 +688,7 @@ test("outside the TUI the grid and the picker are selects", async () => {
 		mode: "rpc",
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "HumanCLAW", "O3 × A1 Model", "none", "here", "openai/gpt-6"],
+			select: ["sim", "HumanCLAW", "O3 × A1 Model", "here", "openai/gpt-6"],
 			input: [""],
 			confirm: [false],
 		},
@@ -685,7 +700,7 @@ test("outside the TUI the grid and the picker are selects", async () => {
 	]);
 	assert.equal(p.grids.length, 0);
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --privileged; planner/m);
-	// The picker: none, the ported settings, then the survey's works of the cell; answered by its text.
+	// The picker: none, then the cell's ported settings only (the survey's other works are not offered); answered by its text.
 	const q = fakePi({
 		mode: "rpc",
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
@@ -696,14 +711,10 @@ test("outside the TUI the grid and the picker are selects", async () => {
 		},
 	});
 	await q.run();
-	const offered = q.offered[PAPER];
-	assert.equal(offered[0], NO_PAPER);
-	assert.equal(
-		offered[1],
+	assert.deepEqual(q.offered[PAPER], [
+		NO_PAPER,
 		"showharness: Show-Harness, action units with image feedback, no VLA (--preset showharness)",
-	);
-	assert.ok(offered.length > 60, "the survey's O1 × A1 Code works follow");
-	assert.ok(!offered.slice(2).some((t) => /Show-Harness:/.test(t)), "a ported work is listed once");
+	]);
 	assert.match(q.confirms.at(-1) ?? "", /^flags: --preset showharness; planner/m);
 });
 
@@ -751,11 +762,11 @@ test("the work catalog: the survey's policy works per cell, every ported setting
 	);
 });
 
-test("the picker: none, the ported settings, then the other works; typing filters by name or title; a window follows the cursor", () => {
+test("the picker: none, then the cell's ported settings only; typing filters; a window follows the cursor", () => {
 	const c = cell("O2", "A3");
-	const entries = pickEntries(papersFor(robot("libero"), c), worksIn(c), NO_PAPER);
-	assert.equal(entries[0].id, "none");
-	assert.deepEqual(ids(entries.slice(1, 8)), [
+	const entries = pickEntries(papersFor(robot("libero"), c), NO_PAPER);
+	assert.deepEqual(ids(entries), [
+		"none",
 		"capx-S2",
 		"capx-S3",
 		"capx-S4",
@@ -764,32 +775,29 @@ test("the picker: none, the ported settings, then the other works; typing filter
 		"capx-M3",
 		"capx-M4",
 	]);
-	assert.ok(
-		entries.slice(8).every((e) => !e.ported && e.work),
-		"the rest are the survey's works",
-	);
-	assert.ok(!entries.slice(8).some((e) => e.id === "capx"), "CaP-X itself is covered by its tiers");
-	assert.ok(entries.length > 70);
+	assert.ok(worksIn(c).length > 70, "the survey files many more works there");
+	assert.ok(!entries.some((e) => /not ported/.test(e.text)), "which the picker does not offer");
 	assert.deepEqual(ids(pickMatches(entries, "capx-m")), ["capx-M1", "capx-M2", "capx-M3", "capx-M4"]);
-	assert.ok(pickMatches(entries, "voxposer").every((e) => e.id === "voxposer" || /voxposer/i.test(e.text)));
-	assert.ok(pickMatches(entries, "Code as Policies").length >= 1, "the title matches");
+	assert.deepEqual(ids(pickMatches(entries, "low-level")), ["capx-S3", "capx-S4", "capx-M4"], "the note matches too");
 	assert.deepEqual(pickMatches(entries, "zzzz"), []);
-	// The window: 12 entries around the cursor, the rest counted above and below.
-	const top = pickerLines("T", entries, "", 0);
-	assert.equal(top[0], "T");
-	assert.match(top[1], /^ {2}type to filter: _\s+\d+ of \d+$/);
-	assert.equal(top.filter((l) => /^(→ | {2})\S/.test(l) && !/^ {2}(type|…|nothing)/.test(l)).length, 12);
-	assert.ok(top.some((l) => /^ {2}… \d+ below$/.test(l)));
-	assert.ok(!top.some((l) => /above/.test(l)));
-	const mid = pickerLines("T", entries, "", 30);
-	assert.ok(mid.some((l) => /^ {2}… 24 above$/.test(l)));
-	assert.ok(mid.some((l) => l.startsWith("→ ") && l.endsWith(" · not ported")));
 	const one = pickerLines("T", entries, "capx-s3", 0);
 	assert.ok(one.includes("→ capx-S3: CaP-X S3, one program, low-level API with examples (--tier S3)"));
 	assert.equal(one.filter((l) => /^(→ | {2})capx/.test(l)).length, 1, "one entry; the filter line is not an entry");
+	assert.match(one[1], /^ {2}type to filter: capx-s3_\s+1 of 8$/);
+	// The window: 12 entries around the cursor, the rest counted above and below (a long list).
+	const many = Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, text: `w${i}: work ${i}` }));
+	const top = pickerLines("T", many, "", 0);
+	assert.equal(top[0], "T");
+	assert.equal(top.filter((l) => /^(→ | {2})w\d/.test(l)).length, 12);
+	assert.ok(top.some((l) => /^ {2}… 18 below$/.test(l)));
+	assert.ok(!top.some((l) => /above/.test(l)));
+	const mid = pickerLines("T", many, "", 20);
+	assert.ok(mid.some((l) => /^ {2}… 14 above$/.test(l)));
+	assert.ok(mid.some((l) => /^ {2}… 4 below$/.test(l)));
+	assert.ok(mid.includes("→ w20: work 20"));
 });
 
-test("a ported work replaces the cell's flags with its preset or tier; a work that is not ported keeps them and goes to the agent", async () => {
+test("a ported work replaces the cell's flags with its preset or tier; a cell without one skips the picker", async () => {
 	// O3 × A3 on LIBERO: typing "cap" filters the picker to CaP-X S1 (and the survey's works that mention it); enter takes the first.
 	const p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
@@ -814,7 +822,7 @@ test("a ported work replaces the cell's flags with its preset or tier; a work th
 		/^- setting: O3 × A3 \(§3\.3 Privileged State × §3\.6 Code Synthesis\), CaP-X S1's setting; flags `--tier S1`$/m,
 	);
 	assert.match(text, /pi --libero-type standard --suite libero_10 --task 0 --seed 0 --tier S1 --max-turns 40/);
-	assert.doesNotMatch(text, /--code=true|--privileged|^- work:/m);
+	assert.doesNotMatch(text, /--code=true|--privileged/);
 	// A preset in A1 Code is the paper's planner setting: no fine-tuned adapter is offered with it. The filter
 	// also matches the name; a filter nothing matches is erased with backspace; vi keys are typed text here.
 	const q = fakePi({
@@ -838,30 +846,21 @@ test("a ported work replaces the cell's flags with its preset or tier; a work th
 	);
 	assert.deepEqual(q.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6"]);
 	assert.match(q.confirms.at(-1) ?? "", /^flags: --preset showharness; planner/m);
-	// A work that is not ported: Reflective Planning in O1 × A2; the cell's flags stay, the agent is told to read it.
+	// A cell with no ported setting (O1 × A3 on ManiSkill) skips the picker.
 	const r = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "LIBERO", "here", "openai/gpt-6"],
+			select: ["sim", "ManiSkill", "here", "openai/gpt-6"],
 			input: [""],
-			confirm: [true, true],
-			keys: [
-				["l", "l", "\r"],
-				["r", "e", "f", "l", "e", "c", "t", "i", "v", "e", " ", "p", "\r"],
-			],
+			confirm: [false],
+			keys: [["l", "l", "l", "\r"]],
 		},
 	});
 	await r.run();
-	const rt = r.sent[0]?.text ?? "";
-	assert.match(
-		r.confirms.at(-1) ?? "",
-		/^LIBERO \(sim\): O1 × A2 \(§3\.1 Sensory Inputs × §3\.5 Tool Orchestration\), reproducing Reflective Planning$/m,
-	);
-	assert.match(rt, /^- setting: O1 × A2 .*, reproducing Reflective Planning; flags `none`$/m);
-	assert.match(
-		rt,
-		/^- work: reproduce "Reflective Planning: Vision-Language Models for Multi-Stage Long-Horizon Robotic Manipulation" \(https:\/\/\S+\), which the survey files in O1 × A2; it is not ported: start from the cell's flags above, read the paper/m,
-	);
+	assert.equal(r.grids.length, 5, "the grid's renders only: the first and one per key");
+	assert.ok(!r.asked.includes(PAPER));
+	assert.match(r.confirms.at(-1) ?? "", /^ManiSkill 3 \(sim\): O1 × A3 /m);
+	assert.match(r.confirms.at(-1) ?? "", /^flags: --code=true; planner/m);
 });
 
 test("O2 tells the agent about the SAM3 server; the fine-tuned planner adds its extension and flags", async () => {
@@ -886,4 +885,405 @@ test("O2 tells the agent about the SAM3 server; the fine-tuned planner adds its 
 	assert.equal(settings.defaultModel, undefined, "the adapter is the planner: no registry model is set");
 	const axes: Axes = robot("maniskill").axes;
 	assert.equal(cellFlags(axes, cell("O2", "A1C")), "--units=true --detections");
+});
+
+test("a request settles what it names: robot, setting or work, levels, where, planner", () => {
+	const models = ["anthropic/claude-opus-5", "openai/gpt-6-astra"];
+	let r = parseRequest("在 LIBERO-pro 里复现 RPent 的实验", ROBOTS, models);
+	assert.deepEqual(
+		r.robots?.map((x) => x.id),
+		["libero-pro"],
+	);
+	assert.equal(r.kind, "sim");
+	assert.equal(r.paper?.id, "rpent");
+	assert.equal(r.work, undefined);
+	assert.deepEqual(r.settled, ["robot LIBERO-PRO", "RPent's setting (O1 × A2, --preset rpent)"]);
+	// A name several robots share: all of them. Levels, a remote host.
+	r = parseRequest("franka, units, privileged, on me@gpu-box", ROBOTS, models);
+	assert.deepEqual(
+		r.robots?.map((x) => x.id),
+		["franka", "franka-polymetis", "dual-franka"],
+	);
+	assert.equal(r.kind, "real");
+	assert.deepEqual([r.o, r.a, r.where, r.host], ["O3", "A1C", "remote", "me@gpu-box"]);
+	// A work of the survey, a planner by its id.
+	r = parseRequest("Code as Policies on maniskill with gpt-6-astra, here", ROBOTS, models);
+	assert.equal(r.work?.id, "grid66");
+	assert.deepEqual(
+		r.robots?.map((x) => x.id),
+		["maniskill"],
+	);
+	assert.equal(r.model, "openai/gpt-6-astra");
+	assert.equal(r.where, "here");
+	assert.equal(r.a, undefined, "a work places the cell; 'code' is not read as A3");
+	// A tier by its short name, in either spelling; a planner as provider/id.
+	assert.equal(parseRequest("cap-x s2 on libero", ROBOTS, models).paper?.id, "capx-S2");
+	assert.equal(parseRequest("capx-M3", ROBOTS, models).paper?.id, "capx-M3");
+	assert.equal(parseRequest("anthropic/claude-opus-5", ROBOTS, models).model, "anthropic/claude-opus-5");
+	// Exact beats partial: LIBERO is the standard one; "real" is a kind, not the work REAL; nothing is nothing.
+	assert.deepEqual(
+		parseRequest("LIBERO", ROBOTS, models).robots?.map((x) => x.id),
+		["libero"],
+	);
+	assert.equal(parseRequest("a real robot", ROBOTS, models).work, undefined);
+	assert.equal(parseRequest("a real robot", ROBOTS, models).kind, "real");
+	assert.deepEqual(parseRequest("", ROBOTS, models), { settled: [], unknown: [] });
+	assert.deepEqual(parseRequest("a1 model sam3", ROBOTS, models).settled, ["O2 × A1M"]);
+});
+
+test("/embodied-setup <request>: what the request settles is not asked; an ambiguous robot narrows its menu", async () => {
+	// Robot and setting named: only the services, the planner and the directory are asked.
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false] },
+	});
+	await p.run("在 LIBERO-pro 里复现 RPent 的实验");
+	assert.deepEqual(p.asked.slice(0, 2), ["Where do the services run?", "Planner model"]);
+	assert.equal(p.grids.length, 0, "no grid, no picker");
+	let summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /^from your request: robot LIBERO-PRO; RPent's setting \(O1 × A2, --preset rpent\)$/m);
+	assert.match(summary, /^LIBERO-PRO \(sim\): O1 × A2 .*, RPent's setting$/m);
+	assert.match(summary, /^flags: --preset rpent; planner openai\/gpt-6$/m);
+	// Everything named: only the directory and the confirmation remain.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { input: [""], confirm: [false] },
+	});
+	await p.run("reproduce Show-Harness on metaworld here with openai/gpt-6");
+	assert.deepEqual(
+		p.asked.map((a) => a.replace(/\(empty: .*\)/, "(empty: ...)")),
+		["Experiment directory (empty: ...)", "Set up pi-embodied?"],
+	);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset showharness; planner openai\/gpt-6$/m);
+	// "franka" is three robots: the menu offers those three only; the rest is the usual flow.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: {
+			select: ["Dual Franka", "here", "openai/gpt-6"],
+			input: [""],
+			confirm: [false],
+			keys: [["\r"], ["\r"]],
+		},
+	});
+	await p.run("franka");
+	assert.deepEqual(p.offered["Robot or benchmark"], ["Franka (RLinf)", "Franka (Polymetis)", "Dual Franka"]);
+	assert.ok(!p.asked.includes("Simulation or real robot?"), "the kind follows the robots");
+	assert.match(p.confirms.at(-1) ?? "", /^Dual Franka \(real\): O1 × A1 Code /m);
+	// Levels named: the grid is skipped.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"]] },
+	});
+	await p.run("libero units privileged");
+	assert.equal(p.grids.length, 0, "no grid; and O3 × A1 Code has no ported setting, so no picker");
+	assert.ok(!p.asked.includes(PAPER));
+	summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /^LIBERO \(sim\): O3 × A1 Code /m);
+	assert.match(summary, /^flags: --units=true --privileged; planner/m);
+	// A remote host named: only the checkout on the box is asked for.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["openai/gpt-6"], input: ["/data/pi-embodied", ""], confirm: [false] },
+	});
+	await p.run("rpent on libero, ssh me@gpu");
+	assert.ok(!p.asked.includes("ssh host"));
+	assert.ok(p.asked.includes("pi-embodied checkout on the box"));
+	assert.match(p.confirms.at(-1) ?? "", /^services on me@gpu:\/data\/pi-embodied\/services$/m);
+});
+
+test("/embodied-setup <request> with a work of the survey: its ported settings narrow the cell and the picker; one that is not ported is a notice", async () => {
+	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; ManiSkill has both: the cell is asked, the picker lists the tiers there.
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["O2 × A3", "here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\x1b[B", "\r"]] },
+	});
+	await p.run("CaP-X on maniskill");
+	assert.deepEqual(
+		p.notes.filter((n) => !/^Nothing written/.test(n)),
+		[],
+		"no warning",
+	);
+	assert.deepEqual(p.offered["Cell for CaP-X"], [
+		"O2 × A3: Perception Tools · Code Synthesis",
+		"O3 × A3: Privileged State · Code Synthesis",
+	]);
+	const picker = p.grids[0];
+	assert.ok(
+		picker.some((l) => /capx-S2: CaP-X S2/.test(l)),
+		picker.join("\n"),
+	);
+	assert.ok(!picker.some((l) => /capx-S1/.test(l)), "S1 is O3's");
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --tier S2; planner/m);
+	// A real arm has no O3: CaP-X on UR5e is O2 × A3 without asking.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"]] },
+	});
+	await p.run("CaP-X on ur5e");
+	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
+	assert.match(p.confirms.at(-1) ?? "", /^UR5e \(real\): O2 × A3 /m);
+	// Code as Policies is in the survey but not ported: a notice names its cells, then the grid.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\x1b"]] },
+	});
+	await p.run("Code as Policies on LIBERO");
+	assert.ok(
+		p.notes.some((n) =>
+			/^Code as Policies is not ported yet \(the survey files it in O2 × A3, O3 × A3\); pick a cell/.test(n),
+		),
+		p.notes.join("|"),
+	);
+	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
+	assert.equal(p.grids.length, 2, "the grid: its first render and the one after escape; no picker");
+	assert.deepEqual(p.sent, []);
+	// A setting the robot cannot run (MotorMind's, LIBERO's only, on ManiSkill): a warning, then the grid.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"], ["\r"]] },
+	});
+	await p.run("motormind on maniskill");
+	assert.ok(
+		p.notes.some((n) => /^MotorMind's setting is not on ManiSkill 3; pick a cell$/.test(n)),
+		p.notes.join("|"),
+	);
+	assert.equal(p.grids.length, 4, "the grid and the picker of O1 × A1 Code (Show-Harness), each rendered twice");
+	assert.match(p.confirms.at(-1) ?? "", /^ManiSkill 3 \(sim\): O1 × A1 Code /m);
+	// Names nothing matches are called out as possibly not supported, in a notice and in the confirmation.
+	const r = parseRequest("reproduce VoxPoser-2 on Aloha with units, here", ROBOTS, ["openai/gpt-6"]);
+	assert.deepEqual(r.unknown, ["VoxPoser-2", "Aloha"]);
+	assert.deepEqual([r.a, r.where], ["A1C", "here"]);
+	assert.deepEqual(parseRequest("在 LIBERO-pro 里复现 RPent 的实验", ROBOTS, []).unknown, []);
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["sim", "LIBERO", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"], ["\r"]] },
+	});
+	await p.run("reproduce VoxPoser-2 on Aloha, here");
+	assert.ok(
+		p.notes.some((n) =>
+			/^not recognized: VoxPoser-2, Aloha; no robot, ported setting, survey work, level or planner by that name \(maybe not supported yet\)/.test(
+				n,
+			),
+		),
+		p.notes.join("|"),
+	);
+	assert.ok(p.asked.includes("Simulation or real robot?"), "the rest is asked");
+	assert.match(p.confirms.at(-1) ?? "", /^not recognized \(maybe not supported yet\): VoxPoser-2, Aloha$/m);
+});
+
+test("/embodied-setup records the setting in the experiment directory for /embodied-run", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	// O1 × A2 on LIBERO asks about the weights (its VLA) before the confirmation.
+	const p = fakePi({ cwd, answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [true, true] } });
+	await p.run("在 LIBERO-pro 里复现 RPent 的实验");
+	const record = JSON.parse(readFileSync(join(cwd, "embodied-libero-pro", RECORD), "utf8"));
+	assert.deepEqual(record, {
+		robot: "libero-pro",
+		cell: { o: "O1", a: "A2" },
+		paper: "rpent",
+		flags: "--preset rpent",
+		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
+		services: record.services,
+		planner: "openai/gpt-6",
+		created: record.created,
+	});
+	assert.match(record.services, /\/services$/);
+	// The directory is an experiment: its settings load LIBERO; not installed here (no venv).
+	const e = readExperiment(join(cwd, "embodied-libero-pro"), ROBOTS);
+	assert.equal(e?.robot.id, "libero-pro");
+	assert.deepEqual(
+		e?.robots.map((r) => r.id),
+		["libero", "libero-pro", "libero-plus"],
+	);
+	assert.equal(e?.planner, "openai/gpt-6");
+	assert.equal(e?.env, undefined);
+	assert.equal(experimentLabel(e!), "embodied-libero-pro: LIBERO-PRO, O1 × A2, rpent (not installed)");
+	assert.deepEqual(
+		scanExperiments(cwd, ROBOTS).map((x) => basename(x.dir)),
+		["embodied-libero-pro"],
+	);
+	assert.deepEqual(
+		scanExperiments(join(cwd, "embodied-libero-pro"), ROBOTS).map((x) => basename(x.dir)),
+		["embodied-libero-pro"],
+	);
+	assert.deepEqual(scanExperiments(mkdtempSync(join(tmpdir(), "pi-embodied-none-")), ROBOTS), []);
+});
+
+/** An installed experiment: settings loading a robot, a record, and the env file setup.sh would write. */
+function installed(cwd: string, name: string, robot: string, record?: Partial<SetupRecordLike>) {
+	const dir = join(cwd, name);
+	const services = join(cwd, "services");
+	mkdirSync(join(dir, ".pi"), { recursive: true });
+	mkdirSync(join(services, `.venv-${robot}`), { recursive: true });
+	writeFileSync(join(services, `.venv-${robot}`, "pi-embodied.env"), "export PI_EMBODIED_PYTHON=/x\n");
+	const ext = ROBOTS.find((r) => r.id === robot)!.extension;
+	writeFileSync(
+		join(dir, ".pi/settings.json"),
+		JSON.stringify({
+			extensions: [`${cwd}/packages/embodied/${ext}`],
+			defaultProvider: "openai",
+			defaultModel: "gpt-6",
+		}),
+	);
+	if (record)
+		writeFileSync(
+			join(dir, RECORD),
+			JSON.stringify({
+				robot,
+				cell: { o: "O1", a: "A1C" },
+				flags: "--units=true",
+				task: "--task x --seed 0",
+				services,
+				...record,
+			}),
+		);
+	return dir;
+}
+type SetupRecordLike = {
+	robot: string;
+	cell: Cell;
+	paper?: string;
+	flags: string;
+	task: string;
+	services: string;
+	planner?: string;
+};
+
+test("the run module: experiments are read from their settings and record, the commands carry the env, the GPU and the budget", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	const dir = installed(cwd, "embodied-metaworld", "metaworld", { paper: undefined });
+	const e = readExperiment(dir, ROBOTS)!;
+	assert.equal(e.robot.id, "metaworld");
+	assert.equal(e.env, join(cwd, "services/.venv-metaworld/pi-embodied.env"));
+	assert.equal(e.record?.flags, "--units=true");
+	assert.equal(experimentLabel(e), "embodied-metaworld: Metaworld, O1 × A1 Code");
+	const flags = episodeFlags("--task reach-v3 --seed 0", "--units=true", BUDGET);
+	assert.equal(flags, `--task reach-v3 --seed 0 --units=true ${BUDGET} --dashboard=true`);
+	assert.equal(
+		runCommand(e, flags, 5),
+		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi ${flags}`,
+	);
+	assert.equal(runCommand(e, flags), `cd ${dir} && source ${e.env} && pi ${flags}`);
+	assert.equal(
+		headlessCommand(e, flags, 5),
+		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi -a -p ${flags} "Solve the task."`,
+	);
+	// No record, three LIBEROs share the extension: the one whose venv exists is the robot.
+	const lib = installed(cwd, "libero-old", "libero-plus");
+	const l = readExperiment(lib, ROBOTS)!;
+	assert.equal(l.robot.id, "libero-plus");
+	assert.equal(l.record, undefined);
+	assert.equal(experimentLabel(l), "libero-old: LIBERO-plus, setting not recorded");
+	// GPUs from nvidia-smi, the freest first; none when it is missing or fails.
+	const smi = (stdout: string, status = 0) => (() => ({ status, stdout })) as unknown as Parameters<typeof gpus>[0];
+	assert.deepEqual(gpus(smi("0, 41355, 46068\n5, 29793, 46068\n6, 29793, 46068\n")), [
+		{ index: 5, freeMiB: 16275, totalMiB: 46068 },
+		{ index: 6, freeMiB: 16275, totalMiB: 46068 },
+		{ index: 0, freeMiB: 4713, totalMiB: 46068 },
+	]);
+	assert.deepEqual(gpus(smi("", 1)), []);
+	assert.deepEqual(
+		gpus((() => {
+			throw new Error("ENOENT");
+		}) as unknown as Parameters<typeof gpus>[0]),
+		[],
+	);
+});
+
+test("/embodied-run: the installed experiment, its recorded setting, the task, the budget; headless hands the command to the agent, print shows it", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	installed(cwd, "embodied-metaworld", "metaworld", {});
+	// One experiment: nothing to pick; the setting is recorded; no GPU on this machine (none asked, none in the command).
+	runDeps.gpus = () => [];
+	let p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.ok(!p.asked.includes("Experiment"));
+	assert.ok(p.asked.some((a) => a.startsWith("Task flags (empty: --task x --seed 0)")));
+	assert.ok(p.asked.some((a) => a.startsWith("Episode budget (empty: --max-turns 40")));
+	assert.deepEqual(p.offered["How to run?"], [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print]);
+	assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O1 × A1 Code; planner openai\/gpt-6$/m);
+	assert.match(p.confirms.at(-1) ?? "", /^task: --task x --seed 0$/m);
+	assert.ok(!p.asked.includes("GPU"));
+	assert.equal(
+		p.notes.at(-1),
+		`cd ${cwd}/embodied-metaworld && source ${cwd}/services/.venv-metaworld/pi-embodied.env && pi --task x --seed 0 --units=true --max-turns 40 --time-limit 900 --dashboard=true`,
+	);
+	assert.deepEqual(p.sent, []);
+	// Headless: the agent gets the pi -a -p command and what to report; the task flags typed replace the recorded ones.
+	p = fakePi({
+		cwd,
+		answers: { select: [RUN_HOW.headless], input: ["--task push-v3 --seed 3", "--max-turns 10"], confirm: [true] },
+	});
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	const text = p.sent[0]?.text ?? "";
+	assert.match(text, /^\/skill:embodied-quickstart Run one episode now, in the background/);
+	assert.match(
+		text,
+		/pi -a -p --task push-v3 --seed 3 --units=true --max-turns 10 --dashboard=true "Solve the task\."`$/m,
+	);
+	assert.match(text, /robot_result/);
+	// Outside the TUI "here" is not offered.
+	p = fakePi({ cwd, mode: "rpc", answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.deepEqual(p.offered["How to run?"], [RUN_HOW.headless, RUN_HOW.print]);
+	assert.match(p.notes.at(-1) ?? "", /^Nothing started/);
+	// No experiment here: told to set up first.
+	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-none-")) });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.match(p.notes.at(-1) ?? "", /^no experiment here: .*run \/embodied-setup first$/);
+});
+
+test("/embodied-run: several experiments are a menu, a request's robot picks one, an unrecorded setting is chosen as in setup, not installed is refused", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	installed(cwd, "embodied-metaworld", "metaworld", {});
+	installed(cwd, "libero-old", "libero");
+	mkdirSync(join(cwd, "embodied-ur5e/.pi"), { recursive: true });
+	writeFileSync(
+		join(cwd, "embodied-ur5e/.pi/settings.json"),
+		JSON.stringify({ extensions: [`${cwd}/packages/embodied/src/robots/ur5e/index.ts`] }),
+	);
+	// Two GPUs: a menu, the freest first.
+	runDeps.gpus = () => [
+		{ index: 5, freeMiB: 16275, totalMiB: 46068 },
+		{ index: 0, freeMiB: 4713, totalMiB: 46068 },
+	];
+	// The menu, by directory; the request names LIBERO: no menu, and its setting is not recorded, so the grid and the picker (O1 × A1 Code: Show-Harness) are asked.
+	let p = fakePi({
+		cwd,
+		answers: { select: ["GPU 5", RUN_HOW.print], input: ["", ""], confirm: [true], keys: [["\r"], ["\x1b[B", "\r"]] },
+	});
+	await p.commands.get(RUN)?.handler("libero", p.ctx);
+	assert.ok(!p.asked.includes("Experiment"));
+	assert.equal(p.grids.length, 5, "the grid (two renders) and the picker (three)");
+	assert.deepEqual(p.offered.GPU, [
+		"GPU 5: 16275 MiB free of 46068",
+		"GPU 0: 4713 MiB free of 46068",
+		"any: no CUDA_VISIBLE_DEVICES",
+	]);
+	assert.match(p.confirms.at(-1) ?? "", /^LIBERO: O1 × A1 Code, showharness; planner openai\/gpt-6$/m);
+	assert.match(p.confirms.at(-1) ?? "", /^GPU 5$/m);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi --libero-type standard --suite libero_10 --task 0 --seed 0 --preset showharness --max-turns 40/,
+	);
+	// No request: the menu lists all three, the UR5e one as not installed; choosing it is refused.
+	p = fakePi({ cwd, answers: { select: ["embodied-ur5e"] } });
+	await p.commands.get(RUN)?.handler("", p.ctx);
+	assert.deepEqual(p.offered.Experiment, [
+		"embodied-metaworld: Metaworld, O1 × A1 Code",
+		"embodied-ur5e: UR5e, setting not recorded (not installed)",
+		"libero-old: LIBERO, setting not recorded",
+	]);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/^UR5e is not installed: .*\.venv-ur5e\/pi-embodied\.env is missing; run \/embodied-setup$/,
+	);
+	// A request's levels override a recorded setting (the grid is skipped), the picker of that cell still asks.
+	p = fakePi({ cwd, answers: { select: ["any", RUN_HOW.print], input: ["", ""], confirm: [true], keys: [["\r"]] } });
+	await p.commands.get(RUN)?.handler("metaworld privileged code", p.ctx);
+	assert.equal(p.grids.length, 2, "no grid; the picker of O3 × A3 (CaP-X S1), answered none");
+	assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O3 × A3; planner/m);
+	assert.match(p.confirms.at(-1) ?? "", /^GPU: any$/m);
+	assert.match(p.notes.at(-1) ?? "", /&& pi --task x --seed 0 --code=true --privileged --max-turns 40/);
+	runDeps.gpus = () => [];
 });
