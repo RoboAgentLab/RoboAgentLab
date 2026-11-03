@@ -18,6 +18,13 @@
  *
  * Verbatim replay (../replay, `replay/session`) is Flash without re-localization: a recording's
  * calls sent unchanged. The two are separate providers for now.
+ *
+ * The replay is independent of the action surface: a plan file may hold the robot's tool-call plan
+ * (A2, above: re-anchored by the robot's hook), an action-unit sequence (A1: `act` calls replayed
+ * as recorded, nothing to re-anchor) or a program (A3: run once through `run_code`); ./kinds.ts
+ * reads the latter two by content, the robot's hook finds them next to its own plans
+ * (`<name>_units.json`, `<name>_program.py`), and `--flash-plan <file>` names any kind directly.
+ * ./generate.ts writes all three from a solved session.
  */
 
 import {
@@ -33,11 +40,16 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type KindProgram, readKind, replayProgram, replayUnits } from "./kinds.ts";
 
 type Json = Record<string, unknown>;
 export type FlashCall = { name: string; arguments: Json };
-/** One tool result: its JSON (the text result parsed), its images, and its error text when it failed. */
-export type FlashReply = { json: Json; images: string[]; error?: string };
+/**
+ * One tool result: its JSON (the text result parsed: the whole text, else the first text part that
+ * is JSON, as a `run_code` or `act` result puts its observation after a report line), its images,
+ * the result's `details`, and its error text when it failed.
+ */
+export type FlashReply = { json: Json; images: string[]; details?: Json; error?: string };
 /** One planned call; a robot's plans may carry more per entry (e.g. the anchor a waypoint was written against). */
 export type FlashEntry = { action: string; arguments: Json };
 export type FlashProgram<E extends FlashEntry = FlashEntry> = { name: string; plan: E[] };
@@ -91,8 +103,14 @@ export type FlashReplay<E extends FlashEntry = FlashEntry> = {
  * over the robot's own program type is a `FlashHook` (what RobotSpec takes).
  */
 export type FlashHook<P extends FlashProgram = FlashProgram> = {
-	/** This episode's program; `cwd` resolves relative plan directories. Throws when there is none. */
-	load: (cwd: string) => P | Promise<P>;
+	/**
+	 * This episode's program; `cwd` resolves relative plan directories. Throws when there is none. A
+	 * units or program plan found next to the robot's own (./kinds.ts `kindFiles`) is returned as is:
+	 * the replay plays it without the hook's `start`.
+	 */
+	load: (cwd: string) => P | KindProgram | Promise<P | KindProgram>;
+	/** The robot's own plan read from one file (`--flash-plan`); without it only units and program files may be named. */
+	loadFile?: (path: string) => P | Promise<P>;
 	/** Re-localize the program on the live scene (the robot may move and observe) and return the replay. */
 	start(program: P, robot: FlashRobot): Promise<FlashReplay<P["plan"][number]>>;
 	/** The episode is over: no further calls are sent. */
@@ -178,17 +196,30 @@ function repliesFor(messages: Message[], ids: string[], textResult?: (text: stri
 	return ids.map((id) => {
 		const m = byId.get(id);
 		if (!m || m.role !== "toolResult") return { json: {}, images: [], error: "no tool result" };
-		const text = m.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n");
+		const texts = m.content.flatMap((c) => (c.type === "text" ? [c.text] : []));
+		const text = texts.join("\n");
 		const images = m.content.flatMap((c) => (c.type === "image" ? [c.data] : []));
-		let json: Json;
-		try {
-			json = JSON.parse(text) as Json;
-		} catch {
+		const details = m.details as Json | undefined;
+		// The whole text (a robot's toolResult), else a part (an act or run_code result puts its observation
+		// after a report part), else a line (a result that joined the two).
+		const json = jsonIn([text, ...texts, ...text.split("\n")]);
+		if (json === undefined) {
 			const reported = textResult?.(text);
-			return reported ? { json: reported, images } : { json: {}, images, error: text };
+			return reported ? { json: reported, images, details } : { json: {}, images, details, error: text };
 		}
-		return m.isError ? { json, images, error: text } : { json, images };
+		return m.isError ? { json, images, details, error: text } : { json, images, details };
 	});
+}
+
+/** The first of `candidates` that parses as a JSON object. */
+function jsonIn(candidates: string[]): Json | undefined {
+	for (const c of candidates) {
+		try {
+			const v = JSON.parse(c);
+			if (v && typeof v === "object" && !Array.isArray(v)) return v as Json;
+		} catch {}
+	}
+	return undefined;
 }
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -217,6 +248,12 @@ export function flash<P extends FlashProgram>(
 	hook: FlashHook<P>,
 	o: { invalid?: (why: string) => void } = {},
 ) {
+	pi.registerFlag("flash-plan", {
+		type: "string",
+		default: "",
+		description:
+			"Replay this plan file instead of searching the robot's plan directories: a units sequence (<name>_units.json, or a JSONL of act lines), a program (.py, or JSON with code), or the robot's own tool-call plan",
+	});
 	type Turn = { text: string; calls: ToolCall[] };
 	let toModel: { resolve: (turn: Turn) => void; reject: (err: Error) => void } | undefined;
 	let toReplay: { resolve: (messages: Message[]) => void; reject: (err: Error) => void } | undefined;
@@ -278,13 +315,26 @@ export function flash<P extends FlashProgram>(
 		note: (line) => notes.push(line),
 	};
 
+	/** `--flash-plan`: the named file as the kind its content says, else as the robot's own plan. */
+	async function loadNamed(file: string): Promise<P | KindProgram> {
+		const name = file.replace(/^.*[\\/]/, "").replace(/\.(json|jsonl|py)$/, "");
+		const kind = readKind(file, name);
+		if (kind) return kind;
+		if (!hook.loadFile)
+			throw new Error(
+				`${file} is neither a units sequence nor a program, and this robot's Flash reads its own plans from its plan directories only`,
+			);
+		return hook.loadFile(file);
+	}
+
 	async function run() {
 		const t0 = Date.now();
 		let status: "success" | "failure" = "failure";
 		let summary: string;
-		let program: P;
+		let program: P | KindProgram;
 		try {
-			program = await hook.load(cwd);
+			const named = String(pi.getFlag("flash-plan") ?? "").trim();
+			program = named ? await loadNamed(named) : await hook.load(cwd);
 		} catch (err) {
 			if (stopped) return;
 			summary = `flash error: no program to replay: ${err instanceof Error ? err.message : String(err)}`;
@@ -294,12 +344,23 @@ export function flash<P extends FlashProgram>(
 			return;
 		}
 		try {
-			notes.push(`replaying the ${program.name} program`);
-			const out = await runFlash(hook, program, robot);
-			status = out.done ? "success" : "failure";
-			summary =
-				`replayed the ${program.name} program: ${out.plan} actions, ${out.anchors} anchors re-localized, ` +
-				`${((Date.now() - t0) / 1000).toFixed(1)} s`;
+			const seconds = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
+			if ("kind" in program && program.kind === "units") {
+				notes.push(`replaying the ${program.name} unit sequence`);
+				const out = await replayUnits(program, robot, hook.over);
+				status = hook.solved(robot.latest()) ? "success" : "failure";
+				summary = `replayed the ${program.name} unit sequence: ${out.sent} of ${program.units.length} units sent (pure replay, nothing re-anchored), ${seconds()}`;
+			} else if ("kind" in program && program.kind === "program") {
+				notes.push(`replaying the ${program.name} program through run_code`);
+				const out = await replayProgram(program, robot);
+				status = hook.solved(robot.latest()) ? "success" : "failure";
+				summary = `ran the ${program.name} program once through run_code (${out.status}), ${seconds()}`;
+			} else {
+				notes.push(`replaying the ${program.name} program`);
+				const out = await runFlash(hook, program, robot);
+				status = out.done ? "success" : "failure";
+				summary = `replayed the ${program.name} program: ${out.plan} actions, ${out.anchors} anchors re-localized, ${seconds()}`;
+			}
 		} catch (err) {
 			if (stopped) return;
 			summary = `flash error: ${err instanceof Error ? err.message : String(err)}`;

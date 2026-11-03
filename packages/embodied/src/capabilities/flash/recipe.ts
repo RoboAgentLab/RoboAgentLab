@@ -12,6 +12,8 @@
  *                         offset?, to?}], anchors: [{phrase, xyz}]}`
  *   <name>_recipe.jsonl   the memory recipe exploration exports (`{action, ...arguments}` per line),
  *                         replayed as recorded: meaningful on the recorded seed
+ *   <name>_units.json, <name>_program.py   a unit sequence or a program (../flash/kinds.ts), looked
+ *                         for first and played without re-anchoring
  * Re-anchoring: after one observation, each anchor phrase is pointed at by Molmo in the robot's main
  * camera image and turned into a world point by the robot's own back-projection (a tool, or a
  * ray-plane intersection at the anchor's recorded height, ./plane.ts); with a fixed camera and the
@@ -25,7 +27,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { dir, service } from "../../infra/config.ts";
 import { RpcClient } from "../../infra/rpc.ts";
@@ -38,6 +40,7 @@ import {
 	reanchor,
 	registerReanchorFlag,
 } from "./index.ts";
+import { kindFiles, readKind } from "./kinds.ts";
 
 type Json = Record<string, unknown>;
 /** One planned call; `to` is a relative target's absolute end position (the recording's, before anchoring). */
@@ -333,14 +336,21 @@ export function recipeFlash(pi: ExtensionAPI, o: RecipeFlashOptions): FlashHook<
 			const tried: string[] = [];
 			for (const name of o.names())
 				for (const dir of dirs)
-					for (const file of [`${name}_plan.json`, `${name}_recipe.jsonl`]) {
+					for (const file of [...kindFiles(name), `${name}_plan.json`, `${name}_recipe.jsonl`]) {
 						const path = join(dir, file);
 						tried.push(path);
 						if (!existsSync(path)) continue;
+						// A unit sequence or a program plays without re-anchoring (../flash/kinds.ts).
+						const kind = readKind(path, name);
+						if (kind) return kind;
 						molmo = reanchor(pi) ? new RpcClient(service(pi, "molmo")) : undefined;
 						return loadProgram(path, name);
 					}
 			throw new Error(`no Flash program for this episode; looked for ${tried.join(", ")}`);
+		},
+		loadFile(path) {
+			molmo = reanchor(pi) ? new RpcClient(service(pi, "molmo")) : undefined;
+			return loadProgram(path, basename(path).replace(/_(plan\.json|recipe\.jsonl)$/, ""));
 		},
 		start: (program, robot) => startRecipe(program, robot, o, molmo),
 		over: o.over,

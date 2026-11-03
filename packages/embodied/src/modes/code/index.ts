@@ -75,6 +75,23 @@ export function oracleTierHint(want: string, privileged: boolean): string {
 }
 /** The session entry of an oracle run (`--code-oracle`). */
 export const ORACLE_ENTRY = "code_oracle";
+/** The base tiers `manifest` declares code primitives in, highest first (none without a manifest). */
+export function manifestCodeTiers(manifest: Manifest | undefined): string[] {
+	if (!manifest) return [];
+	return ["high", "low", "raw"].filter((t) =>
+		manifest.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
+	);
+}
+/**
+ * The registry tier an episode's programs run with: `--code-api` as given, else the robot's highest
+ * manifest tier (high by default); `--privileged` turns high into the privileged tier and any other
+ * into `<tier>+privileged`. One rule for code mode and for a student speaking the code surface
+ * (../finetuned), so both render the same primitives.
+ */
+export function codeTier(explicitApi: string, manifest: Manifest | undefined, privileged: boolean): string {
+	const api = explicitApi || manifestCodeTiers(manifest)[0] || "high";
+	return privileged ? (api === "high" ? "privileged" : `${api}+privileged`) : api;
+}
 export type Tier = (typeof TIERS)[number];
 /** A helper as the server's `code.helpers` lists it (services/.../utils/code_exec.py). */
 export type Helper = { name: string; signature: string; doc: string };
@@ -266,18 +283,9 @@ export function code(
 	/** --code-api as given (empty: not given). */
 	const explicitApi = () => String(pi.getFlag("code-api") ?? "").trim();
 	/** The base tiers the robot's manifest declares code primitives in, highest first. */
-	const manifestTiers = (): string[] => {
-		const m = base.manifest;
-		if (!m) return [];
-		return ["high", "low", "raw"].filter((t) =>
-			m.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
-		);
-	};
-	/** The --code-api tier this episode runs: the flag, else the robot's highest tier. */
-	const apiTier = (): string => explicitApi() || manifestTiers()[0] || "high";
-	/** The registry tier this episode runs: --privileged wins over --code-api. */
-	const tier = (): CodeApiTier | string =>
-		base.privileged() ? (apiTier() === "high" ? "privileged" : `${apiTier()}+privileged`) : apiTier();
+	const manifestTiers = (): string[] => manifestCodeTiers(base.manifest);
+	/** The registry tier this episode runs: --code-api, else the robot's highest tier; --privileged wins. */
+	const tier = (): CodeApiTier | string => codeTier(explicitApi(), base.manifest, base.privileged());
 	const defaultTimeout = spec.timeoutS ?? DEFAULT_TIMEOUT_S;
 	/** A budget flag as given (empty when not): eval.sh keys its configuration on these. */
 	const rawFlag = (name: string) => String(pi.getFlag(name) ?? "").trim();

@@ -172,6 +172,12 @@ export type PrimitivesHandle = {
 	 * the arguments against its schema; throws the reason) and return the call, which runs the tool's execute.
 	 */
 	prepare: (name: string, args: unknown) => (signal?: AbortSignal) => Promise<Result>;
+	/** The robot's primitive manifest, when it has one (a student speaking the code surface renders its tier from it). */
+	manifest?: Manifest;
+	/** The manifest's `{{name}}` variables, as the robot's tools and code docs are filled. */
+	vars: () => Vars;
+	/** Whether this run has a capability a manifest entry `requires` (the robot's view). */
+	has: (capability: string) => boolean;
 };
 /** What the agent claims in `finish`. */
 type Claim = { status: string; summary: string };
@@ -863,6 +869,9 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 
 	const primitives: PrimitivesHandle = {
 		robot: name,
+		manifest,
+		vars: () => spec.vars?.() ?? {},
+		has,
 		tools: () =>
 			pi
 				.getActiveTools()

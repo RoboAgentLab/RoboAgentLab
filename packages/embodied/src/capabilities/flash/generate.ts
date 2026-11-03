@@ -28,6 +28,14 @@
  * The episode's opening main-camera image is written beside the plan (`<name>_view.png`, the plan's
  * `view`, its [width, height] the plan's `view_size`): a robot with a fixed calibrated camera re-localizes each anchor by pointing at it in both
  * that image and the live one (./recipe.ts), so the pointer's own bias cancels.
+ *
+ * `--kind units` and `--kind program` write the other two plan kinds (./kinds.ts) from a solved
+ * session, with no anchors or targets:
+ *   --kind units --session <s>.jsonl --name <cell> --destination <dir>     <cell>_units.json: the successful `act`
+ *                         calls after the last reset, as recorded (a units episode, A1)
+ *   --kind program --session <s>.jsonl --name <cell> --destination <dir>   <cell>_program.py: the session's successful
+ *                         `run_code` programs (status ran, no error) in order, one file (a code episode, A3); a
+ *                         session of several programs is concatenated, each ran top-level and they run so again
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -36,6 +44,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { toolCalls } from "../memory/index.ts";
+import { type UnitStep, unitsPlanJson } from "./kinds.ts";
 import {
 	type Anchor,
 	type AnchoredEntry,
@@ -125,16 +134,8 @@ export function sessionPlan(
 	if (relative.length !== 1) throw new Error("a session plan needs exactly one relative target (its waypoints' tool)");
 	const [tool, where] = relative[0];
 	const motion = new Set([tool, ...o.motion, ...(o.turn ? [o.turn.tool] : [])]);
-	const calls = toolCalls(entries);
-	const ok = (c: (typeof calls)[number]) => !c.isError && !c.details?.error && !c.details?.result?.error;
-	let start = 0;
-	calls.forEach((c, i) => {
-		if (c.name === "reset" && ok(c)) start = i + 1;
-	});
-	const episode = calls.slice(start).filter(ok);
-	const json = (c: (typeof calls)[number]) => (c.details ?? {}) as Json;
-	if (!episode.some((c) => json(c).terminated === true || json(c).success === true))
-		throw new Error("the session did not solve the task (no result reports terminated or success)");
+	const episode = solvedEpisode(entries);
+	const json = (c: (typeof episode)[number]) => (c.details ?? {}) as Json;
 	const plan: AnchoredEntry[] = [];
 	let pos: number[] | undefined;
 	let grip: unknown;
@@ -173,6 +174,50 @@ export function sessionPlan(
 	return plan;
 }
 
+/** The session's successful calls after its last successful `reset`; throws unless a result reports the task solved. */
+function solvedEpisode(entries: SessionEntry[]) {
+	const calls = toolCalls(entries);
+	const ok = (c: (typeof calls)[number]) => !c.isError && !c.details?.error && !c.details?.result?.error;
+	let start = 0;
+	calls.forEach((c, i) => {
+		if (c.name === "reset" && ok(c)) start = i + 1;
+	});
+	const episode = calls.slice(start).filter(ok);
+	const json = (c: (typeof calls)[number]) => (c.details ?? {}) as Json;
+	if (!episode.some((c) => json(c).terminated === true || json(c).success === true))
+		throw new Error("the session did not solve the task (no result reports terminated or success)");
+	return episode;
+}
+
+const UNIT_FIELDS = ["n", "arm", "other", "param"] as const;
+/** The unit sequence a solved units session recorded: its successful `act` calls, as called (A1). */
+export function sessionUnits(entries: SessionEntry[]): UnitStep[] {
+	const units = solvedEpisode(entries)
+		.filter((c) => c.name === "act" && typeof c.args.unit === "string" && (c.details as Json | undefined)?.ran !== 0)
+		.map((c) => {
+			const step: UnitStep = { unit: String(c.args.unit) };
+			for (const k of UNIT_FIELDS) if (c.args[k] !== undefined) (step as Record<string, unknown>)[k] = c.args[k];
+			return step;
+		});
+	if (!units.length) throw new Error("the session holds no act calls (a units episode records them)");
+	return units;
+}
+
+/** The programs a solved code session ran successfully (`run_code` with status ran and no error), in order (A3). */
+export function sessionPrograms(entries: SessionEntry[]): string[] {
+	const programs = solvedEpisode(entries)
+		.filter(
+			(c) =>
+				c.name === "run_code" &&
+				typeof c.args.code === "string" &&
+				(c.details as Json | undefined)?.status === "ran",
+		)
+		.map((c) => String(c.args.code));
+	if (!programs.length)
+		throw new Error("the session holds no successful run_code program (a code episode records them)");
+	return programs;
+}
+
 /**
  * The episode's opening main-camera image (base64): the image of the last successful `reset`'s
  * result, else of the first result after it that carries one. Tool results list the main view first.
@@ -195,6 +240,32 @@ export function firstView(entries: SessionEntry[]): string | undefined {
 		if (data) return data;
 	}
 	return undefined;
+}
+
+/** The plan kinds the generator writes: the robot's anchored tool-call plan (default), a unit sequence, a program. */
+export const KINDS = ["tools", "units", "program"] as const;
+
+/**
+ * `--kind units | program`: the plan a solved session recorded on that surface, written as
+ * `<name>_units.json` or `<name>_program.py` (./kinds.ts reads both back).
+ */
+export function generateKind(o: { kind: "units" | "program"; session: string; name: string; destination: string }) {
+	const entries = parseSessionEntries(readFileSync(o.session, "utf8")) as SessionEntry[];
+	mkdirSync(o.destination, { recursive: true });
+	if (o.kind === "units") {
+		const units = sessionUnits(entries);
+		const path = join(o.destination, `${o.name}_units.json`);
+		writeFileSync(path, unitsPlanJson({ name: o.name, kind: "units", source: o.session, units }));
+		return { path, kind: o.kind, calls: units.length };
+	}
+	const programs = sessionPrograms(entries);
+	const path = join(o.destination, `${o.name}_program.py`);
+	const header = `# source: ${o.session}\n# kind: program\n# programs: ${programs.length}\n`;
+	writeFileSync(
+		path,
+		`${header}${programs.map((p, i) => `\n# --- program ${i + 1} ---\n${p.replace(/\s+$/, "")}\n`).join("")}`,
+	);
+	return { path, kind: o.kind, calls: programs.length };
 }
 
 export function generate(o: {
@@ -270,6 +341,7 @@ export function generate(o: {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 	const { values } = parseArgs({
 		options: {
+			kind: { type: "string" },
 			recipe: { type: "string" },
 			session: { type: "string" },
 			anchors: { type: "string" },
@@ -284,11 +356,35 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 			name: { type: "string" },
 		},
 	});
-	if ((!values.recipe && !values.session) || !values.anchors || !values.targets || !values.destination) {
-		console.error(
-			"usage: generate.ts (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...] [--turn <tool>=<yaw arg> --heading <json path, deg> --max-turn <rad>]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]",
-		);
+	const kind = values.kind ?? "tools";
+	if (!(KINDS as readonly string[]).includes(kind)) {
+		console.error(`--kind must be one of ${KINDS.join(", ")}, got ${kind}`);
 		process.exit(2);
 	}
-	console.log(JSON.stringify(generate(values as Parameters<typeof generate>[0]), null, 2));
+	if (kind !== "tools") {
+		if (!values.session || !values.name || !values.destination) {
+			console.error(`usage: generate.ts --kind ${kind} --session <session>.jsonl --name <name> --destination <dir>`);
+			process.exit(2);
+		}
+		console.log(
+			JSON.stringify(
+				generateKind({
+					kind: kind as "units" | "program",
+					session: values.session,
+					name: values.name,
+					destination: values.destination,
+				}),
+				null,
+				2,
+			),
+		);
+	} else {
+		if ((!values.recipe && !values.session) || !values.anchors || !values.targets || !values.destination) {
+			console.error(
+				"usage: generate.ts [--kind tools] (--recipe <cell>_recipe.jsonl | --session <session>.jsonl --name <name> --position <json path> [--gripper <json path>] [--motion act,...] [--turn <tool>=<yaw arg> --heading <json path, deg> --max-turn <rad>]) --anchors anchors.json --targets <tool>=xyz|xy|<delta arg>,... --destination <dir> [--name <name>]\n       generate.ts --kind units|program --session <session>.jsonl --name <name> --destination <dir>",
+			);
+			process.exit(2);
+		}
+		console.log(JSON.stringify(generate(values as Parameters<typeof generate>[0]), null, 2));
+	}
 }

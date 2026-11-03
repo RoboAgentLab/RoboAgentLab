@@ -36,6 +36,7 @@ import {
 	reanchor,
 	registerReanchorFlag,
 } from "../../capabilities/flash/index.ts";
+import { kindFiles, readKind } from "../../capabilities/flash/kinds.ts";
 import { dir, service } from "../../infra/config.ts";
 import { RpcClient } from "../../infra/rpc.ts";
 import type { PlanEntry } from "./flash-generate.ts";
@@ -347,6 +348,14 @@ export function liberoFlash(pi: ExtensionAPI, cell: Cell): FlashHook<Program> {
 				join(process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi", "embodied", "memory"), "libero");
 			const dirs = flag ? [String(flag)] : ["flash", "task_card"].map((d) => join(memory, d));
 			const plans = dirs.map((d) => resolve(cwd, d));
+			// A unit sequence or a program next to the plans plays without anchors (../../capabilities/flash/kinds.ts).
+			for (const d of plans)
+				for (const file of kindFiles(program)) {
+					const path = join(d, file);
+					if (!existsSync(path)) continue;
+					const kind = readKind(path, program);
+					if (kind) return kind;
+				}
 			const loaded = load(plans.find((d) => existsSync(join(d, `${program}_plan.json`))) ?? plans[0], program);
 			molmo = reanchor(pi) ? new RpcClient(service(pi, "molmo")) : undefined;
 			return loaded;

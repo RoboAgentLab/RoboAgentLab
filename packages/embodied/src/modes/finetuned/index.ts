@@ -49,6 +49,15 @@
  * Every step appends a `finetuned_step` entry: the token, the raw reply, the exact prompt text and
  * the pixel fingerprint (sha1 of the uint8 HWC bytes) of each image sent, in wire order.
  *
+ * The planner is independent of the action surface: `--ft-surface units|tools|code` (default units,
+ * everything above unchanged) makes the same provider speak the robot's tools (A2: one JSON tool
+ * call per step, drawn from the active tools' schemas, an unparsable reply falling back to the
+ * read-only --ft-observe tool) or code mode (A3: one fenced Python program per step, run through
+ * `run_code` under code mode's tier and whitelist; an unparsable reply runs a program that only
+ * observes). ./surfaces.ts holds the templates, renderers and parsers; ./sessions_to_sft.ts turns
+ * teacher sessions into training pairs rendered with the same functions. No released adapter speaks
+ * these surfaces yet: they run with `finetuned/local --ft-model <adapter>`.
+ *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
  * Modified by pi-embodied: core/runners/mvtoken.py, core/runners/dual_mvtoken.py, core/vlm/mvtoken_roles.py,
@@ -75,8 +84,27 @@ import {
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { service } from "../../infra/config.ts";
 import { encodePng } from "../../infra/png.ts";
-import { TASK_ENTRY } from "../../robot.ts";
+import { type CodeApiTier, codePrimitives } from "../../primitives/registry.ts";
+import { PRIMITIVES_EVENT, type PrimitivesHandle, TASK_ENTRY } from "../../robot.ts";
+import { codeTier, renderPrimitives } from "../code/index.ts";
 import { RT_UNITS, UNITS_EVENT, type UnitsHandle } from "../units/index.ts";
+import {
+	excerpt,
+	FINISH_TOOL,
+	isSurface,
+	NOOP_PROGRAM,
+	parseProgram,
+	parseToolCall,
+	RECENT_CALLS_MAX,
+	recentCallsText,
+	renderTools,
+	SURFACE_MAX_TOKENS,
+	SURFACE_PROMPTS,
+	SURFACES,
+	type Surface,
+	type SurfaceCall,
+	type ToolSpec,
+} from "./surfaces.ts";
 import { decodePng, fingerprint, formatView, parseView, prepareView, type ViewSpec } from "./views.ts";
 
 type Json = Record<string, unknown>;
@@ -638,8 +666,35 @@ export default function finetuned(pi: ExtensionAPI) {
 		default: "auto",
 		description: "Policy decisions per episode (auto: 80, v5 200)",
 	});
+	pi.registerFlag("ft-surface", {
+		type: "string",
+		default: "units",
+		description: `The action surface the adapter speaks: ${SURFACES.join(" | ")} (units: one action-unit token per step, the released adapters; tools: one JSON tool call from the robot's tools; code: one Python program run through run_code)`,
+	});
+	pi.registerFlag("ft-observe", {
+		type: "string",
+		default: "view_env_state",
+		description:
+			"--ft-surface tools: the read-only tool that opens the episode and runs in place of an unparsable reply",
+	});
+	pi.registerFlag("ft-max-tokens", {
+		type: "string",
+		default: "auto",
+		description: `Reply token budget (auto: ${Object.entries(SURFACE_MAX_TOKENS)
+			.map(([s, n]) => `${s} ${n}`)
+			.join(", ")})`,
+	});
 
 	let robot = "";
+	/** The episode's task flags (the robot_task entry), the tools and code surfaces' task text. */
+	let taskFields: Record<string, string> = {};
+	/** Tools surface: the calls made so far, newest first. */
+	let recentCalls: SurfaceCall[] = [];
+	/** The robot's tools and manifest (../../robot.ts), published at session start once the robot is up. */
+	let primitives: PrimitivesHandle | undefined;
+	pi.events.on(PRIMITIVES_EVENT, (h) => {
+		primitives = h as PrimitivesHandle;
+	});
 	let envId = "";
 	let over = false;
 	let steps = 0;
@@ -708,10 +763,50 @@ export default function finetuned(pi: ExtensionAPI) {
 		if (p in PRESETS || existsSync(p)) return undefined;
 		return `--ft-prompt ${p}: not a prompt version (${Object.keys(PRESETS).join(", ")}) and not a template file`;
 	}
+	/** The surface this session's adapter speaks (--ft-surface; a wrong value is refused before the first step). */
+	const surface = (): Surface => {
+		const s = flag("ft-surface") || "units";
+		return isSurface(s) ? s : "units";
+	};
+	const observeTool = () => flag("ft-observe") || "view_env_state";
+	/** Tools surface: the robot's active tools with their schemas, then finish. */
+	const offeredTools = (): ToolSpec[] => {
+		const active = pi.getActiveTools();
+		return [...(primitives?.tools() ?? []).filter((t) => active.includes(t.name)), FINISH_TOOL];
+	};
+	/** Code surface: the tier's primitives as ../code renders them for a planner model, and the tier. */
+	const codeApi = () => {
+		const m = primitives?.manifest;
+		if (!m || !primitives) return undefined;
+		const tier = codeTier(flag("code-api").trim(), m, pi.getFlag("privileged") === true);
+		const prims = codePrimitives(m, tier as CodeApiTier, primitives.has, primitives.vars());
+		return { tier, api: renderPrimitives(prims) };
+	};
+	/**
+	 * Why the tools or code surface cannot run on this session, else undefined: --ft-surface must name
+	 * a surface; tools needs the robot's tools and the observe tool active (the fallback must be a read
+	 * that can run); code needs run_code active and the robot's manifest (its primitives are the prompt).
+	 */
+	function surfaceRefusal(): string | undefined {
+		const s = flag("ft-surface") || "units";
+		if (!isSurface(s)) return `--ft-surface ${s}: not one of ${SURFACES.join(", ")}`;
+		if (s === "units") return undefined;
+		const active = pi.getActiveTools();
+		if (s === "tools") {
+			if (!primitives) return "--ft-surface tools: the robot published no tools (is a robot extension loaded?)";
+			if (!active.includes(observeTool()))
+				return `--ft-surface tools: the observe tool ${observeTool()} is not active (--ft-observe names the read-only tool an unparsable reply falls back to)`;
+			if (offeredTools().length < 2) return "--ft-surface tools: the robot has no active tools besides finish";
+			return undefined;
+		}
+		if (!active.includes("run_code")) return "--ft-surface code: run_code is not active: run the robot with --code";
+		if (!codeApi()) return "--ft-surface code: the robot has no primitive manifest to render the code API from";
+		return undefined;
+	}
 	/** Refuse the episode before the first step: the model never runs an unknown version or sees the wrong images. */
 	function refuse(ctx: ExtensionContext) {
 		if (ctx.model?.provider !== "finetuned" || refused) return;
-		refused = versionRefusal() ?? imageRefusal();
+		refused = surfaceRefusal() ?? (surface() === "units" ? (versionRefusal() ?? imageRefusal()) : undefined);
 		if (!refused) return;
 		over = true;
 		if (ctx.hasUI) ctx.ui.notify(`finetuned: ${refused}`, "error");
@@ -732,6 +827,8 @@ export default function finetuned(pi: ExtensionAPI) {
 		recentDual = { left: [], right: [] };
 		pending = undefined;
 		robot = envId = "";
+		taskFields = {};
+		recentCalls = [];
 		lastEef = undefined;
 		lastToken = "";
 		stall = { token: "", count: 0 };
@@ -749,6 +846,13 @@ export default function finetuned(pi: ExtensionAPI) {
 		robot = String(data.robot || "");
 		// ManiSkill names its env id `task` (`env-id` in sessions recorded before the flag was renamed).
 		envId = String(data.task || data["env-id"] || "");
+		taskFields = Object.fromEntries(
+			Object.entries(data)
+				.filter(([k]) => k !== "robot")
+				.map(([k, v]) => [k, String(v)]),
+		);
+		// The tools and code surfaces have no units vocabulary, cameras or plugins to check.
+		if (surface() !== "units") return;
 		const warn = (s: string) => (ctx.hasUI ? ctx.ui.notify(s, "warning") : console.error(`[finetuned] ${s}`));
 		if (!pi.getActiveTools().includes("act")) warn("the `act` tool is not active: run the robot with --units");
 		if (!robotViews() && !flag("ft-agentview") && !flag("ft-wrist"))
@@ -882,21 +986,55 @@ export default function finetuned(pi: ExtensionAPI) {
 		}
 		throw new Error("no task text in the observation; pass --ft-task");
 	}
+	/** The tools and code surfaces' task text: as taskOf, else the task flags as code mode words them (`key value, ...`). */
+	function surfaceTask(texts: string[]) {
+		try {
+			return taskOf(texts);
+		} catch {
+			const words = Object.entries(taskFields)
+				.map(([k, v]) => `${k} ${v}`)
+				.join(", ");
+			if (!words) throw new Error("no task text: pass --ft-task");
+			return words;
+		}
+	}
+	/** The reply budget: --ft-max-tokens, else the surface's. */
+	const maxTokens = () => {
+		const v = flag("ft-max-tokens");
+		return v && v !== "auto"
+			? Math.max(1, Math.floor(Number(v)) || SURFACE_MAX_TOKENS[surface()])
+			: SURFACE_MAX_TOKENS[surface()];
+	};
+	/** The opening call of each surface: it asks no model and returns the first observation. */
+	function opening(): Turn {
+		const s = surface();
+		if (s === "tools") {
+			const c = call(observeTool(), {});
+			pending = c.id;
+			return { text: `opening ${observeTool()} (a read; it returns the first observation)`, calls: [c] };
+		}
+		if (s === "code") {
+			const c = call("run_code", { code: NOOP_PROGRAM });
+			pending = c.id;
+			return { text: "opening run_code with a program that only observes", calls: [c] };
+		}
+		// Both arms open first on two arms (core/runners/dual_mvtoken.py), one paired step.
+		const c = call("act", dual() ? { unit: OPENING, arm: "left", other: OPENING } : { unit: OPENING });
+		pending = c.id;
+		return { text: `opening ${OPENING} (the runner's first step; it returns the first observation)`, calls: [c] };
+	}
 
 	/** One policy step over the transcript. */
 	async function next(messages: Message[], modelId: string, signal: AbortSignal | undefined): Promise<Turn> {
 		if (refused) return { text: `The fine-tuned policy refused this robot: ${refused}`, calls: [] };
 		if (over) return { text: "The fine-tuned policy already ended this episode.", calls: [] };
-		if (!pending) {
-			// Both arms open first on two arms (core/runners/dual_mvtoken.py), one paired step.
-			const c = call("act", dual() ? { unit: OPENING, arm: "left", other: OPENING } : { unit: OPENING });
-			pending = c.id;
-			return { text: `opening ${OPENING} (the runner's first step; it returns the first observation)`, calls: [c] };
-		}
+		if (!pending) return opening();
 		const result = messages.find((m) => m.role === "toolResult" && m.toolCallId === pending);
 		if (!result || result.role !== "toolResult") return end(`no result for ${pending}; the policy stops.`);
 		const texts = result.content.flatMap((c) => (c.type === "text" ? [c.text] : []));
-		if (result.isError) return end(`act failed: ${texts.join(" ").slice(0, 300)}; the policy stops.`);
+		// A failed tool call is an observation to the tools and code surfaces (the student reads the error).
+		if (result.isError && surface() === "units")
+			return end(`act failed: ${texts.join(" ").slice(0, 300)}; the policy stops.`);
 		const details = (result.details ?? {}) as Json;
 		if (details.terminated === true || details.success === true)
 			return finish("success", `the environment reports success after ${steps} policy steps`, "env success");
@@ -908,6 +1046,17 @@ export default function finetuned(pi: ExtensionAPI) {
 				`max_steps (${max}) reached without ${r.ignoreDone ? "env success" : "DONE"}`,
 				`max_steps ${max} reached`,
 			);
+
+		const adapterOf = () => {
+			const adapter = flag("ft-model") || (modelId === "local" ? "" : modelId);
+			if (!adapter) throw new Error("finetuned/local needs --ft-model <adapter name>");
+			return adapter;
+		};
+		if (surface() !== "units") {
+			const images = result.content.filter((c) => c.type === "image") as { data: string }[];
+			if (!images.length) return end(`the ${pending} result carries no image; the policy stops.`);
+			return nextSurface(surface() as "tools" | "code", texts, images, adapterOf(), signal);
+		}
 
 		if (dual())
 			return nextDual(
@@ -955,8 +1104,7 @@ export default function finetuned(pi: ExtensionAPI) {
 		const cameras = cameraIndices();
 		const images = result.content.filter((c) => c.type === "image") as { data: string }[];
 		const sent = prepareImages(images, cameras, views());
-		const adapter = flag("ft-model") || (modelId === "local" ? "" : modelId);
-		if (!adapter) throw new Error("finetuned/local needs --ft-model <adapter name>");
+		const adapter = adapterOf();
 		/** One request; `choice` (the vocabulary minus what is withheld) constrains the reply. */
 		const ask = async (without: ReadonlySet<string> | undefined) => {
 			const choice = without ? allowed.filter((t) => !without.has(t)) : undefined;
@@ -1042,6 +1190,107 @@ export default function finetuned(pi: ExtensionAPI) {
 		}
 		lastToken = token;
 		const c = call("act", { unit: executed });
+		pending = c.id;
+		return { text: note, calls: [c] };
+	}
+
+	/**
+	 * The images a tools or code step sends: every image of the latest result as the robot returned it
+	 * (what the teacher saw; no camera transform), or the indices --ft-cameras names.
+	 */
+	function surfaceImages(images: { data: string }[]) {
+		const want = flag("ft-cameras") === "auto" || !flag("ft-cameras") ? images.map((_, i) => i) : cameraIndices();
+		return want.map((i) => {
+			const img = images[i];
+			if (!img) throw new Error(`the observation has ${images.length} images; --ft-cameras wants image ${i}`);
+			const png = Buffer.from(img.data, "base64");
+			return { png, view: decodePng(png) };
+		});
+	}
+
+	/**
+	 * One step of the tools or code surface (./surfaces.ts): the observation's images and the surface's
+	 * prompt in one stateless request; the reply parsed strictly, with the surface's safe fallback; the
+	 * call recorded as a `finetuned_step` entry and sent as the next turn.
+	 */
+	async function nextSurface(
+		s: "tools" | "code",
+		texts: string[],
+		images: { data: string }[],
+		adapter: string,
+		signal: AbortSignal | undefined,
+	): Promise<Turn> {
+		const tpl = flag("ft-prompt-file") ? readFileSync(flag("ft-prompt-file"), "utf8").trim() : SURFACE_PROMPTS[s];
+		const task = surfaceTask(texts);
+		const tools = s === "tools" ? offeredTools() : [];
+		const api = s === "code" ? codeApi() : undefined;
+		if (s === "code" && !api) return end("the robot published no code API; the policy stops.");
+		const prompt = formatPrompt(tpl, {
+			task,
+			recent_calls: recentCallsText(recentCalls),
+			last_result: excerpt(texts[0] ?? ""),
+			last_report: excerpt(texts[0] ?? ""),
+			tools: renderTools(tools),
+			tier: api?.tier ?? "",
+			api: api?.api ?? "(none)",
+		});
+		const sent = surfaceImages(images);
+		const body = buildRequest(
+			adapter,
+			prompt,
+			sent.map((x) => x.png),
+			0,
+			undefined,
+			{ maxTokens: maxTokens() },
+		);
+		const reply = await complete(service(pi, "finetuned"), flag("ft-api-key"), body, signal);
+		const step = steps++;
+		let next: SurfaceCall;
+		let fallback: string | undefined;
+		let done: { status: "success" | "failure"; summary: string } | undefined;
+		if (s === "tools") {
+			try {
+				next = parseToolCall(reply.text, tools);
+			} catch (err) {
+				fallback = err instanceof Error ? err.message : String(err);
+				next = { name: observeTool(), arguments: {} };
+			}
+			if (next.name === "finish")
+				done = { status: next.arguments.status as "success" | "failure", summary: String(next.arguments.summary) };
+		} else {
+			let program: ReturnType<typeof parseProgram>;
+			try {
+				program = parseProgram(reply.text);
+			} catch (err) {
+				fallback = err instanceof Error ? err.message : String(err);
+				program = { kind: "program", code: NOOP_PROGRAM };
+			}
+			if (program.kind === "done")
+				done = { status: "success", summary: `the policy answered DONE after ${step} steps` };
+			next = { name: "run_code", arguments: { code: program.kind === "program" ? program.code : "" } };
+		}
+		pi.appendEntry(STEP_ENTRY, {
+			step,
+			surface: s,
+			...(s === "tools" ? { call: next } : { code: next.arguments.code }),
+			...(done ? { done } : {}),
+			raw: reply.text,
+			fallback: fallback !== undefined,
+			...(fallback !== undefined ? { fallback_reason: fallback } : {}),
+			latency_ms: reply.ms,
+			adapter,
+			endpoint: service(pi, "finetuned"),
+			prompt,
+			media: sent.map((x, slot) => ({ slot, camera: `view${slot}`, ...fingerprint(x.view) })),
+		});
+		const shown =
+			s === "tools"
+				? `${next.name}(${JSON.stringify(next.arguments).slice(0, 200)})`
+				: `run_code (${String(next.arguments.code).split("\n").length} lines)`;
+		const note = `step ${step}: ${done ? `DONE (${done.status})` : shown}${fallback !== undefined ? ` (unparsable reply ${JSON.stringify(reply.text.slice(0, 120))}: ${fallback}; fallback)` : ""} · ${reply.ms} ms`;
+		if (done) return finish(done.status, done.summary, note);
+		if (s === "tools") recentCalls = [next, ...recentCalls].slice(0, RECENT_CALLS_MAX);
+		const c = call(next.name, next.arguments);
 		pending = c.id;
 		return { text: note, calls: [c] };
 	}

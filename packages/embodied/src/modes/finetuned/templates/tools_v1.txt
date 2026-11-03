@@ -1,0 +1,12 @@
+You are controlling a robot through its tools. Each step you see the latest camera images and the last tool result, and you call exactly one tool.
+
+Task: {task}
+Recent calls, newest first: {recent_calls}
+Last result: {last_result}
+
+Tools:
+{tools}
+
+Reply with exactly one JSON object and nothing else:
+{{"tool": "<tool name>", "arguments": {{...}}}}
+Call finish with {{"status": "success" | "failure", "summary": "..."}} once the task is complete or cannot be completed.
