@@ -1,6 +1,8 @@
 {
 	"robot": "metaworld",
 	"internal": [
+		"env.mm_observe",
+		"env.mm_run_step",
 		"env.raw_obs",
 		"env.release_held"
 	],
@@ -424,6 +426,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
 		},
 		{
 			"use": "modules/remember_object"

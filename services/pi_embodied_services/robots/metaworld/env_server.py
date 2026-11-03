@@ -44,6 +44,13 @@ result carries no object state: Metaworld's 39-D observation holds the object an
 its info metrics (``obj_to_target``, ``near_object``, the shaped reward, ...) are computed from
 them, so only the robot's own state and the success flags (``PROGRAM_INFO``) reach it; a motion's
 images go to the run's video instead (``_code_reply``).
+
+MotorMind mode (``env.mm_observe`` / ``env.mm_run_step``, utils/motormind.py): the base frame is
+the Sawyer's ``right_arm_base_link`` turned to face the table (+X world +y, +Y world -x); a tick
+is four control steps of the mocap target, steered as ``move_delta`` steers it and settled under
+the segment's judge. The hand's orientation is fixed by its mocap weld, so a rotation is refused.
+The gripper's opening counts from the fingers' closed stop (23.7 mm between the pads' centres:
+they never touch), so an empty close reads 0 as on LIBERO.
 """
 
 from __future__ import annotations
@@ -68,6 +75,7 @@ from pi_embodied_services.utils.grasp import (
     urls_from_args,
 )
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.motormind import MotorMindMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -162,6 +170,8 @@ CAMERAS = {"agentview": "corner4", "wrist": "gripperPOV"}
 ROTATED_VIEWS = {"agentview"}
 #: Square view size (px), as ManiSkill's.
 VIEW_SIZE = 256
+#: MotorMind mode's video frame: agentview and wrist side by side at this size, one per tick.
+VIDEO_FRAME = 256
 #: Metres the hand moves per control step at action 1.0 (Metaworld ``action_scale``).
 ACTION_SCALE_M = 0.01
 OPEN = -1.0
@@ -188,6 +198,8 @@ CODE_MAX_RENDER = 1024
 CODE_MAX_CHUNK = 200
 #: back_project / segment resolutions: the images shown, or the 1024 px render.
 RESOLUTIONS = {"low": VIEW_SIZE, "high": 1024}
+#: The largest square render the server makes (the offscreen framebuffer it sets up).
+RENDER_MAX = 1024
 #: The facade's motions: grasp and detection ids expire after any of them.
 MOTIONS = (
     "env.move_delta",
@@ -196,7 +208,24 @@ MOTIONS = (
     "env.execute_place",
     "env.step",
     "env.chunk_step",
+    "env.mm_run_step",
 )
+#: MotorMind mode: its views -> Metaworld cameras (``side`` is the fixed camera on the robot's
+#: left, base +Y), the ones shown turned 180 degrees, the base frame's rotation in the world (its
+#: columns: forward is world +y, left world -x), the tool frame in the ``hand`` body's (approach
+#: +Z is the hand's +x, the jaw axis +Y the hand's +y), the pad distance closed on nothing and
+#: wide open (m), and the farthest the hand reaches from the base, horizontally (the mocap box's
+#: far edge).
+MM_CAMERAS = {"scene": "corner4", "side": "corner", "wrist": "gripperPOV"}
+MM_ROTATED = {"corner4", "corner"}
+MM_BASE_R = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+MM_HAND_TO_TOOL = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+MM_CLOSED_WIDTH_M = 0.0237
+MM_OPEN_WIDTH_M = 0.0943
+MM_REACH_M = 0.85
+#: How far the finger joints coast once their servo target is set: their armature over their
+#: damping (100 / 1000), s.
+MM_FINGER_COAST_S = 0.1
 
 
 def instruction(task: str) -> str:
@@ -235,6 +264,11 @@ def make_env(task: str, *, max_path_length: int = 10**9):
     env.seeded_rand_vec = True
     env._partially_observable = False
     env.max_path_length = int(max_path_length)
+    # The model's offscreen framebuffer is 640 px: the largest render (back_project's "high",
+    # MotorMind's 768 views) needs RENDER_MAX.
+    vis = env.model.vis.global_
+    vis.offwidth = max(int(vis.offwidth), RENDER_MAX)
+    vis.offheight = max(int(vis.offheight), RENDER_MAX)
     return env
 
 
@@ -289,20 +323,33 @@ def program_info(info: dict) -> dict:
     return {k: info[k] for k in PROGRAM_INFO if k in info}
 
 
-class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
+class MetaworldEnvFacade(
+    MotorMindMixin, CodeRunMixin, MainThreadServeMixin, BaseEnvFacade
+):
     """One Metaworld task env; every call runs on the main thread (MuJoCo EGL)."""
 
     SERVICE_NAME = "metaworld-env"
     #: Control steps since the launch, and code mode's run: the count before it and its video
     #: frames (class defaults so the registry can be built on a bare facade, as in the tests).
     _steps = 0
+    #: The control step count at the last reset (the episode's steps are counted from it).
+    _episode_start = 0
     _run_start = 0
     _run_frames: list | tuple = ()
     #: --sam3 (env.segment) and the grasp planner (env.execute_*): set in main().
     _sam3 = sam3_segment.Sam3(None)
     _grasp: GraspPlanner | None = None
 
-    def __init__(self, *, task: str, seed: int, view_size: int = VIEW_SIZE):
+    def __init__(
+        self,
+        *,
+        task: str,
+        seed: int,
+        view_size: int = VIEW_SIZE,
+        mm_home: str = "refuse",
+        mm_truth: str | None = None,
+    ):
+        self._mm_setup(mm_home, mm_truth)
         super().__init__()
         self._env = make_env(task)
         self._seed = int(seed)
@@ -343,6 +390,9 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 # Served always (the id wrappers expire ids after them); they need the planner.
                 "env.execute_grasp": self.execute_grasp,
                 "env.execute_place": self.execute_place,
+                # MotorMind mode (utils/motormind.py): the observation and one segment of an
+                # action, in the robot base frame.
+                **self._mm_rpc(),
             }
         )
         self._readonly_methods.update({"env.back_project", "env.segment"})
@@ -571,6 +621,8 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._gripper_effort = OPEN
         self._box = self._workspace()
         self._meta["workspace"] = self._box
+        self._episode_start = self._steps
+        self._mm_new_episode()
         return self._pack(), self._info
 
     def step(self, action):
@@ -880,6 +932,145 @@ class MetaworldEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         """Run one planned place id: to the pre-place above it, descend, open, retreat."""
         return self._chain("place", place_id, standoff)
 
+    # ---- MotorMind mode (utils/motormind.py) ----
+
+    #: The effort of a gripper channel 0 (half the travel the fingers coast to), set at the first
+    #: hold tick after another command.
+    _mm_hold_effort: float | None = None
+
+    def _mm_static(self) -> dict:
+        model = self._env.model
+        base = self._env.data.body("right_arm_base_link")
+        dt = float(model.opt.timestep) * int(self._env.frame_skip)
+        return {
+            "body": "right_arm_base_link",
+            "pos": np.asarray(base.xpos, dtype=np.float64).tolist(),
+            "xmat": MM_BASE_R,
+            "max_translation_m": self._mm_tick_steps(dt) * ACTION_SCALE_M,
+            "max_rotation_rad": 0.0,
+            "fingers": True,
+            "caps": {
+                "gripper_open_span_m": MM_OPEN_WIDTH_M - MM_CLOSED_WIDTH_M,
+                # The pad geom's extent along the approach axis.
+                "gripper_pad_length_m": 0.03,
+                "reach_m": MM_REACH_M,
+                "comfortable_reach_m": MM_REACH_M - 0.1,
+                "tilt_limits_deg": {
+                    "roll_cw": 0.0,
+                    "roll_ccw": 0.0,
+                    "pitch_down": 0.0,
+                    "pitch_up": 0.0,
+                },
+                "notes": (
+                    "The hand's orientation is fixed (Metaworld's Sawyer is position-controlled): every rotate is refused.",
+                    "The gripper opening counts from the fingers' closed stop: an empty close reads 0 mm.",
+                ),
+            },
+        }
+
+    @staticmethod
+    def _mm_tick_steps(dt: float) -> int:
+        """Control steps per MotorMind tick (0.05 s; 4 at Metaworld's 12.5 ms)."""
+        return max(1, round(0.05 / dt))
+
+    def _mm_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        hand = np.asarray(self._env.data.body("hand").xmat, dtype=np.float64)
+        return self._tcp(), hand.reshape(3, 3) @ MM_HAND_TO_TOOL
+
+    def _mm_opening(self) -> float:
+        return max(0.0, self._gripper_width() - MM_CLOSED_WIDTH_M)
+
+    def _mm_fingers(self) -> tuple[float, float]:
+        """The finger joints' travel from open (r_close - l_close, m) now and where it coasts to:
+        their armature over their damping (MM_FINGER_COAST_S) at the current speed."""
+        data, model = self._env.data, self._env.model
+        r, l = (model.joint(j) for j in ("r_close", "l_close"))
+        now = float(data.qpos[r.qposadr[0]] - data.qpos[l.qposadr[0]])
+        speed = float(data.qvel[r.dofadr[0]] - data.qvel[l.dofadr[0]])
+        return now, now + speed * MM_FINGER_COAST_S
+
+    def _mm_opening_ahead(self) -> float:
+        now, ahead = self._mm_fingers()
+        return max(0.0, self._mm_opening() - (ahead - now))
+
+    def _mm_effort(self, grip: float) -> float:
+        """The gripper action of channel ``grip``: +1 close, -1 open, 0 holds the gap the fingers
+        coast to. The fingers are position servos driven by one effort (r_close to ``a``, l_close
+        to ``-a``; effort 0 would open them), so a hold commands half that travel to each."""
+        if grip != 0:
+            self._mm_hold_effort = None
+            return CLOSE if grip > 0 else OPEN
+        if self._mm_hold_effort is None:
+            self._mm_hold_effort = max(0.0, self._mm_fingers()[1]) / 2
+        return self._mm_hold_effort
+
+    def _mm_tick(self, dp_world, dr_world, grip: float, until=None) -> None:
+        """One MotorMind tick: the mocap target moves ``dp_world`` in equal control steps (at most
+        1 cm each), ending early once ``until()`` holds (an opening fingers reach their gap within
+        a step, not a tick); the orientation is not commanded."""
+        dt = float(self._env.model.opt.timestep) * int(self._env.frame_skip)
+        n = self._mm_tick_steps(dt)
+        per = np.asarray(dp_world, dtype=np.float64) / n
+        effort = self._mm_effort(grip)
+        for _ in range(n):
+            self._step(np.append(np.clip(per / ACTION_SCALE_M, -1, 1), effort))
+            if until is not None and until():
+                break
+
+    def _mm_target(self) -> np.ndarray:
+        """The mocap target the hand follows through its weld."""
+        return self._mocap()
+
+    def _mm_set_target(self, p_world) -> None:
+        """Put the mocap target at ``p_world`` (no step)."""
+        self._env.data.mocap_pos[0] = np.asarray(p_world, dtype=np.float64)
+
+    def _mm_status(self) -> tuple[bool, bool, int]:
+        return self._success_once, False, self._steps - self._episode_start
+
+    def _mm_cameras(self) -> dict:
+        return dict(MM_CAMERAS)
+
+    def _mm_shots(self, cameras: dict, size: int, depth) -> dict:
+        out = {}
+        for name, cam in cameras.items():
+            turn = cam in MM_ROTATED
+
+            def render(d: bool, cam=cam, turn=turn):
+                r = self._renderer(size, size, d)
+                r.update_scene(self._env.data, camera=cam)
+                img = r.render()
+                return np.ascontiguousarray(img[::-1, ::-1] if turn else img)
+
+            meta = camera_meta(
+                self._env.model, self._env.data, cam, size, size, rotated=turn
+            )
+            out[name] = {
+                "rgb": render(False).astype(np.uint8),
+                "K": meta["intrinsic_K"],
+                "cam2world": meta["extrinsic_cam2world"],
+                **({"depth": render(True).astype(np.float32)} if name in depth else {}),
+            }
+        return out
+
+    def _mm_video_frame(self):
+        return np.concatenate(
+            [
+                self._render("agentview", VIDEO_FRAME, VIDEO_FRAME),
+                self._render("wrist", VIDEO_FRAME, VIDEO_FRAME),
+            ],
+            axis=1,
+        )
+
+    def _mm_reset_scene(self) -> None:
+        self.reset()
+
+    def _mm_truth_extra(self) -> dict:
+        return {
+            "success_now": bool(self._info.get("success", False)),
+            "objects": self.ground_truth_poses()["poses"],
+        }
+
     def state(self) -> dict:
         """TCP position, gripper opening and the task metrics (no stepping): the
         ``get_state`` primitive."""
@@ -970,6 +1161,15 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    p.add_argument(
+        "--mm-home",
+        choices=["refuse", "reset"],
+        default="refuse",
+        help="MotorMind mode's home: refused, or the episode reset",
+    )
+    p.add_argument(
+        "--mm-truth", default=None, help="MotorMind mode's privileged truth log (jsonl)"
+    )
     add_perception_arguments(p, sam3=True)
     add_grasp_arguments(p)
     add_cuda_argument(p)
@@ -979,7 +1179,11 @@ def main():
     pin_egl(args.cuda_device)
 
     facade = MetaworldEnvFacade(
-        task=args.task, seed=args.seed, view_size=args.view_size
+        task=args.task,
+        seed=args.seed,
+        view_size=args.view_size,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
     )
     # --sam3: env.segment; --sam3 / --unidepth: env.detect, env.select_detection,
     # env.reject_detection, env.enhance_depth.

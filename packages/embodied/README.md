@@ -68,14 +68,14 @@ so a session, its `robot_result` row and the eval scripts never notice which pla
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash |
+| LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash, MotorMind |
 | RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash |
 | RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab |
 | ManiSkill | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash |
 | RoboLab | `src/robots/robolab` | RoboLab's task predicate | memory, explore, video, units, VDM, code, `--privileged`, Flash |
 | RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab |
 | Robosuite | `src/robots/robosuite` | robosuite `_check_success` (Restack adds CaP-X's off-table rule), latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
-| Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
+| Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel, MotorMind; MotorMind refuses rotations (the Sawyer's hand orientation is fixed) |
 | Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
 | HumanCLAW (SMPL-X humanoid, HSSD homes) | `src/robots/humanclaw` | HumanClawBench's NavSR@20cm | video, units, VDM, `--privileged` |
 | BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged` |
