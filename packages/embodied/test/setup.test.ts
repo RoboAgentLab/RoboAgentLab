@@ -449,6 +449,19 @@ test("the robot menu is two-level (sim or real, then names only); what a robot n
 		assert.doesNotMatch(r.label, /\b(sim|real)\b|GPU|e-stop/, `${r.id}: the menu shows a name, not requirements`);
 		assert.ok(r.needs.length > 0, `${r.id}: needs is stated`);
 	}
+	// A sim entry is the benchmark's name alone; a real one is qualified only to tell two Frankas apart.
+	for (const r of ROBOTS.filter((r) => r.kind === "sim")) assert.doesNotMatch(r.label, /\(/, `${r.id}: name only`);
+	assert.deepEqual(
+		ROBOTS.filter((r) => r.kind === "sim")
+			.slice(0, 3)
+			.map((r) => [r.label, r.task.split(" ")[1]]),
+		[
+			["LIBERO", "standard"],
+			["LIBERO-PRO", "pro"],
+			["LIBERO-plus", "plus"],
+		],
+		"every --libero-type is offered, the original first",
+	);
 	const summary = p.confirms.at(-1) ?? "";
 	assert.match(summary, /^UR5e \(real\), units/);
 	assert.match(summary, /^needs: UR5e with a Robotiq gripper/m);
