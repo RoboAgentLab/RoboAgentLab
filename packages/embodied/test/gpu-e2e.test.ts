@@ -8,6 +8,10 @@
  * under PI_EMBODIED_GPU_LOCK) and segments its first frame. `test/gpu-e2e.sh` runs it robot by robot
  * with each one's environment (docs/adding-a-robot.md, "Testing on a GPU").
  *
+ * `<robot>-mm` (metaworld-mm) is MotorMind mode on a robot whose env server serves it through
+ * services utils/motormind.py, driven without a model: the preset's pure mode, moves along base
+ * axes, the gripper, a rotation (or its refusal) and the result's `motormind` block.
+ *
  * `libero-mm` is MotorMind mode's interface checks on LIBERO (pi-embodied-work/docs/motormind/DESIGN.md
  * §8, C1-C18; C19 is M2's): the tools driven directly, privileged truth read beside the robot from the
  * env server's `env.mm_debug_*` RPCs, measured values written to `$MM_STEP1_OUT/report.json`.
@@ -357,6 +361,87 @@ for (const c of FLYWHEEL_ROBOTS)
 	);
 
 // ---------------------------------------------------------------------------
+// <robot>-mm: MotorMind mode on the robots served by services utils/motormind.py, without a model.
+
+/**
+ * Start `robot` with --preset motormind on its real env server and drive the mm tools as the mission
+ * would: observe, 40 mm forward, 30 mm up, close and open the gripper, a 20 deg yaw (done, or refused
+ * on a hand that cannot rotate), finish. Returns the result entry; its summary goes to stdout.
+ */
+async function mmEpisode(
+	robot: (pi: ExtensionAPI) => void,
+	name: string,
+	task: Record<string, unknown>,
+	rotates: boolean,
+) {
+	const r = load(
+		robot,
+		deployFlags({
+			python: process.env.PI_EMBODIED_PYTHON,
+			services: servicesRoot,
+			...(process.env.PI_EMBODIED_E2E_CUDA ? { "cuda-device": process.env.PI_EMBODIED_E2E_CUDA } : {}),
+			"output-dir": mkdtempSync(join(tmpdir(), `gpu-e2e-${name}-mm-`)),
+			preset: "motormind",
+			...task,
+		}),
+	);
+	const json = (res: any): Json => JSON.parse(res.content[0].text);
+	const act = async (params: Json) => {
+		const res = await r.call("mm_act", params);
+		await r.emit("tool_execution_end", { toolName: "mm_act" });
+		return json(res);
+	};
+	try {
+		await r.emit("session_start", { reason: "startup" });
+		assert.deepEqual(r.errors, [], `${name} (MotorMind mode) did not start`);
+		assert.deepEqual(r.active(), ["mm_observe", "mm_act", "finish"]);
+		await r.emit("before_agent_start", { prompt: "Solve the task.", systemPrompt: "" });
+		await r.emit("agent_start");
+		const seen = json(await r.call("mm_observe", {}));
+		assert.equal(seen.degraded?.table_z, false, JSON.stringify(seen.degraded));
+		assert.ok(seen.table_z_mm !== null && seen.pose.position_mm.length === 3, JSON.stringify(seen));
+		const forward = await act({ type: "move", direction: "forward", distance_mm: 40 });
+		assert.deepEqual(outcomes(forward), ["done"], JSON.stringify(forward.segments));
+		assert.ok(along(forward) > 35 && along(forward) < 42, `forward ${along(forward)} mm`);
+		assert.ok(forward.segments[0].lateral_mm < 3, `forward drifted ${forward.segments[0].lateral_mm} mm`);
+		const up = await act({ type: "move", direction: "up", distance_mm: 30 });
+		assert.deepEqual(outcomes(up), ["done"], JSON.stringify(up.segments));
+		const closed = await act({ type: "gripper", state: "close" });
+		assert.deepEqual([outcomes(closed), closed.segments[0].grasp?.holding], [["done"], false]);
+		assert.deepEqual(outcomes(await act({ type: "gripper", state: "open" })), ["done"]);
+		const turn = await act({ type: "rotate", direction: "yaw_left", angle_deg: 20 });
+		if (rotates) {
+			assert.deepEqual(outcomes(turn), ["done"], JSON.stringify(turn.segments));
+			assert.ok(Math.abs(turned(turn) - 20) < 3, `turned ${turned(turn)} deg`);
+		} else assert.deepEqual(outcomes(turn), ["refused"], JSON.stringify(turn.segments));
+		await r.call("finish", { status: "failure", summary: `${name}-mm` });
+		await r.emit("message_end", {
+			message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", name: "finish" }] },
+		});
+		await r.emit("agent_end", { messages: [] });
+		const result = r.entries.find((e) => e.type === RESULT_ENTRY)?.data as Json;
+		assert.equal(result.env_error, false, JSON.stringify(result));
+		assert.deepEqual(result.motormind.variant, []);
+		assert.equal(result.motormind.actions, 5);
+		assert.ok(result.env_steps > 0);
+		const { prompts: _p, ...mm } = result.motormind;
+		console.log(
+			`${name}-mm result: ${JSON.stringify({ env_steps: result.env_steps, success: result.success, motormind: mm })}`,
+		);
+		return result;
+	} finally {
+		await r.emit("session_shutdown", { reason: "quit" });
+	}
+}
+
+test(
+	"metaworld-mm: reach-v3 in MotorMind mode moves, grips, refuses a rotation and reports",
+	{ skip: skip("metaworld-mm"), timeout: 1_200_000 },
+	async () => {
+		await mmEpisode(metaworld, "metaworld", { task: "reach-v3", seed: "0" }, false);
+	},
+);
+
 // libero-mm: MotorMind mode's interface checks (DESIGN §8.2). M checks assert with the design's
 // tolerances; R checks only record. Everything measured goes to $MM_STEP1_OUT/report.json.
 
