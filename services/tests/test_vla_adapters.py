@@ -211,6 +211,53 @@ def test_openvla_sees_a_224_center_cropped_frame_and_the_prompt_is_openvlas():
     )
 
 
+def test_openvla_bridge_orig_is_the_base_model_with_bridge_statistics_and_the_raw_action():
+    """--suite bridge_orig: openvla-7b un-normalised with bridge_orig, no center crop, and the raw
+    Bridge V2 action (euler delta, gripper in [0, 1]) for the robot's env server to translate."""
+    from pi_embodied_services.components.openvla_server import OPENVLA_CHECKPOINTS
+    from pi_embodied_services.components.vla_adapter_base import (
+        BRIDGE_EE_DELTA_EULER,
+        LIBERO_OSC,
+    )
+
+    ckpt = OPENVLA_CHECKPOINTS["bridge_orig"]
+    assert (ckpt.repo, ckpt.unnorm_key, ckpt.center_crop, ckpt.action_space) == (
+        "openvla/openvla-7b",
+        "bridge_orig",
+        False,
+        BRIDGE_EE_DELTA_EULER,
+    )
+    assert len(ckpt.revision) == 40, "pinned by commit hash"
+    for suite in ("libero_spatial", "libero_object", "libero_goal", "libero_10"):
+        c = OPENVLA_CHECKPOINTS[suite]
+        assert (c.unnorm_key, c.center_crop, c.action_space) == (None, True, LIBERO_OSC)
+    pol = Sampler(1)
+    o = obs(wrist=False)
+    vla = OpenVLAFacade(
+        policy=pol,
+        model=ckpt.repo,
+        revision=ckpt.revision,
+        suite="bridge_orig",
+        center_crop=False,
+        action_space=BRIDGE_EE_DELTA_EULER,
+    )
+    a = vla.predict(o, None)
+    assert np.array_equal(
+        pol.seen[-1][0], resize_jpeg_lanczos(o["main_images"][0], 224)
+    )
+    assert np.array_equal(a[0, 0], pol.seen_out[-1][0]), "the raw action, untouched"
+    assert 0 <= a[0, 0, 6] <= 1, "the gripper stays Bridge's open probability"
+    info = call(vla, "vla.info")
+    assert (info["suite"], info["action_space"]) == (
+        "bridge_orig",
+        BRIDGE_EE_DELTA_EULER,
+    )
+    # Every other adapter answers in LIBERO's space.
+    assert call(OpenVLAFacade(policy=pol, model="m", revision=None), "vla.info")[
+        "action_space"
+    ] == (LIBERO_OSC)
+
+
 def test_openvla_reports_the_published_checkpoints_suite():
     vla = OpenVLAFacade(policy=Sampler(1), model="m", revision="r", suite="libero_10")
     info = call(vla, "vla.info")

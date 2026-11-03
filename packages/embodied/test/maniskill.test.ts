@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NdArray } from "../src/infra/rpc.ts";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
@@ -19,6 +19,7 @@ import maniskill, {
 	OTHER_ROBOT_ENVS,
 	ROBOT_IDS,
 	ROBOTS,
+	type RobotId as RobotIdT,
 	robotFor,
 	STEP_M,
 	sideBySide,
@@ -297,6 +298,7 @@ async function fakeEnv(
 	});
 	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
 	let tcp = [-0.4, 0, 0.08];
+	let vlaSteps = 0;
 	const armTcp: Record<string, number[]> = Object.fromEntries(
 		(arms ?? []).map((a, i) => [a, [0, i ? 0.12 : -0.12, 0.18]]),
 	);
@@ -328,12 +330,36 @@ async function fakeEnv(
 					scene: null,
 					table_z: 0,
 					view_size: 256,
+					episode_steps: Number(process.env.FAKE_EPISODE_STEPS ?? 60),
 					...setup,
 					...(robot ? { robot } : {}),
 				};
 			else if (method === "env.reset") result = [obs(), {}];
 			else if (method === "env.get_task_language") result = "pick up the red cube";
-			else if (method === "env.move_delta") {
+			else if (method === "env.vla_observation")
+				result = {
+					main: nd("uint8", [4, 6, 3], Buffer.alloc(72)),
+					wrist: kwargs.wrist ? nd("uint8", [2, 2, 3], Buffer.alloc(12)) : null,
+					state: f32([...tcp, 1, 0, 0, 0, 0.07]),
+				};
+			else if (method === "env.vla_step") {
+				// The env server's translation is tested in Python; here every action moves the TCP by its xyz,
+				// and the task succeeds at the FAKE_VLA_SUCCESS_AT-th control step since the start.
+				const a = args[0] as { shape: number[] };
+				vlaSteps += a.shape[0];
+				const done = vlaSteps >= Number(process.env.FAKE_VLA_SUCCESS_AT ?? Infinity);
+				result = {
+					frames: Array.from({ length: a.shape[0] }, () => ({
+						...obs(),
+						action: f32([0.01, 0, 0, 0, 0, 0, 1]),
+						success: done,
+					})),
+					obs: obs(),
+					info: { success: done },
+					steps: a.shape[0],
+					gripper: 1,
+				};
+			} else if (method === "env.move_delta") {
 				// The server's refusals (env_server.py move_delta); the waypoint legs themselves are tested in Python.
 				const d = kwargs.delta_xyz as number[];
 				if (robot === "panda_stick" && kwargs.gripper) {
@@ -702,4 +728,227 @@ test("a drawing scene's spent step budget ends a move and says to finish", async
 	// The server stops at the spent budget and says so; pi shows it.
 	assert.equal(env.calls.filter((c) => c.method === "env.move_delta").length, 1);
 	assert.match(r.details.result.step_limit, /step limit is reached.*call finish/);
+});
+
+/** A fake VLA adapter server (services' ChunkVLAFacade): `info` is its vla.info; every predict answers one action. */
+async function fakeVla(t: TestContext, info: Record<string, unknown>) {
+	const calls: { method: string; args: unknown[] }[] = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => {
+			body += c;
+		});
+		req.on("end", () => {
+			const { method, args = [] } = JSON.parse(body);
+			calls.push({ method, args });
+			let result: unknown = { status: "ok", service: "openvla" };
+			if (method === "vla.info") result = { horizon: 1, action_dim: 7, wrist: false, ...info };
+			else if (method === "vla.predict")
+				result = {
+					__ndarray__: Buffer.from(Float32Array.from([0.01, 0, 0, 0, 0, 0.1, 0.9]).buffer).toString("base64"),
+					dtype: "float32",
+					shape: [1, 1, 7],
+				};
+			res.end(JSON.stringify({ ok: true, result }));
+		});
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	t.after(() => {
+		server.closeAllConnections();
+		server.close();
+	});
+	return { url, calls };
+}
+/** The Bridge checkpoint as openvla_server --suite bridge_orig reports it. */
+const BRIDGE = {
+	model: "openvla/openvla-7b",
+	revision: "47a0ec7fc4ec123775a391911046cf33cf9ed83f",
+	suite: "bridge_orig",
+	action_space: "bridge_ee_delta_euler",
+};
+const BRIDGE_TASK = "PutCarrotOnPlateInScene-v1";
+
+test("--vla-adapter openvla on the bridge WidowX: openvla_act is the manifest's, active only when mounted, one chunk per env.vla_step", async (t) => {
+	const env = await fakeEnv("widowx250s", ROBOTS.widowx250s.setup, false, BRIDGE_TASK);
+	t.after(env.close);
+	const bare = stubPi({ "env-url": env.url, task: BRIDGE_TASK, arm: "widowx250s" });
+	maniskill(bare.pi);
+	const tool = bare.tools.get("openvla_act");
+	assert.deepEqual(Object.keys(tool.parameters.properties), ["prompt", "chunks"]);
+	assert.match(tool.description, /^Run OpenVLA \(7B, BridgeData V2 statistics\)/);
+	await bare.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(!bare.active().includes("openvla_act"), "not mounted without --vla-adapter");
+	assert.doesNotMatch((await bare.emit("before_agent_start")).systemPrompt, /openvla_act/);
+
+	const vla = await fakeVla(t, BRIDGE);
+	const s = stubPi({ "env-url": env.url, task: BRIDGE_TASK, arm: "widowx250s", openvla: vla.url });
+	maniskill(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.ok(s.active().includes("openvla_act"));
+	assert.match(
+		(await s.emit("before_agent_start")).systemPrompt,
+		/`openvla_act` runs OpenVLA, a vision-language-action/,
+	);
+	const r = await s.run("openvla_act", { chunks: 2 });
+	const predicts = vla.calls.filter((c) => c.method === "vla.predict");
+	assert.equal(predicts.length, 2);
+	const [wire, options] = predicts[0].args as [Record<string, any>, Record<string, unknown>];
+	// The raw agentview (the scene's Bridge camera), no wrist image, the arm's state, the task's own instruction.
+	assert.deepEqual(wire.main_images.shape, [1, 4, 6, 3]);
+	assert.equal(wire.wrist_images, null);
+	assert.deepEqual(wire.states.shape, [1, 8]);
+	assert.deepEqual(wire.task_descriptions, ["pick up the red cube"]);
+	assert.equal(options.mode, "eval");
+	assert.equal(typeof options.seed, "number");
+	const steps = env.calls.filter((c) => c.method === "env.vla_step");
+	assert.deepEqual(
+		steps.map((c) => c.kwargs),
+		[{ action_space: "bridge_ee_delta_euler" }, { action_space: "bridge_ee_delta_euler" }],
+	);
+	assert.deepEqual((steps[0].args[0] as { shape: number[] }).shape, [1, 7], "the chunk as the VLA answered it");
+	assert.deepEqual(env.calls.find((c) => c.method === "env.vla_observation")?.kwargs, { main: "agentview" });
+	assert.equal(r.details.result.chunks_used, 2);
+	assert.equal(r.details.result.env_steps, 2);
+	assert.equal(r.details.result.vla_seeds.length, 2);
+	assert.equal(r.details.step, 2);
+	assert.equal(r.details.state.gripper_command, "open");
+	assert.deepEqual(
+		r.content.map((c: { type: string }) => c.type),
+		["text", "image"],
+		"the new state and the image, as every motion",
+	);
+	await s.emit("agent_start");
+	await s.run("finish", { status: "failure", summary: "stop" });
+	await s.emit("agent_end", { messages: [] });
+	const result = s.entries.find((e) => e.type === "robot_result")?.data;
+	assert.deepEqual(result.vla, { openvla_act: `openvla openvla/openvla-7b@${BRIDGE.revision}` });
+	assert.equal(result.env_steps, 2);
+	assert.equal(result.planner, "model");
+	assert.equal("vla_alone" in result, false);
+});
+
+test("openvla_act refuses a checkpoint the rig cannot run; an adapter or arm without the rig's action space does not start", async (t) => {
+	const env = await fakeEnv("widowx250s", ROBOTS.widowx250s.setup, false, BRIDGE_TASK);
+	t.after(env.close);
+	const call = async (info: Record<string, unknown>) => {
+		const vla = await fakeVla(t, info);
+		const s = stubPi({ "env-url": env.url, task: BRIDGE_TASK, arm: "widowx250s", openvla: vla.url });
+		maniskill(s.pi);
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		return s.run("openvla_act", {});
+	};
+	// A LIBERO fine-tune answers in LIBERO's OSC space; a server from before action_space is one too.
+	await assert.rejects(
+		call({
+			model: "openvla/openvla-7b-finetuned-libero-spatial",
+			suite: "libero_spatial",
+			action_space: "libero_osc",
+		}),
+		/answers in libero_osc, but maniskill executes bridge_ee_delta_euler: restart it with --suite bridge_orig/,
+	);
+	await assert.rejects(call({ model: "m", suite: "libero_10" }), /answers in libero_osc/);
+	await assert.rejects(
+		call({ ...BRIDGE, suite: "fractal20220817_data" }),
+		/un-normalises with fractal20220817_data, but maniskill runs bridge_orig/,
+	);
+	// A custom checkpoint (no suite) in the Bridge action space is trusted.
+	assert.equal((await call({ ...BRIDGE, suite: null })).details.result.chunks_used, 1);
+
+	const start = async (flags: Record<string, unknown>, task = BRIDGE_TASK) => {
+		const e = await fakeEnv(
+			(flags.arm as string) ?? undefined,
+			ROBOTS[(flags.arm as RobotIdT) ?? "panda"].setup,
+			!flags.arm,
+			task,
+		);
+		t.after(e.close);
+		const s = stubPi({ "env-url": e.url, task, ...flags });
+		maniskill(s.pi);
+		const errors: string[] = [];
+		const log = console.error;
+		console.error = (m: string) => errors.push(m);
+		try {
+			await s.emit("session_start");
+		} finally {
+			console.error = log;
+		}
+		process.exitCode = undefined;
+		return { active: s.active(), error: errors.join("\n"), calls: e.calls };
+	};
+	const oft = await start({ arm: "widowx250s", "openvla-oft": "http://127.0.0.1:1" });
+	assert.deepEqual(oft.active, []);
+	assert.match(oft.error, /--vla-adapter openvla-oft has no maniskill embodiment .*maniskill mounts openvla/);
+	const panda = await start({ openvla: "http://127.0.0.1:1" }, "PickCube-v1");
+	assert.match(
+		panda.error,
+		/answers in bridge_ee_delta_euler, which --arm panda does not execute \(--arm widowx250s does\)/,
+	);
+	assert.ok(!panda.calls.some((c) => c.method === "env.reset"), "refused before the reset");
+	const alone = await start({ arm: "widowx250s", "vla-alone": "openvla" });
+	assert.match(alone.error, /--vla-alone openvla runs a mounted adapter: add it to --vla-adapter/);
+});
+
+test("--vla-alone openvla: the first prompt runs the policy until success or the budget, asks no model, and records planner vla", async (t) => {
+	const run = async (env: Record<string, string>, info = BRIDGE) => {
+		Object.assign(process.env, env);
+		const e = await fakeEnv("widowx250s", ROBOTS.widowx250s.setup, false, BRIDGE_TASK);
+		t.after(e.close);
+		const vla = await fakeVla(t, info);
+		const s = stubPi({
+			"env-url": e.url,
+			task: BRIDGE_TASK,
+			arm: "widowx250s",
+			openvla: vla.url,
+			"vla-alone": "openvla",
+		});
+		maniskill(s.pi);
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		const log = console.error;
+		console.error = () => {};
+		let handled: unknown;
+		try {
+			handled = await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+			for (const k of Object.keys(env)) delete process.env[k];
+		}
+		const result = s.entries.find((x) => x.type === "robot_result")?.data;
+		return { handled, result, steps: e.calls.filter((c) => c.method === "env.vla_step").length };
+	};
+	const solved = await run({ FAKE_VLA_SUCCESS_AT: "3" });
+	assert.deepEqual(solved.handled, { action: "handled" });
+	assert.equal(solved.steps, 3, "stops at success");
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.success, true);
+	assert.equal(solved.result.env_steps, 3);
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.env_error, false);
+	assert.deepEqual(solved.result.vla_alone, {
+		adapter: "openvla",
+		tool: "openvla_act",
+		instruction: "pick up the red cube",
+		steps_budget: 60,
+		env_steps: 3,
+		chunks: 3,
+		success: true,
+	});
+	assert.deepEqual(solved.result.vla, { openvla_act: `openvla openvla/openvla-7b@${BRIDGE.revision}` });
+	// The task's registered episode length bounds a run that never succeeds.
+	const spent = await run({ FAKE_EPISODE_STEPS: "5" });
+	assert.equal(spent.steps, 5);
+	assert.equal(spent.result.success, false);
+	assert.equal(spent.result.vla_alone.env_steps, 5);
+	// A refused checkpoint makes the episode invalid (env_error), not a failure.
+	const refused = await run({}, { ...BRIDGE, action_space: "libero_osc" });
+	assert.equal(refused.result.env_error, true);
+	assert.match(refused.result.vla_alone.error, /answers in libero_osc/);
+	assert.equal(refused.steps, 0);
 });

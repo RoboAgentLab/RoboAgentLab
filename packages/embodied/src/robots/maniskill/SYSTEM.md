@@ -20,6 +20,9 @@ This is a single episode. You may recover within it (re-position, re-grasp), but
 [/stick]
 - Every motion result shows the new state, then {{views}}. Do not call `view_env_state` right after a motion tool.
 - Moves run in ~2 cm steps; a single call moves at most 0.2 m.
+[tool:openvla_act]
+- `openvla_act` runs OpenVLA, a vision-language-action policy trained on BridgeData V2 (this robot's real counterpart), on the third-person image: each chunk is one 0.2 s end-effector action it chooses (translation, rotation and gripper) for the instruction, by default the task's own. It may carry out the whole task by itself in about 30-60 actions: run it with `chunks` 10-20, then judge the progress in the image and call it again, correct with `move_delta`, or finish. Unlike `move_delta` it also turns the gripper.
+[/tool:openvla_act]
 
 [tool:point]
 - `point` (Molmo) finds what a short phrase names in a camera's current image and returns the pixel, marked on the image; with `cameras` it points over several views at once and names the camera of each point.

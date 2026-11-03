@@ -1,6 +1,6 @@
 {
 	"robot": "maniskill",
-	"internal": [],
+	"internal": ["env.vla_observation", "env.vla_step"],
 	"primitives": [
 		{
 			"use": "sim/get_task_language"
@@ -11,6 +11,28 @@
 			"tier": "low",
 			"doc": {
 				"tool": "Current state with the agentview (third-person) and wrist images."
+			},
+			"result": "motion"
+		},
+		{
+			"name": "openvla_act",
+			"side": "ts",
+			"tier": "high",
+			"mutating": true,
+			"params": {
+				"prompt": {
+					"type": "string",
+					"description": "Instruction for the policy (default: the task's own)"
+				},
+				"chunks": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 60,
+					"description": "Action chunks to run closed-loop, stopping at success (default 1; each is one 0.2 s action)"
+				}
+			},
+			"doc": {
+				"tool": "Run OpenVLA (7B, BridgeData V2 statistics) on the third-person image for `chunks` closed-loop action chunks, one 0.2 s end-effector action each (translation, rotation and gripper), stopping at success. Returns the new state and image."
 			},
 			"result": "motion"
 		},

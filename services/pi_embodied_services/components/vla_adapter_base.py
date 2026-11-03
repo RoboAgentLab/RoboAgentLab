@@ -15,13 +15,16 @@
 """Base for the third-party VLA adapters (OpenVLA, OpenVLA-OFT, GR00T).
 
 Every adapter speaks the Pi0.5 wire format, so a robot mounts them the way it
-mounts ``pi0_pick``: ``vla.predict(obs, options)`` takes the env-native LIBERO
+mounts ``pi0_pick``: ``vla.predict(obs, options)`` takes the env-native
 observation (``main_images`` uint8 [1, H, W, 3], ``wrist_images`` or None,
 ``states`` float32 [1, 8], ``task_descriptions`` [str]) and returns a float32
-action chunk [1, horizon, 7] in the env's own OSC space (xyz delta, axis-angle
-delta, gripper -1 open / +1 close), ready for ``env.chunk_step``. The model's
-preprocessing (crops, prompt templates) and its action denormalisation
-live in the adapter, not in the robot.
+action chunk [1, horizon, 7] in the checkpoint's ``action_space`` (``vla.info``):
+``libero_osc``, LIBERO's own OSC space (xyz delta, axis-angle delta, gripper -1
+open / +1 close), ready for its ``env.chunk_step``; or ``bridge_ee_delta_euler``,
+Bridge V2's end-effector delta (xyz in m, roll / pitch / yaw delta, gripper in
+[0, 1] with 1 open), which the robot's env server translates into its control
+mode (ManiSkill's ``env.vla_step``). The model's preprocessing (crops, prompt
+templates) and its action denormalisation live in the adapter, not in the robot.
 
 ``options["seed"]`` seeds every RNG for that one call (``seeded``), so a
 replayed episode gets bit-identical actions from a sampler; greedy models are
@@ -44,6 +47,9 @@ from pi_embodied_services.components.vla_facade_base import (
 )
 
 ACTION_DIM = 7
+#: ``vla.info``'s ``action_space`` values (see the module docstring).
+LIBERO_OSC = "libero_osc"
+BRIDGE_EE_DELTA_EULER = "bridge_ee_delta_euler"
 
 
 @dataclass(frozen=True)
@@ -148,29 +154,38 @@ def snapshot(repo_or_path: str, revision: str | None) -> str:
 
 
 class ChunkVLAFacade(BaseVLAFacade):
-    """A VLA that maps one :class:`Frame` to an action chunk [horizon, 7] in LIBERO's OSC space.
+    """A VLA that maps one :class:`Frame` to an action chunk [horizon, 7] in its ``action_space``.
 
-    Subclasses implement ``_act(frame) -> ndarray[horizon, 7]`` (already denormalised and
-    gripper-converted), set ``SERVICE_NAME`` and ``horizon``, and load their model in
-    ``__init__`` before calling ``super().__init__``. The base owns the RPC surface:
+    Subclasses implement ``_act(frame) -> ndarray[horizon, 7]`` (already denormalised and, for
+    ``libero_osc``, gripper-converted), set ``SERVICE_NAME`` and ``horizon``, and load their model
+    in ``__init__`` before calling ``super().__init__``. The base owns the RPC surface:
 
     - ``vla.predict(obs, options)`` -> float32 [1, horizon, 7]
     - ``vla.reset()`` -> ``{"ok": true}`` (``_reset`` for models with per-episode state)
-    - ``vla.info()`` -> ``{"service", "model", "revision", "suite", "horizon", "action_dim", "wrist"}``
+    - ``vla.info()`` -> ``{"service", "model", "revision", "suite", "action_space", "horizon",
+      "action_dim", "wrist"}``
 
-    ``suite`` is the LIBERO suite the checkpoint was fine-tuned on (a published fine-tune's), or
-    None when unknown (a custom ``--model-path``); the robot refuses a grasp tool whose suite is
-    not the episode's.
+    ``suite`` is the dataset the checkpoint's actions are un-normalised with: the LIBERO suite of
+    a published fine-tune, ``bridge_orig`` for OpenVLA's Bridge V2 statistics, or None when
+    unknown (a custom ``--model-path``); the robot refuses a tool whose suite it cannot run.
     """
 
     horizon: int = 1
     #: Whether the model consumes the wrist camera (info for the robot's prompt and result).
     uses_wrist: bool = False
 
-    def __init__(self, *, model: str, revision: str | None, suite: str | None = None):
+    def __init__(
+        self,
+        *,
+        model: str,
+        revision: str | None,
+        suite: str | None = None,
+        action_space: str = LIBERO_OSC,
+    ):
         self._model_id = model
         self._revision = revision
         self._suite = suite
+        self._action_space = action_space
         super().__init__()
 
     def _register_rpc(self):
@@ -184,6 +199,7 @@ class ChunkVLAFacade(BaseVLAFacade):
             "model": self._model_id,
             "revision": self._revision,
             "suite": self._suite,
+            "action_space": self._action_space,
             "horizon": self.horizon,
             "action_dim": ACTION_DIM,
             "wrist": self.uses_wrist,

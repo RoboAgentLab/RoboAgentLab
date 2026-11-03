@@ -258,6 +258,9 @@ python -m pi_embodied_services.components.pi05_vla_server --embodiment libero --
 # --openvla / --openvla-oft / --gr00t <url>; libero/serve.sh starts them when OPENVLA_PYTHON etc. are set)
 OPENVLA_CHECKPOINT_PATH=/ckpt/openvla-7b-finetuned-libero-spatial \
 python -m pi_embodied_services.components.openvla_server --port 18600        # [--suite libero_spatial|...] [--unnorm-key K]
+# ManiSkill's bridge WidowX (pi --arm widowx250s --vla-adapter openvla): the base openvla-7b with its Bridge V2
+# statistics, no center crop, the raw Bridge action (the env server translates it); about 15 GB of GPU memory
+python -m pi_embodied_services.components.openvla_server --suite bridge_orig --port 18600 --cuda-device 0
 OPENVLA_OFT_CHECKPOINT_PATH=/ckpt/openvla-7b-oft-finetuned-libero-spatial \
 python -m pi_embodied_services.components.openvla_oft_server --port 18700    # [--no-center-crop] [--repo <openvla-oft clone>]
 GR00T_CHECKPOINT_PATH=/ckpt/RLinf-Gr00t-N1.6-SFT-Spatial \
@@ -370,7 +373,8 @@ Not vendored; installed by the extras or provided by the host:
   (rev `e727b46`), the RoboTwin asset snapshot, the dual-Franka Pi0.5 checkpoint and its SFT
   dataset repo id.
 - Third-party VLAs: `openvla/openvla-7b-finetuned-libero-{spatial,object,goal,10}` (revs in
-  `openvla_server.OPENVLA_CHECKPOINTS`, spatial `962318c`), `moojink/openvla-7b-oft-finetuned-libero-*`
+  `openvla_server.OPENVLA_CHECKPOINTS`, spatial `962318c`), `openvla/openvla-7b` (rev `47a0ec7`, `--suite
+  bridge_orig`), `moojink/openvla-7b-oft-finetuned-libero-*`
   (`openvla_oft_server.OPENVLA_OFT_CHECKPOINTS`, spatial `6d0231a`), `RLinf/RLinf-Gr00t-N1.6-SFT-Spatial`
   (rev `e39614a`, the `libero_panda` embodiment) and the `nvidia/GR00T-N1.6-3B` / `GR00T-N1.7-3B` bases
   (`gr00t_server.GR00T_CHECKPOINTS`).

@@ -419,6 +419,16 @@ actors (goal markers included) and its articulations other than the robot. `env.
 (one per control step) carry `action` float32[4] (the `pd_ee_delta_pos` action it sent, the arm's
 own gripper action) and `success`; a call that ran no step returns the current frame without them.
 
+It also serves pi's VLA adapter tools (`--vla-adapter`; manifest `internal`, never a program's primitive):
+
+| Method | Args | Returns |
+|---|---|---|
+| `env.vla_observation` | kw `main="agentview"`, `wrist=null` (camera names) | `{"main" uint8[H,W,3], "wrist" uint8[H,W,3] or null, "state" float32[8]}`: the raw sensor frames (no orientation, crop or letterbox; the bridge twins' 640x480 Bridge camera with its real background) and the arm's [tcp xyz, tcp quat wxyz, gripper width] |
+| `env.vla_step` | `actions` float32[N,7], kw `action_space` (`vla.info`'s) | the chunk translated into the arm's control mode (`VLA_ACTION_SPACES`: `bridge_ee_delta_euler` drives `--robot widowx250s`, the Euler delta as an axis-angle vector and the gripper as +1 open / -1 close, SimplerEnv's `widowx_bridge` conversion), one control step per action until `stop`, termination or success: `{"frames" list[obs] (each with "action" float32[7], the native action, and "success"), "obs", "info", "steps", "gripper" (> 0 open)[, "cancelled"][, "error" when already solved]}`; refuses an action space it does not translate or another robot |
+
+`env.get_env_meta` carries `episode_steps`, the task's registered episode length (60 on the bridge
+twins but the eggplant's 120, SimplerEnv's): the default budget of `--vla-alone`.
+
 ### metaworld-env (`robots/metaworld/env_server.py`)
 
 One Metaworld MT50 task (`metaworld==3.1.1`, MuJoCo 3.3.0; the 50 `*-v3` names and their
@@ -822,7 +832,7 @@ Same method names; poses are reported in the `right_base` frame. `arm` is `"left
 | pi05-vla | `vla.predict` | `obs` (openpi wire dict, encoded by the client), `options={"mode": "eval"[, "seed": int]}` | float32 action chunk from openpi's `predict_action_batch`, batch first (LIBERO: 5 steps x 7; dual Franka: 20 x 20) |
 | openvla, openvla-oft, gr00t | `vla.predict` | `obs` (the Pi0.5 LIBERO wire dict: `main_images` uint8[1,H,W,3], `wrist_images` uint8[1,H,W,3] or null, `states` float32[1,8], `task_descriptions` [str]), `options={"mode": "eval"[, "seed": int]}` | float32[1, horizon, 7] in LIBERO's OSC action space (gripper -1 open / +1 close), ready for `env.chunk_step`: OpenVLA 1 step, OpenVLA-OFT 8, GR00T its action horizon (16). The adapter does the model's own preprocessing (LIBERO's upside-down frame flipped, OpenVLA's 224 resize / OFT's 0.9 center crop, prompt template) and denormalisation |
 | openvla, openvla-oft, gr00t | `vla.reset` | - | `{"ok": true}` (per-episode state; a no-op for these stateless policies) |
-| openvla, openvla-oft, gr00t | `vla.info` | - | `{"service", "model" (repo id or path), "revision" (pinned commit hash or null), "horizon", "action_dim": 7, "wrist": bool}`; the robot records `service model@revision` per grasp tool as `vla` in `robot_result` |
+| openvla, openvla-oft, gr00t | `vla.info` | - | `{"service", "model" (repo id or path), "revision" (pinned commit hash or null), "suite" (the dataset its actions are un-normalised with: a LIBERO suite, `bridge_orig`, or null), "action_space" (`libero_osc`, or `bridge_ee_delta_euler`: OpenVLA's raw Bridge V2 action, [dx, dy, dz] m, [droll, dpitch, dyaw] rad, open in [0, 1], which the robot's env server translates), "horizon", "action_dim": 7, "wrist": bool}`; the robot records `service model@revision` per tool as `vla` in `robot_result` and refuses a suite or action space it cannot run |
 | rldx-vla | `vla.get_modality_config` | - | `{"video_delta_indices": [int], "hist_maxlen": int}` |
 | rldx-vla | `vla.predict` | `obs_dict`, `options` (must not contain `session_ids`; optional `"seed": int`) | dict of action arrays |
 | rldx-vla | `vla.reset_session` | - | `{"ok": true}` |
