@@ -40,7 +40,7 @@ See the [full Quickstart](https://roboagentlab.github.io/docs/quickstart.html) f
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash |
+| LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash |
 | RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash |
 | RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab |
 | ManiSkill | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash |
