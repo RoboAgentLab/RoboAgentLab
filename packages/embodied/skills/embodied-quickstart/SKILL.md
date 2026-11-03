@@ -1,6 +1,6 @@
 ---
 name: embodied-quickstart
-description: Install, preflight and run pi-embodied robots (simulators LIBERO, ManiSkill, Metaworld, Robosuite, Genesis, RoboCasa, RoboTwin, RoboLab, RoboDojo, BEHAVIOR-1K, HumanCLAW; real Franka, dual Franka, Piper, UR5e). Use when setting up a robot or benchmark, after /embodied-setup, or when a robot run fails to start.
+description: Install, preflight and run pi-embodied robots (simulators LIBERO, ManiSkill, Metaworld, Robosuite, Genesis, RoboCasa, RoboTwin, RoboLab, RoboDojo, BEHAVIOR-1K, HumanCLAW; real Franka, dual Franka, Piper, UR5e). Use when setting up a robot or benchmark, after /embodied-setup, when a robot run fails to start, or when the user asks which observation (O1–O3) and execution (A1–A3) setting a paper's configuration maps to or wants to reproduce a paper's setting (Show-Harness, RPent, OpenETA, CaP-X tiers, ...).
 ---
 
 # pi-embodied quickstart
@@ -12,20 +12,61 @@ every command over `ssh <host>`; pi and the experiment directory live on the box
 
 ## 1. Pick
 
-`/embodied-setup` asks for the robot, the mode, where services run, the planner (tools and units
-modes) and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
+`/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
+observation × execution grid, optionally a paper's setting in that cell, where services run, the
+planner and the experiment directory, and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
-flags; the task and mode go on the command line. With no model configured it writes nothing and
+flags; the task and the setting go on the command line. With no model configured it writes nothing and
 tells the user to `/login` or add a provider to `~/.pi/agent/models.json`.
 
-Modes: tools (default), units (`--units=true`; `--units=both` keeps the tools), code (`--code=true`,
-CaP-X run_code; `--tier S1..S4|M1..M4` sets a whole CaP-X tier, `--preset showharness|rpent|openeta|
-xpolicylab|humanclaw|capx-<tier>` another repository's setting), fine-tuned (`src/modes/finetuned`
-extension, `--model finetuned/<adapter>`), flash (`--model flash/replay`: LIBERO, RoboCasa, RoboTwin,
-ManiSkill, RoboLab, RoboDojo).
+The grid (`src/infra/setup/axes.ts`) is the survey's Agent-as-Policy taxonomy: observations O1–O3 by
+execution authority A1–A3. Each level is a flag; O1 and A2 are a robot's defaults:
 
-Fine-tuned mode needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
+| level | meaning | flags |
+| --- | --- | --- |
+| O1 agent-built perception | camera frames only; the planner reads the scene itself | none |
+| O2 supplied perception | SAM3 masks with ids (detect, select_detection, reject_detection) | `--detections` (the arms: `--segment`); a SAM3 server at `services.sam3` |
+| O3 privileged state | the simulator's ground-truth poses; the result is marked privileged | `--privileged` (simulators only) |
+| A1 behavior selection | Show-Harness action units run by a fixed executor; no VLA | `--units=true` (`--units=both` keeps the tools) |
+| A2 tool orchestration | the robot's own tools: VLA, segmentation, motion | none |
+| A3 code synthesis | `run_code`, Python over the primitives (CaP-X) | `--code=true` (`--code-api high\|low\|low-noexamples`) |
+
+A robot without a level has no cell in that row or column: RoboCasa and RoboTwin have no A1,
+HumanCLAW is A2 only (its task flags carry `--units=both`), real arms have no O3. `--units` and
+`--code` are mutually exclusive.
+
+### A paper's setting
+
+When the user names a paper or a ported repository's configuration ("run it like Show-Harness",
+"the CaP-X S2 setting", "reproduce RPent"), first say which cell it is and the cell's flags, then
+the preset: `--preset` / `--tier` (`src/infra/tiers.ts`) expands to the flags of that setting and
+refuses a flag given with another value, so add the cell's O flag only where the table leaves it
+free. `/embodied-setup` offers these after the cell (typing filters the list by the short name):
+
+| short name | paper | cell | flags | robots |
+| --- | --- | --- | --- | --- |
+| showharness | Show-Harness | O1 × A1 | `--preset showharness` | any with units |
+| motormind | MotorMind | O1 × A1 | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
+| openeta | OpenETA | O1 × A2 | `--preset openeta` (VDM + anchor image) | any |
+| humanclaw | HumanCLAW | O1 × A2 | `--preset humanclaw` | HumanCLAW |
+| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (sets `--privileged` itself) | simulators with code |
+| capx-S2, S3, S4 | CaP-X S2–S4 | O1 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
+| capx-M1 … M4 | CaP-X M1–M4 | O1 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
+| xpolicylab | XPolicyLab | O1 × A2 | `--preset xpolicylab --xpolicy ws://host:port` (a policy server; not in the wizard) | RoboTwin, RoboDojo, Piper, dual Franka |
+
+A setting not in the table is answered the same way: read the paper's observation access (what the
+agent is given beyond the frames) and execution interface (behaviors, tools, or code) off the
+taxonomy, name the cell, then the flags.
+
+The planner is a model of the registry or, in A1 without a preset, the robot's fine-tuned adapter
+(`src/modes/finetuned` extension, `--model finetuned/<adapter>`): a small VLM + LoRA picks each unit,
+served by vLLM. Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no planner;
+LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) is not an experiment setting and is started
+by hand.
+
+The fine-tuned planner needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
 finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
 `finetuned/download.py` (pinned, verified), and `services/pi_embodied_services/finetuned/serve.sh`
 (`MODEL`, `LORA`, `VLLM_VENV` as setup.sh prints them; serve.sh's own defaults are
@@ -35,7 +76,9 @@ http://127.0.0.1:8010/v1). Start it before the episodes and leave it running. LI
 --ft-model <served adapter>`).
 
 The user confirms the plan once in `/embodied-setup`; pi does not gate each tool call, so ask before
-sudo, anything touching real hardware, or a download the plan does not list.
+sudo, anything touching real hardware, or a download the plan does not list. The install and the
+experiment are separate: install, run the preflight, and end with the launch command; the user starts
+episodes with it. Do not start one.
 
 ## 2. Install
 
@@ -97,12 +140,12 @@ Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `s
 
 ## 4. One episode
 
-The launch command `/embodied-setup` hands over (`[mode flags]`: none in tools mode, `--units=true` in
-units mode, `--units=true` and the adapter's `--model ...` flags in fine-tuned mode, `--model
-flash/replay` in flash mode):
+The launch command `/embodied-setup` hands over (`[setting flags]`: the cell's flags from the table
+in section 1, or a paper's `--preset` / `--tier`, plus the fine-tuned planner's `--model finetuned/...`
+flags; `--model flash/replay` for a replay):
 
 ```bash
-cd <experiment dir> && source <services>/.venv-<target>/pi-embodied.env && pi <task flags> [mode flags] --max-turns 40 --time-limit 900 --dashboard=true
+cd <experiment dir> && source <services>/.venv-<target>/pi-embodied.env && pi <task flags> [setting flags] --max-turns 40 --time-limit 900 --dashboard=true
 ```
 
 Always give the user the command with a budget: every turn sends camera images, and without
@@ -111,7 +154,7 @@ which against a paid API can cost a lot. With a planner that has thinking levels
 may be added (pi clamps it to the model's levels).
 After the start the robot waits for a prompt: the user types `Solve the task.` (or another
 instruction). For a first run without the terminal UI:
-`pi -a -p <task flags> [--units=true] --max-turns 40 --time-limit 900 --thinking low "Solve the task."`.
+`pi -a -p <task flags> [setting flags] --max-turns 40 --time-limit 900 --thinking low "Solve the task."`.
 On a machine with several GPUs add `CUDA_VISIBLE_DEVICES` and `MUJOCO_EGL_DEVICE_ID` (MuJoCo robots).
 
 The first pi in the experiment directory asks whether to trust the project: its `.pi/settings.json`
