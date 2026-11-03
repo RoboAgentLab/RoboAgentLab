@@ -182,6 +182,14 @@ export const worksIn = (c: Cell): Work[] => WORKS.filter((w) => w.cells.includes
  * its works.json id), on the robots that have what it needs (`robots`: id prefixes; absent = any robot
  * that has the cell).
  */
+/** A live web panel a work or a robot brings, besides the dashboard: its pi flags and the port it serves. */
+export type Panel = { name: string; flags: string; port: number };
+/** CaP-X's Viser scene (viser_debug), ported as `--viser` (src/observation/viser.ts): LIBERO and the Frankas. */
+export const VISER: Panel = {
+	name: "Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates)",
+	flags: "--viser --viser-port 8080",
+	port: 8080,
+};
 export type Paper = {
 	id: string;
 	name: string;
@@ -190,6 +198,8 @@ export type Paper = {
 	flag: string;
 	note: string;
 	robots?: string[];
+	/** The work's own panels, preferred over the dashboard alone when the robot can serve them. */
+	panels?: Panel[];
 };
 const capx = (tier: string, o: O, note: string): Paper => ({
 	id: `capx-${tier}`,
@@ -198,6 +208,7 @@ const capx = (tier: string, o: O, note: string): Paper => ({
 	cell: { o, a: "A3" },
 	flag: `--tier ${tier}`,
 	note,
+	panels: [VISER],
 });
 export const PAPERS: Paper[] = [
 	{
