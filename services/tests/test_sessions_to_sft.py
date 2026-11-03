@@ -127,6 +127,11 @@ def test_shim_points_at_the_converter():
 def test_dry_run_counts_the_teacher_steps(tmp_path: Path, surface: str):
     if shutil.which("node") is None:
         pytest.skip("node is not on PATH")
+    # The converter imports the pi packages (session entries, the robot's manifest): a built checkout.
+    if not (s2s.PI_ROOT / "node_modules/@earendil-works/pi-coding-agent").is_dir():
+        pytest.skip(
+            "the checkout's node_modules are not installed (npm ci --ignore-scripts)"
+        )
     good = tmp_path / "good.jsonl"
     good.write_text("".join(json.dumps(e) + "\n" for e in session()), encoding="utf-8")
     bad = tmp_path / "bad.jsonl"
@@ -147,9 +152,9 @@ def test_dry_run_counts_the_teacher_steps(tmp_path: Path, surface: str):
         ],
         capture_output=True,
         text=True,
-        check=True,
         cwd=str(Path(__file__).resolve().parents[1]),
     )
+    assert out.returncode == 0, out.stderr[-2000:]
     report = json.loads(out.stdout)
     # tools: move_delta and finish after an observation (view_env_state has none before it; run_code is not a tool
     # of the manifest's tool list); code: the one program that ran. The failed run is skipped.
