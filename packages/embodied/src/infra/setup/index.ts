@@ -38,6 +38,7 @@ import {
 	OBSERVATION,
 	PAPERS,
 	type Paint,
+	type Panel,
 	type Paper,
 	type Pick,
 	papersFor,
@@ -47,19 +48,25 @@ import {
 	supported,
 	supportedCells,
 	typed,
+	VISER,
 } from "./axes.ts";
 import { parseRequest, requestCell } from "./request.ts";
 import {
+	DASHBOARD_PORT,
 	type Experiment,
 	episodeFlags,
 	experimentLabel,
+	freePort,
 	gpuLabel,
 	gpus,
 	headlessCommand,
+	panelFlags,
+	panelUrls,
 	RECORD,
 	runCommand,
 	type SetupRecord,
 	scanExperiments,
+	tunnelHint,
 } from "./run.ts";
 
 /** The package root and the services checkout next to it (absent in an npm install). */
@@ -72,7 +79,7 @@ export const COMMAND = "embodied-setup";
 /** Start an episode of an installed experiment. */
 export const RUN = "embodied-run";
 export const RUN_HOW = {
-	here: "here: pi takes this terminal until the episode ends (trust prompt, then type Solve the task.)",
+	here: "here: pi takes this terminal and starts the episode at once (the trust prompt first, the first time)",
 	headless: "headless: the agent runs pi -a -p now, in the background, and reports the result",
 	print: "print: show the command, I run it myself",
 } as const;
@@ -114,6 +121,8 @@ export type Robot = {
 	finetuned?: string;
 	/** Fine-tuned planner: the released adapter `setup.sh finetuned` fetches (FT_ADAPTER); unset when the user serves their own. */
 	adapter?: string;
+	/** Live panels the robot can serve besides the dashboard (the Viser 3D view: LIBERO, the Frankas). */
+	panels?: Panel[];
 };
 
 /** A simulator with ground truth, units and code mode; A1 Model needs a VLA skill (LIBERO's Pi0.5: `LIBERO`). */
@@ -137,6 +146,7 @@ export const ROBOTS: Robot[] = [
 		id: "libero",
 		kind: "sim",
 		label: "LIBERO",
+		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		axes: LIBERO,
@@ -148,6 +158,7 @@ export const ROBOTS: Robot[] = [
 		id: "libero-pro",
 		kind: "sim",
 		label: "LIBERO-PRO",
+		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		axes: LIBERO,
@@ -159,6 +170,7 @@ export const ROBOTS: Robot[] = [
 		id: "libero-plus",
 		kind: "sim",
 		label: "LIBERO-plus",
+		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
 		needs: "NVIDIA GPU (MuJoCo EGL), ~9.5 GB scene assets, system ImageMagick (libmagickwand)",
 		axes: LIBERO,
@@ -267,6 +279,7 @@ export const ROBOTS: Robot[] = [
 		id: "franka",
 		kind: "real",
 		label: "Franka (RLinf)",
+		panels: [VISER],
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka, RLinf controller + Ray, an operator at the e-stop",
 		axes: ARM,
@@ -276,6 +289,7 @@ export const ROBOTS: Robot[] = [
 		id: "franka-polymetis",
 		kind: "real",
 		label: "Franka (Polymetis)",
+		panels: [VISER],
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
 		axes: ARM,
@@ -716,7 +730,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
  * and how: in this terminal (pi takes it over until the episode ends), headless by the agent, or printed.
  */
 /** What /embodied-run reads off the machine; a test replaces it. */
-export const runDeps = { gpus };
+export const runDeps = { gpus, freePort, env: process.env as NodeJS.ProcessEnv };
+export const PANELS = "Panels";
 
 async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
 	if (robotActive(pi)) {
@@ -761,6 +776,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	// The setting: recorded, else chosen as in /embodied-setup (a request's setting or levels count).
 	let setting = exp.record?.flags;
 	let settingName = exp.record ? `${cellName(exp.record.cell)}${exp.record.paper ? `, ${exp.record.paper}` : ""}` : "";
+	let settingPaper: Paper | undefined;
 	if (setting === undefined || req.paper || requestCell(req)) {
 		const robot = exp.robot;
 		let cell: Cell | undefined;
@@ -781,6 +797,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		}
 		setting = paper ? paper.flag : cellFlags(robot.axes, cell);
 		settingName = `${cellName(cell)}${paper ? `, ${paper.id}` : ""}`;
+		settingPaper = paper;
 	}
 	const task = (
 		await ui.input(`Task flags (empty: ${exp.record?.task ?? exp.robot.task})`, exp.record?.task ?? exp.robot.task)
@@ -798,8 +815,25 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	} else if (devices.length === 1) gpu = devices[0].index;
 	const budget = (await ui.input(`Episode budget (empty: ${BUDGET})`, BUDGET))?.trim();
 	if (budget === undefined) return;
-	const flags = episodeFlags(taskFlags, setting, budget || BUDGET);
+	// Panels: the work's own (the ported setting's, when the robot serves them), else the robot's, with the dashboard; or the dashboard alone.
+	const paperOf = exp.record?.paper ? PAPERS.find((p) => p.id === exp.record?.paper) : undefined;
+	const chosen = settingPaper ?? paperOf;
+	const own = (chosen?.panels ?? []).filter((p) => exp.robot.panels?.some((q) => q.flags === p.flags));
+	const robotPanels = exp.robot.panels ?? [];
+	let panels: Panel[] = [];
+	if (own.length || robotPanels.length) {
+		const withOwn = own.length
+			? `${chosen?.name}'s own: ${own.map((p) => p.name).join(", ")}, with the dashboard`
+			: `the robot's: ${robotPanels.map((p) => p.name).join(", ")}, with the dashboard`;
+		const picked = await ui.select(PANELS, [withOwn, "the dashboard only"]);
+		if (!picked) return;
+		if (picked === withOwn) panels = own.length ? own : robotPanels;
+	}
+	const port = await runDeps.freePort(DASHBOARD_PORT);
+	const flags = episodeFlags(taskFlags, setting, budget || BUDGET, panelFlags(port, panels));
 	const command = runCommand(exp, flags, gpu);
+	const urls = panelUrls(port, panels);
+	const tunnel = tunnelHint([port, ...panels.map((p) => p.port)], runDeps.env);
 	const hows =
 		ctx.mode === "tui" ? [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print] : [RUN_HOW.headless, RUN_HOW.print];
 	const how = await ui.select("How to run?", hows);
@@ -808,6 +842,10 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		`${exp.robot.label}: ${settingName}; planner ${exp.planner ?? exp.record?.planner ?? "the session's model"}`,
 		`task: ${taskFlags}`,
 		gpu === undefined ? "GPU: any" : `GPU ${gpu}`,
+		`panels on this machine: ${urls.join("; ")}`,
+		...(tunnel
+			? [`from your own machine, first: ${tunnel} (or a LocalForward of the same ports in its ssh config)`]
+			: []),
 		how.split(":")[0] === "headless" ? headlessCommand(exp, flags, gpu) : command,
 	].join("\n");
 	if (!(await ui.confirm("Start the episode?", summary))) {
@@ -815,7 +853,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		return;
 	}
 	if (how === RUN_HOW.print) {
-		ui.notify(command, "info");
+		ui.notify(tunnel ? `${command}\n${tunnel}` : command, "info");
 		return;
 	}
 	if (how === RUN_HOW.headless) {
