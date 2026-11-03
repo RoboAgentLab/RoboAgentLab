@@ -1,0 +1,25 @@
+name: eval-parallel repro
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# TEMPORARY: reproduce the eval-parallel N=4 double-run flake under the fork CI's conditions, six times at once.
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        i: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-node
+      - run: python3 -m pip install --user -q uv==0.12.17
+      - run: npm run build
+      - run: bash --version | head -1 && nproc && node --version
+      - name: embodied tests
+        working-directory: packages/embodied
+        run: node --test --experimental-strip-types test/*.test.ts

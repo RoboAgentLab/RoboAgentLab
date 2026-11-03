@@ -140,8 +140,22 @@ test("N=1 and N=4 run the same cells, each once, with the same summary", () => {
 	assert.deepEqual(summary(join(s.dir, "n4")), summary(join(s.dir, "n1")));
 	// Every cell ran exactly once under N=4: workers never share a unit.
 	const n4 = s.calls().filter(([d]) => d.includes("/n4/"));
-	assert.equal(n4.length, 16);
-	assert.equal(new Set(n4.map(([d]) => d)).size, 16);
+	// REPRO DIAGNOSTICS (temporary): which worker ran which cell, the claims and the jobs file.
+	const diag = () => {
+		const st = join(s.dir, "n4", ".parallel");
+		const files = readdirSync(st).sort();
+		const show = (f: string) => `--- ${f}\n${readFileSync(join(st, f), "utf8")}`;
+		return [
+			`calls:\n${readFileSync(s.env.FAKE_LOG, "utf8")}`,
+			`claims: ${readdirSync(join(st, "claims")).sort((a, b) => Number(a) - Number(b)).join(" ")}`,
+			...files.filter((f) => f === "jobs" || /^w\d+\.(log|call)$/.test(f)).map(show),
+			`stdout:\n${four.stdout}`,
+			`stderr:\n${four.stderr}`,
+			`bash: ${spawnSync("bash", ["-c", "echo $BASH_VERSION"], { encoding: "utf8" }).stdout}`,
+		].join("\n");
+	};
+	assert.equal(n4.length, 16, diag());
+	assert.equal(new Set(n4.map(([d]) => d)).size, 16, diag());
 });
 
 test("variants run the same seeds into their own dirs; success, Pass@k and --min-success per variant", () => {
