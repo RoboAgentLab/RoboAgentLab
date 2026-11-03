@@ -15,7 +15,7 @@ every command over `ssh <host>`; pi and the experiment directory live on the box
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
 observation × execution grid (Figure A1a), optionally the work to reproduce in that cell, where
 services run, the planner and the experiment directory. A request after the command
-(`/embodied-setup reproduce RPent on LIBERO-PRO`, also `/embodied-quickstart ...`; any language,
+(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language,
 the names in ASCII) settles what it names, and only the rest is asked: a robot by id or label (a
 name several share, `franka`, narrows the menu to them), a ported setting or a work of the survey
 by short name or id (a work with several cells on the robot asks which; its ported settings narrow

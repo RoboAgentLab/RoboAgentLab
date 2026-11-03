@@ -69,8 +69,6 @@ const REPO = "https://github.com/RoboAgentLab/RoboAgentLab.git";
 const SKILL = join(PKG, "skills/embodied-quickstart/SKILL.md");
 export const NOTICE_ENTRY = "pi-embodied-setup-notice";
 export const COMMAND = "embodied-setup";
-/** The same command under the skill's name, for `/embodied-quickstart <request>`. */
-export const ALIAS = "embodied-quickstart";
 /** Start an episode of an installed experiment. */
 export const RUN = "embodied-run";
 export const RUN_HOW = {
@@ -856,10 +854,6 @@ export default function embodiedSetup(pi: ExtensionAPI) {
 	pi.registerCommand(COMMAND, {
 		description:
 			"Set up pi-embodied: pick a robot, its observation × execution cell, where services run and the planner; the agent installs. A request after it (robot, work, cell, planner, host) settles what it names",
-		handler: (args, ctx) => setup(pi, ctx, args),
-	});
-	pi.registerCommand(ALIAS, {
-		description: "The same as /embodied-setup: `/embodied-quickstart reproduce RPent on LIBERO-PRO`",
 		handler: (args, ctx) => setup(pi, ctx, args),
 	});
 	pi.on("session_start", (_event, ctx) => {

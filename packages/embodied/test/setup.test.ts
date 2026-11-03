@@ -25,7 +25,6 @@ import {
 	worksIn,
 } from "../src/infra/setup/axes.ts";
 import setup, {
-	ALIAS,
 	BUDGET,
 	COMMAND,
 	FINETUNED,
@@ -945,12 +944,12 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	assert.match(summary, /^from your request: robot LIBERO-PRO; RPent's setting \(O1 × A2, --preset rpent\)$/m);
 	assert.match(summary, /^LIBERO-PRO \(sim\): O1 × A2 .*, RPent's setting$/m);
 	assert.match(summary, /^flags: --preset rpent; planner openai\/gpt-6$/m);
-	// Everything named, the alias command: only the directory and the confirmation remain.
+	// Everything named: only the directory and the confirmation remain.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { input: [""], confirm: [false] },
 	});
-	await p.commands.get(ALIAS)?.handler("reproduce Show-Harness on metaworld here with openai/gpt-6", p.ctx);
+	await p.run("reproduce Show-Harness on metaworld here with openai/gpt-6");
 	assert.deepEqual(
 		p.asked.map((a) => a.replace(/\(empty: .*\)/, "(empty: ...)")),
 		["Experiment directory (empty: ...)", "Set up pi-embodied?"],
