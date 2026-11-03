@@ -103,3 +103,20 @@ contradicting argument before any cell runs.
 | RPent | `--preset rpent` (the robot's tools with memory; no mode flag) |
 | OpenETA | `--preset openeta` (= `--vdm --anchor-image`) |
 | XPolicyLab / RoboDojo | `--preset xpolicylab` (with `--xpolicy ws://host:port`) |
+
+## Planner × surface flags (2026-11-03)
+
+The planner and the action surface are independent axes (README, "Planner × surface"). No flag was renamed;
+these were added, and every default keeps the previous behaviour.
+
+| Flag | Where | Meaning |
+|---|---|---|
+| `--ft-surface units\|tools\|code` | `src/modes/finetuned` | The surface a `finetuned/<adapter>` student speaks. Default `units`: the released adapters run exactly as before (`--ft-prompt`, the camera transform, the v5 rules). `tools`: one JSON tool call per step from the robot's active tools; `code`: one fenced program per step through `run_code` (needs `--code`). |
+| `--ft-observe <tool>` | `src/modes/finetuned` | `--ft-surface tools`: the read-only tool that opens the episode and runs in place of an unparsable reply (default `view_env_state`; the surface is refused when it is not active). |
+| `--ft-max-tokens N` | `src/modes/finetuned` | Reply budget (auto: 24 for units, 256 for tools, 1024 for code). |
+| `--ft-cameras` | `src/modes/finetuned` | Unchanged for units. On tools and code, `auto` sends every image of the latest result as the robot returned it (no transform); an explicit list picks indices. |
+| `--flash-plan <file>` | `src/capabilities/flash` | `--model flash/replay`: replay this file instead of searching the robot's plan directories. Its content decides the kind: a units sequence, a program, or the robot's own tool plan (robots with `recipeFlash`; LIBERO's plan needs its anchors file and is found by directory only). |
+| `generate.ts --kind tools\|units\|program` | `src/capabilities/flash/generate.ts` | What a solved session is turned into (default `tools`, the anchored plan as before). |
+
+A `finetuned_step` entry on the tools or code surface records `surface`, the `call` or `code`, `fallback`
+and `fallback_reason`, the prompt and the media fingerprints, as the units steps record the token.
