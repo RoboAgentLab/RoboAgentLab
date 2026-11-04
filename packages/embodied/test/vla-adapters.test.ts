@@ -282,5 +282,5 @@ test("ManiSkill's openvla_act is a tool only: declared in its manifest, never a 
 	});
 	for (const tier of ["high", "low", "raw", "privileged"] as const)
 		assert.ok(!codePrimitives(m, tier, () => true).some((p) => p.name === "openvla_act"), tier);
-	assert.deepEqual(m.internal, ["env.vla_observation", "env.vla_step"]);
+	assert.deepEqual(m.internal, ["env.mm_observe", "env.mm_run_step", "env.vla_observation", "env.vla_step"]);
 });

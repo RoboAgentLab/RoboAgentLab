@@ -25,6 +25,9 @@
  * `--vla-adapter openvla` mounts `openvla_act` (../../primitives/vla-adapters.ts): OpenVLA with its Bridge V2
  * statistics on the bridge twins' WidowX 250 S (`--arm widowx250s`), each chunk translated by the env server
  * (env.vla_step); `--vla-alone openvla` runs it alone instead of the planner (../../planner/vla-alone.ts).
+ * MotorMind mode (`--mm=true`, ../../modes/motormind) drives the Panda or the xArm6 (MM_ARMS) on the stock
+ * scenes through the server's `env.mm_observe` / `env.mm_run_step` (services utils/motormind.py); the server
+ * then runs its pose control (env_server.py MM_CONTROL_MODE).
  * Tools and code primitives: ../../primitives/manifests/maniskill.json (the env server reads it too).
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
@@ -33,7 +36,7 @@
  * and configs/robot_maniskill.yaml ported as a pi robot.
  */
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -46,6 +49,7 @@ import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
 import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
@@ -457,6 +461,27 @@ export const OBSERVATION: ObservationDecl = {
 export const hasGripper = (r: ManiskillRobot) => r.gripper !== false;
 
 /**
+ * The arms MotorMind mode drives (env server MM_ROBOTS: a parallel gripper, a wrist camera with depth, a
+ * 20 Hz controller with a pose mode), and why each other one refuses it (MM_REFUSED there).
+ */
+export const MM_ARMS: Record<RobotId, string | undefined> = {
+	panda: undefined,
+	xarm6_robotiq: undefined,
+	widowxai: "has no wrist camera (no clearance under the tool) and no pose control",
+	panda_stick: "holds a stick: no fingers and no wrist camera",
+	panda_pair: "has two arms; MotorMind drives one",
+	widowx250s: "runs its scene's 5 Hz controller (a MotorMind tick is 0.05 s) and has no wrist camera",
+};
+
+/** Why MotorMind mode cannot run `robot` on `envId`, else undefined. */
+export function mmRefusal(robot: RobotId, envId: string): string | undefined {
+	if (RIGS.includes(envId))
+		return `MotorMind mode (--mm) runs the stock scenes: ${envId} is an RLinf rig, which keeps the pd_ee_delta_pos control of its recorded episodes`;
+	const why = MM_ARMS[robot];
+	return why ? `MotorMind mode (--mm) drives --arm panda or xarm6_robotiq; ${robot} ${why}` : undefined;
+}
+
+/**
  * The robot an episode runs: `--arm` checked against ROBOTS and the env id (a rig runs its own Panda; a stock
  * scene must be one the robot was measured on). Throws with the choices otherwise.
  */
@@ -600,6 +625,11 @@ export default function maniskill(pi: ExtensionAPI) {
 	});
 
 	let env: RpcClient;
+	const mmOn = () => flagValue(pi.getFlag("mm")) === "true";
+	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
+	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
+	/** MotorMind mode: the env server's privileged truth log for this session (the server's own when attached). */
+	let truthLog: string | undefined;
 	/** The VLA adapters this run mounted, by tool name, and which VLA each tool used this episode. */
 	const adapters = new Map<string, MountedAdapter>();
 	const vlaUsed: Record<string, string> = {};
@@ -732,6 +762,8 @@ export default function maniskill(pi: ExtensionAPI) {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
 			primitives: ["move_delta", "act"],
 			published: false,
+			// MotorMind mode replaces this prompt (its preset turns memory off); the robot's own prompt reads memory.
+			optional: mmOn,
 		},
 		// Flash replays a solved episode's plan (../flash/generate.ts --session: move_delta waypoints with their
 		// absolute end positions). Anchors are pointed at by Molmo in the agentview and met with the plane at
@@ -784,6 +816,19 @@ export default function maniskill(pi: ExtensionAPI) {
 					"This is an exploration run: `reset` starts a fresh attempt (see Exploration). Within an attempt, recover in place (re-position, re-grasp).",
 				],
 			],
+		},
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the episode's
+		// env steps and latched success (a timed-out segment's steps are counted at the next call); a
+		// segment's video frames come with it; `home` (--mm-home reset) is the episode reset.
+		motormind: {
+			observe: async (aim = {}) => mmReply(await call<Json>("env.mm_observe", aim)),
+			runStep: async (seg, { timeoutMs, observe, ...aim }) =>
+				mmReply(await env.call<Json>("env.mm_run_step", { seg, observe, ...aim }, timeoutMs, [], robot.signal)),
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
+			task: () => language,
+			expect: () => ({ mm_home: mmHome() }),
 		},
 		start: startEpisode,
 		prompt: () =>
@@ -923,6 +968,21 @@ export default function maniskill(pi: ExtensionAPI) {
 		if (r.result.gripper === "open" || r.result.gripper === "close")
 			grippers[(params.arm as string | undefined) ?? ""] = r.result.gripper === "open" ? 1 : -1;
 		return r.result;
+	}
+
+	/**
+	 * A MotorMind reply (an observation, or a segment with its `observation`): its video frames (the agentview
+	 * and the wrist view side by side) to the episode video, the episode's env steps and latched success from it.
+	 */
+	function mmReply(r: Json): Json {
+		const { frames, ...out } = r as Json & { frames?: NdArray[] };
+		for (const f of frames ?? []) video.frame(f);
+		const o = (out.observation ?? out) as Json;
+		if (typeof o.env_steps === "number") envStep = o.env_steps;
+		success = o.terminated === true;
+		const config = o.config as { truth?: unknown } | undefined;
+		if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
+		return out;
 	}
 
 	/** The motion result with the new state, then the agentview and (a robot with one) the wrist image. */
@@ -1168,7 +1228,15 @@ export default function maniskill(pi: ExtensionAPI) {
 		const wanted = flag("arm", "panda");
 		robotFor(wanted, envId);
 		robotId = wanted as RobotId;
+		const mm = mmOn() ? mmRefusal(robotId, envId) : undefined;
+		if (mm) throw new Error(mm);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
+		truthLog =
+			mmOn() && !endpoint ? join(tmpdir(), `pi-embodied-${tag(seed)}-${process.pid}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);
@@ -1185,6 +1253,9 @@ export default function maniskill(pi: ExtensionAPI) {
 					...(robotId !== "panda" ? ["--robot", robotId] : []),
 					...ikArgs(pi),
 					...detectionArgs(pi, { sam3: true }),
+					// MotorMind mode: its pose control, its home and its truth log.
+					...(mmOn() ? ["--mm", "--mm-home", mmHome()] : []),
+					...(truthLog ? ["--mm-truth", truthLog] : []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services },
