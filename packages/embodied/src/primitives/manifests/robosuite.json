@@ -1,6 +1,8 @@
 {
 	"robot": "robosuite",
 	"internal": [
+		"env.mm_observe",
+		"env.mm_run_step",
 		"env.state",
 		"env.chunk_step",
 		"env.set_recording"
@@ -819,6 +821,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
 		},
 		{
 			"use": "modules/remember_object"

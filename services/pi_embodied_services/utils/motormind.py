@@ -60,7 +60,8 @@ The hooks a facade defines (base frame and poses in the world frame, metres, rad
   lag (Metaworld's mocap weld): the servo steers the target plus the hand's offset from it at the
   segment's start, settles under the judge once it arrives, and after an abort puts the target
   back at the hand, as an OSC hold does; ``_mm_opening_ahead()`` (where fingers that coast come
-  to rest: an open-to stops on it); ``_mm_truth_extra()`` (privileged truth).
+  to rest: an open-to stops on it); ``_mm_extra()`` (the robot's own fields of every observation,
+  e.g. robosuite's ``success_step``); ``_mm_truth_extra()`` (privileged truth).
 
 The facade calls ``_mm_setup(mm_home, mm_truth)`` in its constructor, ``_mm_new_episode()`` after
 every reset, and registers ``_mm_rpc()``.
@@ -216,6 +217,9 @@ class MotorMindMixin:
 
     def _mm_set_target(self, p_world: np.ndarray) -> None:
         return None
+
+    def _mm_extra(self) -> dict:
+        return {}
 
     def _mm_truth_extra(self) -> dict:
         return {}
@@ -437,6 +441,7 @@ class MotorMindMixin:
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "episode_over": bool(terminated or truncated),
+            **self._mm_extra(),
             **self._mm_static_fields(),
         }
         if images:

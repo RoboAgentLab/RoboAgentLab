@@ -8,7 +8,7 @@
  * under PI_EMBODIED_GPU_LOCK) and segments its first frame. `test/gpu-e2e.sh` runs it robot by robot
  * with each one's environment (docs/adding-a-robot.md, "Testing on a GPU").
  *
- * `<robot>-mm` (metaworld-mm) is MotorMind mode on a robot whose env server serves it through
+ * `<robot>-mm` (metaworld-mm, robosuite-mm) is MotorMind mode on a robot whose env server serves it through
  * services utils/motormind.py, driven without a model: the preset's pure mode, moves along base
  * axes, the gripper, a rotation (or its refusal) and the result's `motormind` block.
  *
@@ -439,6 +439,14 @@ test(
 	{ skip: skip("metaworld-mm"), timeout: 1_200_000 },
 	async () => {
 		await mmEpisode(metaworld, "metaworld", { task: "reach-v3", seed: "0" }, false);
+	},
+);
+
+test(
+	"robosuite-mm: Lift in MotorMind mode moves, grips, turns and reports",
+	{ skip: skip("robosuite-mm"), timeout: 1_200_000 },
+	async () => {
+		await mmEpisode(robosuite, "robosuite", { task: "Lift", seed: "0" }, true);
 	},
 );
 

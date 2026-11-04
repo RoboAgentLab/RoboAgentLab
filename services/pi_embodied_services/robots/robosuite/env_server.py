@@ -43,6 +43,12 @@ and refuses other business calls while a program runs. A primitive's reply to th
 the bulk a program does not need (a motion's observation images and video frames, which go to the
 run's video instead); the run reports its control steps, the latched success and the new
 observation (``_finish_run``).
+
+MotorMind mode (``env.mm_observe`` / ``env.mm_run_step``, utils/motormind.py) drives robot0 of the
+one-arm tasks: robosuite's Panda under OSC_POSE at 20 Hz is LIBERO's arm, so a tick is one control
+step and the capability table is LIBERO's (motormind_rig.libero_caps' gripper, reach and tilt
+numbers); its views are the task camera, the arena's ``sideview`` (on the base's +Y side) and the
+wrist camera. Wipe's sponge refuses gripper segments; the two-arm tasks refuse the mode.
 """
 
 from __future__ import annotations
@@ -58,6 +64,7 @@ from typing import Any
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero import motormind_rig as rig
 from pi_embodied_services.robots.robosuite import tasks
 from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.code_exec import CodeRunMixin
@@ -74,6 +81,7 @@ from pi_embodied_services.utils.grasp import (
     urls_from_args,
 )
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.motormind import MotorMindMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -101,6 +109,19 @@ RECORD_SIZE = 256
 CODE_RES = 512
 #: The ik service's robot model for the Panda's grip site (components/ik_server.py ROBOTS).
 IK_ROBOT = "panda_libero"
+#: MotorMind mode's capability fields: LIBERO's Panda (motormind_rig.libero_caps).
+MM_CAPS = {
+    "gripper_open_span_m": rig.GRIPPER_OPEN_SPAN_M,
+    "gripper_pad_length_m": rig.GRIPPER_PAD_LENGTH_M,
+    "reach_m": 0.78,
+    "comfortable_reach_m": 0.727,
+    "tilt_limits_deg": {
+        "roll_cw": 88.6,
+        "roll_ccw": 83.7,
+        "pitch_down": 91.7,
+        "pitch_up": 53.6,
+    },
+}
 #: Code mode: video frames one run hands back (halved, every other one kept, when full) and the
 #: largest render a program may ask for.
 CODE_MAX_FRAMES = 128
@@ -245,7 +266,9 @@ def _slerp(a, b, t: float) -> np.ndarray:
     return (np.sin((1 - t) * th) * a + np.sin(t * th) * b) / np.sin(th)
 
 
-class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
+class RobosuiteEnvFacade(
+    MotorMindMixin, CodeRunMixin, MainThreadServeMixin, BaseEnvFacade
+):
     """One robosuite env; every call runs on the main thread (MuJoCo EGL)."""
 
     SERVICE_NAME = "robosuite-env"
@@ -264,6 +287,8 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         ik_reach: reach.ReachPreview | None = None,
         grasp: dict | None = None,
         geometry: bool = False,
+        mm_home: str = "refuse",
+        mm_truth: str | None = None,
     ):
         import robosuite as suite
         from robosuite.controllers import load_composite_controller_config
@@ -353,6 +378,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 **(self._grasp.capabilities() if self._grasp else {}),
             },
         }
+        self._mm_setup(mm_home, mm_truth)
         super().__init__()
 
     def _register_rpc(self) -> None:
@@ -398,6 +424,9 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "env.move_to_joints": self.move_to_joints,
                 "env.traj_plan": self.traj_plan,
                 "env.move_along_trajectory": self.move_along_trajectory,
+                # MotorMind mode (utils/motormind.py): the observation and one segment of an
+                # action, in robot0's base frame.
+                **self._mm_rpc(),
             }
         )
         grasp = getattr(self, "_grasp", None)
@@ -405,7 +434,10 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         if geometry is not None:
             geometry.install(self)
         if grasp is not None:
-            grasp.install(self, mutating=GraspPlanner.MUTATING + ("env.move_to",))
+            grasp.install(
+                self,
+                mutating=GraspPlanner.MUTATING + ("env.move_to", "env.mm_run_step"),
+            )
         # The primitives are packages/embodied/src/primitives/manifests/robosuite.json (with
         # pi); code.api, the programs' whitelist and the startup self-check come from it.
         self._manifest_code_run(
@@ -756,6 +788,7 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             self._env.step(self._action({}))
         self._home = {arm: self._eef(i)[0] for i, arm in enumerate(self._task.arms)}
         self._success_step = tasks.latch(None, self._success(), 0)
+        self._mm_new_episode()
         return self._pack(), {"language": self._task.language}
 
     def step(self, action):
@@ -1043,6 +1076,97 @@ class RobosuiteEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 "frames": list(self._motion_frames),
                 **({"steps": steps} if steps is not None else {}),
             },
+        }
+
+    # ---- MotorMind mode (utils/motormind.py) ----
+
+    def _mm_static(self) -> dict:
+        if len(self._task.arms) != 1:
+            raise ValueError(
+                f"MotorMind mode drives one arm; {self._task_name} has {len(self._task.arms)}"
+            )
+        body, rot = self._base(0)
+        return {
+            "body": self._env.robots[0].robot_model.root_body,
+            "pos": np.asarray(
+                self._sim.data.body_xpos[body], dtype=np.float64
+            ).tolist(),
+            "xmat": rot,
+            "max_translation_m": tasks.OSC_POS_MAX_M,
+            "max_rotation_rad": tasks.OSC_ROT_MAX_RAD,
+            "fingers": self._task.gripper,
+            "caps": MM_CAPS,
+        }
+
+    def _mm_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        pos, quat = self._eef(0)
+        return pos, rig.quat_xyzw_matrix(quat)
+
+    def _mm_opening(self) -> float:
+        if not self._task.gripper:
+            return 0.0
+        return rig.opening_m(self._obs()["robot0_gripper_qpos"])
+
+    def _mm_tick(self, dp_world, dr_world, grip: float, until=None) -> None:
+        """One control step: the increments in OSC_POSE's base frame over its output limits, the
+        gripper channel held (the Panda gripper's action is incremental: 0 holds the fingers)."""
+        _, base_rot = self._base(0)
+        part = np.concatenate(
+            [
+                np.clip(base_rot.T @ dp_world / tasks.OSC_POS_MAX_M, -1, 1),
+                np.clip(base_rot.T @ dr_world / tasks.OSC_ROT_MAX_RAD, -1, 1),
+            ]
+        )
+        if self._task.gripper:
+            self._grip[self._task.arms[0]] = float(grip)
+        self._step(self._action({0: part}))
+
+    def _mm_status(self) -> tuple[bool, bool, int]:
+        return (
+            self._success_step is not None,
+            self._steps >= self._max_steps,
+            self._steps,
+        )
+
+    def _mm_extra(self) -> dict:
+        return {"success_step": self._success_step}
+
+    def _mm_cameras(self) -> dict:
+        return {
+            "scene": self._cameras["agentview"],
+            "side": "sideview",
+            "wrist": WRIST_CAMERA,
+        }
+
+    def _mm_shots(self, cameras: dict, size: int, depth) -> dict:
+        """Upright renders with LIBERO's calibration of them (motormind_rig: the MuJoCo camera's
+        fovy, position and orientation)."""
+        out = {}
+        model, data = self._sim.model, self._sim.data
+        for name, cam in cameras.items():
+            cid = model.camera_name2id(cam)
+            shot = self._render(cam, size, depth=name in depth)
+            rgb, d = shot if name in depth else (shot, None)
+            out[name] = {
+                "rgb": rgb,
+                "K": rig.intrinsic(float(model.cam_fovy[cid]), size, size),
+                "cam2world": rig.cam2world(data.cam_xpos[cid], data.cam_xmat[cid]),
+                **({"depth": d} if d is not None else {}),
+            }
+        return out
+
+    def _mm_video_frame(self):
+        if self._steps % self._video_every:
+            return None
+        return self._render(self._cameras["agentview"], VIDEO_SIZE)
+
+    def _mm_reset_scene(self) -> None:
+        self.reset()
+
+    def _mm_truth_extra(self) -> dict:
+        return {
+            "success_now": bool(self._success()),
+            "objects": self.ground_truth_poses()["poses"],
         }
 
     # ---- read-only ----
@@ -1728,6 +1852,15 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    p.add_argument(
+        "--mm-home",
+        choices=["refuse", "reset"],
+        default="refuse",
+        help="MotorMind mode's home: refused, or the episode reset",
+    )
+    p.add_argument(
+        "--mm-truth", default=None, help="MotorMind mode's privileged truth log (jsonl)"
+    )
     add_perception_arguments(p)
     args = p.parse_args()
 
@@ -1753,6 +1886,8 @@ def main():
         ik_reach=reach.reach_from_args(args, IK_ROBOT),
         grasp=urls_from_args(args),
         geometry=args.geometry,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection, env.enhance_depth,
     # on the views the grasp planner and code mode read (its own env.segment stays).
