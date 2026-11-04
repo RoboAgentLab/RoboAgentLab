@@ -8,7 +8,7 @@
  * under PI_EMBODIED_GPU_LOCK) and segments its first frame. `test/gpu-e2e.sh` runs it robot by robot
  * with each one's environment (docs/adding-a-robot.md, "Testing on a GPU").
  *
- * `<robot>-mm` (metaworld-mm, robosuite-mm, robocasa-mm, robotwin-mm) is MotorMind mode on a robot whose env server serves it through
+ * `<robot>-mm` (metaworld-mm, robosuite-mm, robocasa-mm, robotwin-mm, maniskill-mm) is MotorMind mode on a robot whose env server serves it through
  * services utils/motormind.py, driven without a model: the preset's pure mode, moves along base
  * axes, the gripper, a rotation (or its refusal) and the result's `motormind` block.
  *
@@ -468,6 +468,15 @@ test(
 			{ task: "beat_block_hammer", "task-config": "demo_randomized", seed: "100000", lingbot: "off" },
 			true,
 		);
+	},
+);
+
+test(
+	"maniskill-mm: PickCube in MotorMind mode on the Panda and the xArm6 moves, grips, turns and reports",
+	{ skip: skip("maniskill-mm"), timeout: 1_200_000 },
+	async () => {
+		for (const arm of ["panda", "xarm6_robotiq"])
+			await mmEpisode(maniskill, `maniskill-${arm}`, { task: "PickCube-v1", seed: "0", arm }, true);
 	},
 );
 

@@ -1,6 +1,6 @@
 {
 	"robot": "maniskill",
-	"internal": ["env.vla_observation", "env.vla_step"],
+	"internal": ["env.mm_observe", "env.mm_run_step", "env.vla_observation", "env.vla_step"],
 	"primitives": [
 		{
 			"use": "sim/get_task_language"
@@ -256,6 +256,12 @@
 		},
 		{
 			"use": "modules/run_code"
+		},
+		{
+			"use": "modules/mm_observe"
+		},
+		{
+			"use": "modules/mm_act"
 		},
 		{
 			"use": "modules/remember_object"

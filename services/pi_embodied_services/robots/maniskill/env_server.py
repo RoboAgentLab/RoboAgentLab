@@ -45,12 +45,22 @@ refuses other business calls while a program runs. What a program receives carri
 state: of a step's info only the flags (``success``, ``is_grasped``, ...; the distances and poses
 some tasks report are object state), no reward (ManiSkill's dense rewards are computed from the
 object poses) and no images of a motion (they go to the run's video; ``_code_reply``).
+
+MotorMind mode (``--mm``: ``env.mm_observe`` / ``env.mm_run_step``, utils/motormind.py) drives the
+Panda and the xArm6 on the stock scenes (``MM_ROBOTS``; the other arms and the RLinf rigs refuse
+it, ``mm_spec``). The server then runs ``MM_CONTROL_MODE``, a copy of the arm's
+``pd_ee_delta_pose`` scaled so that one normalised unit moves the tool 0.05 m or turns it 0.5 rad
+in a control step, as LIBERO's OSC does: a tick is one 20 Hz control step in the base frame. The
+views are the agentview (padded square), the task's render camera moved to the rig's side mount
+(base +Y) and the wrist camera, raw as the sensors render them, with SAPIEN's calibration.
+``move_delta`` and the programs' actions keep their metres (``RobotSpec.pos_scale``).
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 import math
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -58,10 +68,12 @@ from typing import Any, Optional
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero import motormind_rig as rig
 from pi_embodied_services.utils import ground_truth, reach
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.gpu import add_cuda_argument, pin_cuda
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.motormind import MM_HOME, MotorMindMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -705,6 +717,137 @@ ROBOTS: dict[str, RobotSpec] = {
 }
 
 
+#: MotorMind mode's arms: a parallel gripper, a wrist camera with depth (the clearance under the
+#: tool) and a 20 Hz controller with a pose mode, which the Panda and the xArm6 have. ``gripper``
+#: is the agent's gripper controller (a hold commands its joint where it is); ``open_rate`` the
+#: step, in its action units, an opening's target moves past the fingers each tick, measured to
+#: open about 4 mm of gap a tick (the Panda's fingers, normalised over [-0.01, 0.04] m, lag their
+#: target like the arm; the Robotiq's knuckle in rad), where a full-open target opens them 31 mm
+#: (Panda) or 64 mm (Robotiq) in one tick, too coarse for an open-to; ``caps`` the capability
+#: fields: the Panda's are LIBERO's (the same arm and hand) with ManiSkill's 80 mm
+#: finger span; the xArm6's span is the Robotiq's measured pad gap at the reset, its pad the
+#: 2F-85's, its reach UFactory's 0.70 m (comfortable at LIBERO's share of it); its tilt limits
+#: are not measured and repeat the Panda's.
+MM_ROBOTS = {
+    "panda": {
+        "gripper": "gripper",
+        "open_rate": 0.2,
+        "caps": {
+            "gripper_open_span_m": 0.08,
+            "gripper_pad_length_m": rig.GRIPPER_PAD_LENGTH_M,
+            "reach_m": 0.78,
+            "comfortable_reach_m": 0.727,
+            "tilt_limits_deg": {
+                "roll_cw": 88.6,
+                "roll_ccw": 83.7,
+                "pitch_down": 91.7,
+                "pitch_up": 53.6,
+            },
+        },
+    },
+    "xarm6_robotiq": {
+        "gripper": "gripper_active",
+        "open_rate": 0.04,
+        "caps": {
+            "gripper_open_span_m": 0.086,
+            "gripper_pad_length_m": 0.022,
+            "reach_m": 0.70,
+            "comfortable_reach_m": 0.652,
+            "tilt_limits_deg": {
+                "roll_cw": 88.6,
+                "roll_ccw": 83.7,
+                "pitch_down": 91.7,
+                "pitch_up": 53.6,
+            },
+        },
+    },
+}
+#: Why the other ``--robot`` ids refuse MotorMind mode.
+MM_REFUSED = {
+    "widowxai": "has no wrist camera (no clearance under the tool) and no pose control",
+    "panda_stick": "holds a stick: no fingers and no wrist camera",
+    "panda_pair": "has two arms; MotorMind drives one",
+    "widowx250s": "runs its scene's 5 Hz controller (a MotorMind tick is 0.05 s) and has no wrist camera",
+}
+#: MotorMind's per-tick limits (LIBERO's OSC output_max) and the share of a held command
+#: ``pd_ee_delta_pose`` realises each control step, measured on PickCube seed 0 with both arms
+#: (0.379-0.383 of a translation, 0.392 of a rotation, from the second step on; nothing after the
+#: command stops): MM_CONTROL_MODE's bounds are the limits over these shares.
+MM_POS_M = 0.05
+MM_ROT_RAD = 0.5
+MM_TRACK_POS = 0.38
+MM_TRACK_ROT = 0.39
+MM_CONTROL_MODE = "pi_mm_ee_delta_pose"
+#: The side view: the task's human render camera (rendered only when asked), at MotorMind's
+#: render size and the agentview's field of view.
+MM_SIDE_CAMERA = "render_camera"
+
+
+def mm_spec(spec: RobotSpec, robot: str, rig_env: bool) -> RobotSpec:
+    """``spec`` in MotorMind mode: MM_CONTROL_MODE, pi's translation scaled to its bound and a zero
+    rotation (``move_delta`` and the programs keep their metres). Refused on an RLinf rig (its
+    recorded episodes' pd_ee_delta_pos is its contract) and on an arm outside MM_ROBOTS."""
+    if rig_env:
+        raise ValueError(
+            "MotorMind mode (--mm) runs the stock scenes: an RLinf rig keeps the "
+            "pd_ee_delta_pos control of its recorded episodes"
+        )
+    if robot not in MM_ROBOTS:
+        raise ValueError(
+            f"MotorMind mode (--mm) drives --robot {' or '.join(MM_ROBOTS)}; "
+            f"{robot} {MM_REFUSED[robot]}"
+        )
+    return dataclasses.replace(
+        spec,
+        control_mode=MM_CONTROL_MODE,
+        pos_scale=DELTA_BOUND_M / (MM_POS_M / MM_TRACK_POS),
+        rot_dims=3,
+    )
+
+
+def add_mm_mode(agent_cls) -> None:
+    """Add MM_CONTROL_MODE to ``agent_cls``: a copy of its ``pd_ee_delta_pose`` (the rotation about
+    the TCP on base-aligned axes, acting on the current pose) whose bounds make one normalised unit
+    realise MM_POS_M and MM_ROT_RAD a control step. Idempotent."""
+    prop = agent_cls._controller_configs
+    if getattr(prop.fget, "_pi_mm", False):
+        return
+
+    def configs(self):
+        cfg = prop.fget(self)
+        mode = dict(cfg["pd_ee_delta_pose"])
+        arm = copy.deepcopy(mode["arm"])
+        arm.pos_lower, arm.pos_upper = -MM_POS_M / MM_TRACK_POS, MM_POS_M / MM_TRACK_POS
+        arm.rot_lower, arm.rot_upper = (
+            -MM_ROT_RAD / MM_TRACK_ROT,
+            MM_ROT_RAD / MM_TRACK_ROT,
+        )
+        return {**cfg, MM_CONTROL_MODE: {**mode, "arm": arm}}
+
+    configs._pi_mm = True  # type: ignore[attr-defined]
+    agent_cls._controller_configs = property(configs)
+
+
+def _square(rgb: np.ndarray, depth: Optional[np.ndarray], k: np.ndarray):
+    """A render padded square with centred black bars (depth 0 there), its intrinsics' principal
+    point moved with the bars; a square render as it is."""
+    h, w = rgb.shape[:2]
+    n = max(h, w)
+    if h == w:
+        return rgb, depth, k
+    y0, x0 = (n - h) // 2, (n - w) // 2
+    out = np.zeros((n, n, 3), dtype=np.uint8)
+    out[y0 : y0 + h, x0 : x0 + w] = rgb
+    if depth is not None:
+        d = np.zeros((n, n), dtype=np.float32)
+        d[y0 : y0 + h, x0 : x0 + w] = depth
+        depth = d
+    k = np.array(k, dtype=np.float64)
+    k[0, 2] += x0
+    k[1, 2] += y0
+    return out, depth, k
+
+
 def add_wrist_camera(agent_cls, link: str, pose: list) -> None:
     """Give ``agent_cls`` a 256 px ``hand_camera`` on its ``link`` (in place, like
     ``center_wrist_camera``: the table scene only places uids it knows)."""
@@ -817,7 +960,9 @@ def prepare_robot(spec: RobotSpec, wrist_mount: str) -> None:
         add_wrist_camera(cls, spec.wrist["mount"], spec.wrist["pose"])
 
 
-class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
+class ManiskillEnvFacade(
+    MotorMindMixin, CodeRunMixin, MainThreadServeMixin, BaseEnvFacade
+):
     """One ManiSkill env (``num_envs=1``); every call runs on the main thread."""
 
     SERVICE_NAME = "maniskill-env"
@@ -830,6 +975,11 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
     _gripper_command = 1.0
     _run_start = 0
     _run_frames: list | tuple = ()
+    #: MotorMind mode (``--mm``), the control step its episode began at, and the gripper action
+    #: a hold sends (None: no hold).
+    _mm = False
+    _episode_start = 0
+    _mm_hold_at: Optional[float] = None
 
     def __init__(
         self,
@@ -847,6 +997,9 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         wrist_rotation: int | None = None,
         wrist_flip: str | None = None,
         scene: dict | None = None,
+        mm: bool = False,
+        mm_home: str = "refuse",
+        mm_truth: str | None = None,
     ):
         super().__init__()
         import gymnasium as gym
@@ -860,6 +1013,9 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rig = scenes.SCENES.get(env_id)
         #: The --robot (ROBOTS): gripper actions, width, wrist camera.
         self._robot = robot_spec(robot, env_id, bool(self._rig))
+        self._mm = bool(mm)
+        if self._mm:
+            self._robot = mm_spec(self._robot, robot, bool(self._rig))
         wrist = self._robot.wrist or {}
         if wrist.get("mount") != "centered":
             # The Panda's --wrist-mount choice; another robot's camera is its own.
@@ -896,6 +1052,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 raise ValueError(f"--scene options apply to {list(scenes.SCENES)} only")
             table_z = TABLE_Z.get(env_id, 0.0)
             prepare_robot(self._robot, wrist_mount)
+            if self._mm:
+                from mani_skill.agents.registration import REGISTERED_AGENTS
+
+                add_mm_mode(REGISTERED_AGENTS[self._robot.uid].agent_cls)
             if self._robot.control_mode != "pd_ee_delta_pos":
                 control_mode = self._robot.control_mode
             if self._robot.agentview:
@@ -924,6 +1084,20 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                     else self._sensor_configs(
                         agentview, wrist=self._robot.wrist is not None
                     )
+                ),
+                # MotorMind's side view renders at its size, on demand only.
+                **(
+                    {
+                        "human_render_camera_configs": {
+                            MM_SIDE_CAMERA: {
+                                "width": rig.CAMERA_PX,
+                                "height": rig.CAMERA_PX,
+                                "fov": np.deg2rad(AGENTVIEW["fov_deg"]),
+                            }
+                        }
+                    }
+                    if self._mm
+                    else {}
                 ),
             )
         self._seed = int(seed)
@@ -970,9 +1144,11 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             # The task's registered episode length (SimplerEnv's for the bridge twins): a VLA-alone
             # baseline's step budget. The server itself never truncates before max_episode_steps.
             "episode_steps": getattr(registered, "max_episode_steps", None),
+            "mm": self._mm,
         }
         #: The last gripper command of each arm (> 0 open), held while another arm moves.
         self._grip = [1.0] * len(self._robot.arms or [None])
+        self._mm_setup(mm_home, mm_truth)
 
     def _register_rpc(self) -> None:
         super()._register_rpc()
@@ -984,6 +1160,8 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.vla_observation"] = self.vla_observation
         self._rpc["env.vla_step"] = self.vla_step
         self._readonly_methods.add("env.vla_observation")
+        # MotorMind mode (utils/motormind.py): the observation and one segment of an action.
+        self._rpc.update(self._mm_rpc())
         # Tools and code primitives: packages/embodied/src/primitives/manifests/maniskill.json.
         self._manifest_code_run(
             "maniskill",
@@ -1349,6 +1527,7 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             )
             obs, info = last[-1][0], last[-1][4]
             self.check_visible(obs)
+            self._episode_start = self._steps
             return self._pack(obs), info
         obs, info = self._env.reset(seed=self._seed if seed is None else int(seed))
         info = self._info(info)
@@ -1359,6 +1538,11 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         for _ in range(self._settle_steps):
             obs, _r, _te, _tr, info = self._step(hold)
         self.check_visible(obs)
+        self._episode_start = self._steps
+        if self._mm:
+            self._mm_hold_at = None
+            self._mm_place_side()
+            self._mm_new_episode()
         return self._pack(obs), info
 
     def visible_pixels(self, obs: dict) -> dict:
@@ -1656,6 +1840,154 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             **({"cancelled": True} if cancelled else {}),
         }
 
+    # ---- MotorMind mode (utils/motormind.py) ----
+
+    def _mm_place_side(self) -> None:
+        """MotorMind's side view: the task's render camera moved by the rig's side mount (aim at the
+        base + 0.47 m on the table, the agentview's standoff, base +Y, 35 deg up); again after
+        every reset, which may rebuild the camera from its config."""
+        from mani_skill.utils import sapien_utils
+
+        base = _np(self._agent.robot.pose.p).reshape(-1)
+        m = rig.side_mount(base, self._meta["table_z"], AGENTVIEW["eye"])
+        pose = sapien_utils.look_at(m["eye"], m["aim"])
+        cam = self._env.unwrapped.scene.human_render_cameras[MM_SIDE_CAMERA]
+        cam.camera.set_local_pose(pose.sp)
+
+    def _mm_static(self) -> dict:
+        if not self._mm:
+            raise RuntimeError(
+                "MotorMind mode needs the env server started with --mm (its pose control); "
+                f"this one runs {self._meta['control_mode']}"
+            )
+        pose = self._agent.robot.pose
+        q = _np(pose.q).reshape(-1)
+        return {
+            "body": self._agent.robot.root.name,
+            "pos": _np(pose.p).reshape(-1).astype(np.float64).tolist(),
+            "xmat": rig.quat_xyzw_matrix(q[[1, 2, 3, 0]]),
+            "max_translation_m": MM_POS_M,
+            "max_rotation_rad": MM_ROT_RAD,
+            "fingers": True,
+            "caps": MM_ROBOTS[self._meta["robot"]]["caps"],
+        }
+
+    def _mm_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        tcp = self._tcp(self._agent)
+        q = _np(tcp.q).reshape(-1).astype(np.float64)
+        return _np(tcp.p).reshape(-1).astype(np.float64), rig.quat_xyzw_matrix(
+            q[[1, 2, 3, 0]]
+        )
+
+    def _mm_opening(self) -> float:
+        return self._gripper_width(_np(self._agent.robot.get_qpos()).reshape(-1))
+
+    def _mm_opening_ahead(self) -> float:
+        """The finger gap a tick from now: the gap and its last tick's change (the fingers chase
+        an absolute target several mm a tick), so an open-to holds them before they pass it."""
+        return self._mm_opening() + self._mm_opening_step
+
+    def _mm_tick(self, dp_world, dr_world, grip: float, until=None) -> None:
+        """One control step of MM_CONTROL_MODE: the increments in the base frame over MotorMind's
+        per-tick limits, the rotation negated (ManiSkill 3.0.1's pose mode turns the tool the
+        other way about the commanded base axis: measured on both arms, every axis), and the
+        gripper channel as the robot's close or open action, or for 0 its finger joint held where
+        it was when the hold began; an opening ramps its target (MM_ROBOTS ``open_rate``)."""
+        arm = np.concatenate(
+            [
+                np.clip(self._to_root(np.asarray(dp_world)) / MM_POS_M, -1, 1),
+                np.clip(-self._to_root(np.asarray(dr_world)) / MM_ROT_RAD, -1, 1),
+            ]
+        )
+        if grip > 0:
+            self._mm_hold_at = None
+            g = self._robot.gripper[1]
+        elif grip < 0:
+            self._mm_hold_at = None
+            now, full = self._mm_finger_action(), self._robot.gripper[0]
+            rate = MM_ROBOTS[self._meta["robot"]]["open_rate"]
+            g = (
+                full
+                if abs(full - now) <= rate
+                else now + math.copysign(rate, full - now)
+            )
+        else:
+            if self._mm_hold_at is None:
+                self._mm_hold_at = self._mm_finger_action()
+            g = self._mm_hold_at
+        self._obs = self._step(np.append(arm, g).astype(np.float32))[0]
+
+    def _mm_finger_action(self) -> float:
+        """The gripper action that holds the fingers where they are: the controlled finger joint's
+        position in its controller's action units (the Panda's normalised over [lower, upper],
+        the Robotiq's radians)."""
+        ctrl = self._agent.controller.controllers[
+            MM_ROBOTS[self._meta["robot"]]["gripper"]
+        ]
+        q = float(_np(ctrl.qpos).reshape(-1)[int(ctrl.control_joint_indices[0])])
+        c = ctrl.config
+        if not c.normalize_action:
+            return q
+        return 2.0 * (q - c.lower) / (c.upper - c.lower) - 1.0
+
+    def _mm_status(self) -> tuple[bool, bool, int]:
+        # No horizon: the server runs past the task's registered length (max_episode_steps),
+        # MotorMind's budget is the mission's clock.
+        return self._success_once, False, self._steps - self._episode_start
+
+    def _mm_cameras(self) -> dict:
+        return {
+            "scene": self._cameras["agentview"],
+            "side": MM_SIDE_CAMERA,
+            "wrist": self._cameras["wrist"],
+        }
+
+    def _mm_shots(self, cameras: dict, size: int, depth) -> dict:
+        """The sensors' raw renders of the last control step (the side view rendered now), with
+        SAPIEN's OpenCV calibration; a render that is not square is padded square (``_square``),
+        as the mosaic tiles squares."""
+        env = self._env.unwrapped
+        out = {}
+        for name, cam in cameras.items():
+            d = None
+            if cam == MM_SIDE_CAMERA:
+                rgb = _np(env.render_rgb_array(cam))[0]
+                param = env.scene.human_render_cameras[cam].get_params()
+            else:
+                data = self._obs["sensor_data"][cam]
+                rgb = _np(data["rgb"])[0]
+                param = self._obs["sensor_param"][cam]
+                if name in depth:
+                    raw = _np(data["depth"])[0]
+                    d = raw.reshape(raw.shape[:2]).astype(np.float32) / 1000.0
+            w2c = np.eye(4)
+            w2c[:3] = _np(param["extrinsic_cv"])[0]
+            rgb, d, k = _square(rgb.astype(np.uint8), d, _np(param["intrinsic_cv"])[0])
+            out[name] = {
+                "rgb": rgb,
+                "K": k,
+                "cam2world": np.linalg.inv(w2c),
+                **({"depth": d} if d is not None else {}),
+            }
+        return out
+
+    def _mm_video_frame(self):
+        """The episode video's frame of a tick: the agentview and the wrist view side by side, as
+        the motions' frames are."""
+        return np.concatenate(
+            [self._rgb(self._obs, "agentview"), self._rgb(self._obs, "wrist")], axis=1
+        )
+
+    def _mm_reset_scene(self) -> None:
+        self.reset()
+
+    def _mm_truth_extra(self) -> dict:
+        info = self._info(self._env.unwrapped.evaluate())
+        return {
+            "success_now": bool(info.get("success")),
+            "objects": self.ground_truth_poses()["poses"],
+        }
+
     def _to_root(self, vec: np.ndarray, agent=None) -> np.ndarray:
         """A world-frame vector in the robot base's frame, where ``pd_ee_delta_pos``
         acts: unchanged for a base at the identity rotation (the one-arm table scenes),
@@ -1838,6 +2170,20 @@ def main():
         action="store_true",
         help="watch parent process via stdin pipe and exit when it dies",
     )
+    p.add_argument(
+        "--mm",
+        action="store_true",
+        help="MotorMind mode: the pose control env.mm_run_step drives (MM_CONTROL_MODE)",
+    )
+    p.add_argument(
+        "--mm-home",
+        choices=list(MM_HOME),
+        default="refuse",
+        help="MotorMind mode's home: refused, or the episode reset",
+    )
+    p.add_argument(
+        "--mm-truth", default=None, help="MotorMind mode's privileged truth log (jsonl)"
+    )
     add_perception_arguments(p, sam3=True)
     reach.add_ik_argument(p)
     add_cuda_argument(p)
@@ -1858,6 +2204,9 @@ def main():
         wrist_rotation=args.wrist_rotation,
         wrist_flip=args.wrist_flip,
         scene=dict(kv.split("=", 1) for kv in args.scene.split(",") if kv) or None,
+        mm=args.mm,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
     )
     # --ik: env.preview_reach through the ik service's model of the arm (ik_server ROBOTS; the other
     # arms answer "unknown").
@@ -1897,7 +2246,7 @@ def main():
         # The views are oriented and letterboxed: their intrinsics are the sensor's K through the
         # same steps (view_intrinsics), so UniDepth and the camera points see the true focal length.
         view=_view_with_intrinsics(facade),
-        mutating=("env.servo", "env.vla_step"),
+        mutating=("env.servo", "env.vla_step", "env.mm_run_step"),
     )
     try:
         facade.serve(
