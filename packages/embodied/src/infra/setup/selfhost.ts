@@ -12,7 +12,7 @@
 export type SelfhostSpec = {
 	/** The model id the server answers to: `selfhost/<id>`. */
 	id: string;
-	engine: "NInfer" | "Strata";
+	engine: "vLLM" | "NInfer" | "Strata";
 	/** The model and its weights, as the menu shows them. */
 	model: string;
 	/** The GPU class the engine builds for. */
@@ -21,6 +21,13 @@ export type SelfhostSpec = {
 	contextWindow: number;
 };
 export const SELFHOST: SelfhostSpec[] = [
+	{
+		id: "qwen3.8-27b-bf16",
+		engine: "vLLM",
+		model: "Qwen3.8-27B BF16 (unquantized)",
+		hardware: "a GPU with 80 GB or more (an RTX PRO 6000 96 GB, an A800 / A100 80 GB); the weights are 55.6 GB",
+		contextWindow: 65536,
+	},
 	{
 		id: "qwen3.8-27b",
 		engine: "NInfer",

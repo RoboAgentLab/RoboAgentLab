@@ -1402,10 +1402,10 @@ function withConfig(cfg: unknown) {
 const NINFER = SELFHOST.find((x) => x.engine === "NInfer")!;
 const STRATA = SELFHOST.find((x) => x.engine === "Strata")!;
 
-test("the self-hosted planners: NInfer's Qwen3.8-27B and Strata's Qwen3.8-Flash-Next, as selfhost/<id>", () => {
+test("the self-hosted planners: vLLM's Qwen3.8-27B BF16, NInfer's Qwen3.8-27B and Strata's Qwen3.8-Flash-Next, as selfhost/<id>", () => {
 	assert.deepEqual(
 		SELFHOST.map((x) => `${x.engine}:${x.id}`),
-		["NInfer:qwen3.8-27b", "Strata:qwen3.8-flash-next-unsloth-q8_0"],
+		["vLLM:qwen3.8-27b-bf16", "NInfer:qwen3.8-27b", "Strata:qwen3.8-flash-next-unsloth-q8_0"],
 	);
 	assert.equal(selfhostLabel(NINFER), "selfhost/qwen3.8-27b: NInfer · Qwen3.8-27B NVFP4 (started by the agent)");
 	assert.equal(selfhostOf("selfhost/qwen3.8-27b"), NINFER);
@@ -1459,7 +1459,7 @@ test("/embodied-setup offers the self-hosted planners; choosing one hands the st
 		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
 		const p = fakePi({
 			cwd,
-			answers: { select: ["here", "selfhost/qwen3.8-27b"], input: [""], confirm: [true] },
+			answers: { select: ["here", "selfhost/qwen3.8-27b:"], input: [""], confirm: [true] },
 		});
 		await p.run("reproduce Show-Harness on metaworld");
 		assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
@@ -1584,6 +1584,22 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 	});
 	await q.run("reproduce Show-Harness on metaworld");
 	assert.match(q.confirms.at(-1) ?? "", /planner selfhost\/qwen3\.8-flash-next-unsloth-q8_0$/m);
+	// And "bf16" the unquantized one vLLM serves (with a deployment that does not list it, whatever this machine's has).
+	const restore = withConfig({ deployments: { default: {} } });
+	try {
+		const b = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", "bf16"], input: [""], confirm: [false] },
+		});
+		await b.run("reproduce Show-Harness on metaworld");
+		assert.match(b.confirms.at(-1) ?? "", /planner selfhost\/qwen3\.8-27b-bf16$/m);
+		assert.match(
+			b.confirms.at(-1) ?? "",
+			/^planner server: vLLM · Qwen3\.8-27B BF16 \(unquantized\) is not in the deployment yet/m,
+		);
+	} finally {
+		restore();
+	}
 	// Nothing typed and escape: nothing more is asked.
 	const r = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: { select: ["here"] } });
 	await r.run("reproduce Show-Harness on metaworld");
@@ -1592,6 +1608,6 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 	// The picker's lines: the filter and the count.
 	const entries = ["openai/gpt-6", "openai/gpt-6-astra", ...HOSTED].map((m) => ({ id: m, text: m }));
 	const lines = pickerLines(PLANNER, entries, "qwen", 0);
-	assert.match(lines[1], /^ {2}type to filter: qwen_\s+2 of 4$/);
+	assert.match(lines[1], /^ {2}type to filter: qwen_\s+3 of 5$/);
 	assert.ok(lines.includes(`→ ${HOSTED[0]}`));
 });
