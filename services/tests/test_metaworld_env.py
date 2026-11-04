@@ -134,6 +134,7 @@ def _facade(goal=(0.1, 0.7, 0.2)):
     f._closed = False
     f._box = None
     f._meta = {"task": "reach-v3", "seed": 7}
+    f._mm_setup()
     frame = np.zeros((4, 4, 3), dtype=np.uint8)
     f._render = lambda camera, h, w, depth=False: frame
     return f

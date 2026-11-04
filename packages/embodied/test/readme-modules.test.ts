@@ -22,6 +22,7 @@ const MODULES: Record<string, string> = {
 	operator: "operator",
 	Flash: "flash-reanchor",
 	XPolicyLab: "xpolicy",
+	MotorMind: "mm",
 };
 
 const ROBOTS = new URL("../src/robots/", import.meta.url);

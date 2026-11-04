@@ -16,10 +16,14 @@
  * runs one env server method (perception included: `segment` and `back_project` go through the
  * server's rendered depth, `execute_grasp` runs the planned chain there).
  * --collect-flywheel-data records every control step of a motion (services robots/metaworld/flywheel.py).
+ * MotorMind mode (`--mm=true`, ../../modes/motormind) runs on the server's `env.mm_observe` /
+ * `env.mm_run_step` (services utils/motormind.py): the Sawyer's hand cannot rotate, so it refuses
+ * every rotate.
  */
 
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { simDistil } from "../../capabilities/explore.ts";
@@ -30,6 +34,7 @@ import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
@@ -216,6 +221,10 @@ export default function metaworld(pi: ExtensionAPI) {
 	let gripper: "open" | "close" = "open";
 	let language = "";
 	let workspace: Meta["workspace"];
+	/** MotorMind mode: the env server's privileged truth log for this session (the server's own when attached). */
+	let truthLog: string | undefined;
+	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
+	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
 
 	/** The memory cell of this task at `seed`. */
 	const tag = (seed: string) => `metaworld_${robot.task.task}_s${seed}`;
@@ -243,6 +252,8 @@ export default function metaworld(pi: ExtensionAPI) {
 			cell: () => ({ tag: tag(robot.task.seed), reference: tag("0") }),
 			primitives: ["move_delta", "set_gripper", "act"],
 			published: false,
+			// The prompt's `{{memory}}` is its only memory: --memory-profile off (MotorMind's preset) leaves it empty.
+			optional: true,
 		},
 		explore: {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
@@ -299,6 +310,19 @@ export default function metaworld(pi: ExtensionAPI) {
 				return observe({ name: "run_code", status: r.status, env_steps: steps });
 			},
 		},
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the
+		// episode's env steps and latched success (a timed-out segment's steps are counted at the next
+		// call); a segment's video frames come with it; `home` (--mm-home reset) is the episode reset.
+		motormind: {
+			observe: async (aim = {}) => mmReply(await call<Json>("env.mm_observe", aim)),
+			runStep: async (seg, { timeoutMs, observe, ...aim }) =>
+				mmReply(await env.call<Json>("env.mm_run_step", { seg, observe, ...aim }, timeoutMs, [], robot.signal)),
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
+			task: () => language,
+			expect: () => ({ mm_home: mmHome() }),
+		},
 		finish: {
 			description:
 				"End the episode after checking the latest state. Success is Metaworld's own success flag, not this call.",
@@ -334,6 +358,7 @@ export default function metaworld(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	const mem = robot.mem!;
 	/** raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py). */
 	const flyMeta = () => ({
 		path: [robot.task.task, `seed_${robot.task.seed.padStart(3, "0")}`],
@@ -351,6 +376,26 @@ export default function metaworld(pi: ExtensionAPI) {
 		obs = o;
 		info = i;
 		success ||= Boolean(i.success);
+	}
+
+	/**
+	 * A MotorMind reply (an observation, or a segment with its `observation`): its video frames to the
+	 * episode video, its env steps and success latch to the episode's; a `home` that reset the scene
+	 * starts the episode over.
+	 */
+	function mmReply(r: Json): Json {
+		const { frames, ...out } = r as Json & { frames?: NdArray[] };
+		for (const f of frames ?? []) video.frame(f);
+		const o = (out.observation ?? out) as Json;
+		if (out.episode_reset === true) {
+			success = false;
+			gripper = "open";
+		}
+		if (typeof o.env_steps === "number") envStep = o.env_steps;
+		success ||= o.terminated === true;
+		const config = o.config as { truth?: unknown } | undefined;
+		if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
+		return out;
 	}
 
 	/** One server-side closed-loop move with an optional gripper command; every control step goes to the video. */
@@ -546,6 +591,13 @@ export default function metaworld(pi: ExtensionAPI) {
 		if (!(TASKS as readonly string[]).includes(task))
 			throw new Error(`unknown Metaworld task "${task}"; the ${TASKS.length} tasks are ${TASKS.join(", ")}`);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
+		const mm = flagValue(pi.getFlag("mm")) === "true";
+		truthLog =
+			mm && !endpoint ? join(mem.render("{{output_dir}}") || tmpdir(), `${tag(seed)}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		if (endpoint) env = await attach(endpoint);
 		else {
 			const services = servicesDir(pi);
@@ -557,6 +609,9 @@ export default function metaworld(pi: ExtensionAPI) {
 					...(service(pi, "sam3") ? ["--sam3", service(pi, "sam3")] : []),
 					...detectionArgs(pi, { sam3: false }),
 					...graspArgs(pi),
+					// MotorMind mode: its home and its truth log.
+					...(mm ? ["--mm-home", mmHome()] : []),
+					...(truthLog ? ["--mm-truth", truthLog] : []),
 				],
 				cwd: services,
 				// EGL unless the caller picks MUJOCO_GL=osmesa (CPU rendering).
