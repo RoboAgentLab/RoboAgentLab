@@ -18,7 +18,9 @@
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/planner/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
 # So is code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4, and --code-oracle, a reference
-# program run instead of the model).
+# program run instead of the model), and --vla-alone (a mounted VLA adapter run instead of the planner, the
+# VLA-alone baseline):
+#   eval.sh runs/ms-vla PutCarrotOnPlateInScene-v1 0-2 --arm widowx250s --vla-adapter openvla --vla-alone openvla
 set -uo pipefail
 out=$1 envs=$2 seeds=$3
 [ "$envs" = - ] && envs=BlockPAP-v1
@@ -33,14 +35,19 @@ expand() { for part in ${1//,/ }; do seq "${part%-*}" "${part#*-}"; done; }
 source "$here/../../scripts/eval-options.sh"
 eval_options_defaults
 robot=panda
+vla_alone=""
 eval_robot_option() {
 	case $1 in
 	--arm) robot=${2:-panda} ;;
 	--arm=*) robot=${1#*=} ;;
+	--vla-alone) vla_alone=${2:-} ;;
+	--vla-alone=*) vla_alone=${1#*=} ;;
 	esac
 }
 eval_parse_options "$@"
 eval_normalize_options
+# Read by record / valid / the summary (the VLA-alone adapter is part of the configuration).
+export VLA_ALONE=$vla_alone
 
 # The RLinf rigs ("-" = BlockPAP-v1) run their own Panda: another --arm would fail every cell.
 case ",$envs," in *,BlockPAP-v1,* | *,BlockStack-v1,*)
@@ -68,9 +75,9 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
-// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
-// message: the result line the robot prints on stderr is the result.
-if (!results.length && codeOracle && codeMode !== "false")
+// An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
+// file without an assistant message: the result line the robot prints on stderr is the result.
+if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))
 	try {
 		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
 			if (line.startsWith("[maniskill] {")) results.push(JSON.parse(line.slice("[maniskill] ".length)));
@@ -84,7 +91,8 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	vdm: vdm === "true", vdm_model: vdmModel || null, vdm_wrist: vdmWrist === "true", vdm_video: vdmVideo ? Number(vdmVideo) : null, stateless: stateless === "true",
 	privileged: privileged === "true", maniskill_robot: robot,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null, ft_flags: process.env.FT_FLAGS || null };
+	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null, ft_flags: process.env.FT_FLAGS || null,
+	vla_alone_adapter: process.env.VLA_ALONE || null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
 ' "$1" "$2" "${config[@]}"
@@ -115,6 +123,8 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before --vla-alone existed ran the planner.
+	&& (r.vla_alone_adapter ?? null) === (process.env.VLA_ALONE || null)
 	// The --ft-* flags a finetuned/* run was given ("default" with none). A finetuned/* result without them was
 	// written before they were recorded (the LIBERO wrist frame changed meanwhile): another configuration.
 	&& (!(model || "").startsWith("finetuned/") || r.ft_flags === process.env.FT_FLAGS)
@@ -156,7 +166,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${(r.maniskill_robot ?? "panda") !== "panda" ? `/robot=${r.maniskill_robot}` : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${(r.maniskill_robot ?? "panda") !== "panda" ? `/robot=${r.maniskill_robot}` : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}${r.vla_alone_adapter ? `/vla_alone=${r.vla_alone_adapter}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

@@ -32,6 +32,12 @@ Motion: ``env.move_delta`` (the ``move_delta`` tool and primitive, and the units
 translation into ~2 cm waypoints (:func:`phases`) and servos to each (:meth:`servo`), with the
 per-call cap, ``stop`` between steps and the success latched since the reset in one place.
 
+VLA adapters (pi's ``--vla-adapter``, packages/embodied/src/primitives/vla-adapters.ts):
+``env.vla_observation`` hands a policy the raw sensor frames and the arm's state, and
+``env.vla_step`` executes its action chunk, translated from the adapter's action space into the
+robot's control mode (:data:`VLA_ACTION_SPACES`: Bridge V2's end-effector delta drives the bridge
+twins' WidowX 250 S).
+
 Code mode (``code.run``, utils/code_exec.py ``CodeRunMixin``): a program calls the primitives of
 the robot's manifest (packages/embodied/src/primitives/manifests/maniskill.json) in a sandboxed
 subprocess, so the server requires its RPC token and
@@ -245,6 +251,46 @@ def phases(
             for t in waypoints(start, delta, step_m)
         ]
     return out or [(list(start), SERVO_MIN_STEPS, SERVO_MIN_STEPS)]
+
+
+def bridge_to_widowx(actions) -> np.ndarray:
+    """Bridge V2 end-effector deltas [N, 7] (``bridge_ee_delta_euler``: OpenVLA's ``bridge_orig``
+    output, [dx, dy, dz] m, [droll, dpitch, dyaw] rad, the gripper in [0, 1] with 1 open) as the
+    bridge twins' WidowX 250 S actions: the translation in metres as it is (the controller takes
+    it unnormalised), the rotation as an axis-angle vector of the static-xyz Euler angles, the
+    gripper binarised to +1 open / -1 close. SimplerEnv's ``widowx_bridge`` policy setup:
+    transforms3d's ``euler2axangle(roll, pitch, yaw)`` (axes ``sxyz``) and
+    ``2 * (open > 0.5) - 1``, action scale 1."""
+    from scipy.spatial.transform import Rotation
+
+    a = np.asarray(actions, dtype=np.float64).reshape(-1, 7)
+    # scipy's lowercase "xyz" is extrinsic (static) x, then y, then z: transforms3d's "sxyz".
+    rotvec = Rotation.from_euler("xyz", a[:, 3:6]).as_rotvec()
+    grip = np.where(a[:, 6] > 0.5, 1.0, -1.0)
+    return np.concatenate([a[:, :3], rotvec, grip[:, None]], axis=1).astype(np.float32)
+
+
+#: A VLA adapter's action space (``vla.info``'s ``action_space``) -> the ``--robot`` ids whose
+#: control mode it drives on this server, and its translation into their native actions. The
+#: bridge twins' WidowX 250 S takes Bridge's actions in its scene's own controller (copied
+#: without its target, ``RobotSpec.untargeted_from``: the delta acts on the current pose).
+VLA_ACTION_SPACES = {"bridge_ee_delta_euler": (("widowx250s",), bridge_to_widowx)}
+
+
+def vla_actions(action_space: str, robot: str, actions) -> np.ndarray:
+    """The native actions [N, d] of ``robot`` for a VLA chunk in ``action_space``; refused for an
+    action space this server does not translate, or one that does not drive ``robot``."""
+    if action_space not in VLA_ACTION_SPACES:
+        raise ValueError(
+            f"no translation for the VLA action space {action_space!r}; this server "
+            f"translates {sorted(VLA_ACTION_SPACES)}"
+        )
+    robots, translate = VLA_ACTION_SPACES[action_space]
+    if robot not in robots:
+        raise ValueError(
+            f"{action_space} actions drive --robot {', '.join(robots)}, not {robot}"
+        )
+    return translate(actions)
 
 
 def program_info(info: dict) -> dict:
@@ -887,6 +933,9 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._view_size = int(view_size)
         self._obs: dict = {}
         self._closed = False
+        from mani_skill.utils.registration import REGISTERED_ENVS
+
+        registered = REGISTERED_ENVS.get(env_id)
         self._meta = {
             "env_id": env_id,
             "seed": self._seed,
@@ -918,6 +967,9 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             ),
             "wrist": self._robot.wrist is not None or bool(self._rig),
             "arms": list(self._robot.arms) if self._robot.arms else None,
+            # The task's registered episode length (SimplerEnv's for the bridge twins): a VLA-alone
+            # baseline's step budget. The server itself never truncates before max_episode_steps.
+            "episode_steps": getattr(registered, "max_episode_steps", None),
         }
         #: The last gripper command of each arm (> 0 open), held while another arm moves.
         self._grip = [1.0] * len(self._robot.arms or [None])
@@ -928,6 +980,10 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.servo"] = self.servo
         self._rpc["env.move_delta"] = self.move_delta
         self._rpc["env.ground_truth_poses"] = self.ground_truth_poses
+        # pi's VLA adapter tools (manifest "internal": a policy loop, never a program's primitive).
+        self._rpc["env.vla_observation"] = self.vla_observation
+        self._rpc["env.vla_step"] = self.vla_step
+        self._readonly_methods.add("env.vla_observation")
         # Tools and code primitives: packages/embodied/src/primitives/manifests/maniskill.json.
         self._manifest_code_run(
             "maniskill",
@@ -1530,6 +1586,76 @@ class ManiskillEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         obs = frames[-1] if frames else self._pack(self._obs)
         return {"result": result, "frames": frames, "obs": obs, "info": info}
 
+    def vla_observation(
+        self, main: str = "agentview", wrist: Optional[str] = None
+    ) -> dict:
+        """What a VLA adapter takes: the raw sensor frames of the cameras ``main`` and ``wrist``
+        (uint8 [H, W, 3] as rendered, no orientation, crop or letterbox: the policy's own
+        preprocessing applies; the bridge twins' with their real background composited) and the
+        one arm's state [tcp xyz, tcp quat wxyz, gripper width] (float32 [8])."""
+        if self._robot.arms:
+            raise ValueError(
+                f"--robot {self._meta['robot']} has two arms; no VLA runs it"
+            )
+
+        def raw(name: str) -> np.ndarray:
+            rgb = _np(self._obs["sensor_data"][self._camera(name)]["rgb"])[0]
+            return np.ascontiguousarray(rgb.astype(np.uint8))
+
+        s = self._arm_state(self._agent)
+        state = np.concatenate(
+            [s["tcp_pos"], s["tcp_quat_wxyz"], [s["gripper_width"]]]
+        ).astype(np.float32)
+        return {
+            "main": raw(main),
+            "wrist": raw(wrist) if wrist else None,
+            "state": state,
+        }
+
+    def vla_step(self, actions, action_space: str) -> dict:
+        """Execute a VLA adapter's action chunk [N, 7] in ``action_space``, translated into this
+        robot's control mode (:func:`vla_actions`): one control step per action, stopping early on
+        ``stop``, termination, truncation or success (latched since the reset: a solved task runs
+        nothing). Returns ``frames`` (every control step, with the native action it applied and
+        its success, as :meth:`servo` returns them), ``obs`` (the last observation), ``info``
+        (the last step's), ``steps``, ``gripper`` (the command held, > 0 open) and
+        ``cancelled``."""
+        native = vla_actions(action_space, self._meta["robot"], actions)
+        if self._success_once:
+            return {
+                "error": "the task is already solved; call finish",
+                "frames": [],
+                "obs": self._pack(self._obs),
+                "info": dict(self._last_info),
+                "steps": 0,
+                "gripper": self._gripper_command,
+            }
+        frames: list = []
+        info: dict = dict(self._last_info)
+        cancelled = False
+        for a in native:
+            if self.stop_requested():
+                cancelled = True
+                break
+            obs, _rew, term, trunc, info = self._step(a)
+            frames.append(
+                {
+                    **self._pack(obs),
+                    "action": a,
+                    "success": bool(info.get("success")),
+                }
+            )
+            if term or trunc or info.get("success"):
+                break
+        return {
+            "frames": frames,
+            "obs": frames[-1] if frames else self._pack(self._obs),
+            "info": info,
+            "steps": len(frames),
+            "gripper": self._gripper_command,
+            **({"cancelled": True} if cancelled else {}),
+        }
+
     def _to_root(self, vec: np.ndarray, agent=None) -> np.ndarray:
         """A world-frame vector in the robot base's frame, where ``pd_ee_delta_pos``
         acts: unchanged for a base at the identity rotation (the one-arm table scenes),
@@ -1771,7 +1897,7 @@ def main():
         # The views are oriented and letterboxed: their intrinsics are the sensor's K through the
         # same steps (view_intrinsics), so UniDepth and the camera points see the true focal length.
         view=_view_with_intrinsics(facade),
-        mutating=("env.servo",),
+        mutating=("env.servo", "env.vla_step"),
     )
     try:
         facade.serve(

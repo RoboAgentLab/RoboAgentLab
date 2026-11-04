@@ -47,7 +47,7 @@ import { CONTEXT_VERSION_ENTRY, gitCommit, gitDirty, sha256, usedTemplates } fro
 import { ensemble } from "./planner/ensemble.ts";
 import { fallback } from "./planner/fallback.ts";
 import { human } from "./planner/human.ts";
-import { plannerOf } from "./planner/kind.ts";
+import { type Planner, plannerOf } from "./planner/kind.ts";
 import {
 	dropReplayedThinking,
 	keepThinkingFrom,
@@ -363,6 +363,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	let ran = false;
 	let ended = false;
 	let reported = false;
+	/** Who acted when no planner was asked (`ranWithoutPlanner`: a VLA-alone baseline). */
+	let actedBy: Planner | undefined;
 	let finishing = false;
 	let claimed: Claim | undefined;
 	let signal: AbortSignal | undefined;
@@ -475,7 +477,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		tracked.provider = ctx.model?.provider;
 		perceptionOff = {};
 		ready = ran = ended = reported = finishing = false;
-		failed = broken = claimed = started = plannerError = outOfBudget = undefined;
+		failed = broken = claimed = started = plannerError = outOfBudget = actedBy = undefined;
 		timedOut = false;
 		clearTimeout(deadline);
 		deadline = undefined;
@@ -1177,7 +1179,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 						// Which budget ended the episode: "turns", "time" (a planner timeout), "cost", "tool_calls", "tokens", or null.
 						planner_budget_exhausted: outOfBudget ?? null,
 						// Who planned: model, human (a person answered as the model), ensemble, fallback, finetuned, flash, replay.
-						planner: plannerOf(providers),
+						planner: actedBy ?? plannerOf(providers),
 						// Every experiment flag's effective value and default (./infra/params.ts): the eval scripts compare them.
 						...params(pi),
 						...deploymentRecord(pi),
@@ -1299,6 +1301,19 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		/** The episode's primitive registry (`codeApi`), once the robot is up; undefined without one. */
 		get codeApi() {
 			return api;
+		},
+		/** Whether the robot is up and unbroken: a run without the planner starts only then. */
+		get ready() {
+			return ready && broken === undefined;
+		},
+		/**
+		 * The episode ran without asking the planner (a VLA-alone baseline, ./planner/vla-alone.ts):
+		 * it is over, the result's `planner` is `by`, and an `error` (the run broke) makes it an env_error.
+		 */
+		ranWithoutPlanner(by: Planner, error?: string) {
+			if (error !== undefined) fail(error);
+			ran = ended = true;
+			actedBy = by;
 		},
 		/**
 		 * A real robot, the moment its env server answers and before it asks the operator to confirm

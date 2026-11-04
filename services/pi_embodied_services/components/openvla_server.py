@@ -12,20 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""RPC server wrapping OpenVLA (openvla/openvla) for LIBERO.
+"""RPC server wrapping OpenVLA (openvla/openvla) for LIBERO and for Bridge V2 rigs.
 
-One 7-D action per call from the agentview only (OpenVLA has no wrist camera
-or proprioception): the frame (already rotated 180 degrees by RLinf's LiberoEnv,
-like OpenVLA's LIBERO evaluation does) is JPEG round-tripped and Lanczos-resized to 224 like its
-``resize_image``, center-cropped to 90% of its area and resized back like its ``crop_and_resize``
-(the published fine-tunes were evaluated with ``center_crop=True``; ``--no-center-crop`` skips
-it), prompted with ``In: What action should the robot take to {task}?\\nOut:`` and decoded
-greedily; the gripper is binarised and inverted as in its LIBERO evaluation.
+One 7-D action per call from the main camera only (OpenVLA has no wrist camera
+or proprioception): the frame is JPEG round-tripped and Lanczos-resized to 224 like its
+``resize_image``, prompted with ``In: What action should the robot take to {task}?\\nOut:`` and
+decoded greedily. ``--suite`` picks the checkpoint and what follows (``OPENVLA_CHECKPOINTS``):
 
-The checkpoint is a published LIBERO fine-tune, pinned by commit hash in
-``OPENVLA_CHECKPOINTS`` and fetched through ``HF_ENDPOINT`` (hf-mirror) when
-``--model-path`` is not a directory. Run it in the ``openvla`` venv
-(``services[openvla]``, see README).
+- a LIBERO suite: that suite's published fine-tune. The frame comes already rotated 180 degrees
+  by RLinf's LiberoEnv (as OpenVLA's LIBERO evaluation rotates it); it is center-cropped to 90%
+  of its area and resized back like its ``crop_and_resize`` (the fine-tunes were evaluated with
+  ``center_crop=True``; ``--no-center-crop`` skips it), and the gripper is binarised and inverted
+  as in its LIBERO evaluation: the answer is in LIBERO's OSC space (``libero_osc``).
+- ``bridge_orig``: the base ``openvla/openvla-7b`` (trained on Open X-Embodiment, Bridge V2
+  included) un-normalised with its Bridge V2 statistics, as OpenVLA's own Bridge evaluation and
+  SimplerEnv's WidowX setup run it: no center crop (the base model was evaluated without it), and
+  the raw action, Bridge's end-effector delta [dx, dy, dz, droll, dpitch, dyaw, open in [0, 1]]
+  (``bridge_ee_delta_euler``), which the robot's env server translates into its control mode.
+
+The checkpoints are pinned by commit hash in ``OPENVLA_CHECKPOINTS`` and fetched through
+``HF_ENDPOINT`` (hf-mirror) when ``--model-path`` is not a directory. Run it in the ``openvla``
+venv (``services[openvla]``, see README).
 """
 
 from __future__ import annotations
@@ -34,11 +41,14 @@ import argparse
 import os
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
 from pi_embodied_services.components.vla_adapter_base import (
+    BRIDGE_EE_DELTA_EULER,
     DEFAULT_SUITE,
+    LIBERO_OSC,
     ChunkVLAFacade,
     Frame,
     add_server_args,
@@ -53,23 +63,58 @@ from pi_embodied_services.utils.logging import get_logger
 
 logger = get_logger("openvla_server")
 
-#: LIBERO fine-tunes published by the OpenVLA authors: suite -> (repo, commit hash).
-OPENVLA_CHECKPOINTS: dict[str, tuple[str, str]] = {
-    "libero_spatial": (
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """A published checkpoint and how it runs: its repo and pinned commit, the ``norm_stats``
+    key it un-normalises with (None: the checkpoint's only one), whether its evaluation center
+    crops, and the action space it answers in."""
+
+    repo: str
+    revision: str
+    unnorm_key: str | None
+    center_crop: bool
+    action_space: str
+
+
+#: The checkpoints published by the OpenVLA authors, by the suite ``--suite`` names: the four
+#: LIBERO fine-tunes, and the base model with its Bridge V2 statistics (``bridge_orig``, one of
+#: its 24 Open X-Embodiment datasets).
+OPENVLA_CHECKPOINTS: dict[str, Checkpoint] = {
+    "libero_spatial": Checkpoint(
         "openvla/openvla-7b-finetuned-libero-spatial",
         "962318cec55ac10993ff0f5f43eda9a270b4c873",
+        None,
+        True,
+        LIBERO_OSC,
     ),
-    "libero_object": (
+    "libero_object": Checkpoint(
         "openvla/openvla-7b-finetuned-libero-object",
         "287d6cfdf12d07b1449505f66d9bf3550257e9b3",
+        None,
+        True,
+        LIBERO_OSC,
     ),
-    "libero_goal": (
+    "libero_goal": Checkpoint(
         "openvla/openvla-7b-finetuned-libero-goal",
         "fa5ae1e7509348889295bba8e08621d8b55e9baf",
+        None,
+        True,
+        LIBERO_OSC,
     ),
-    "libero_10": (
+    "libero_10": Checkpoint(
         "openvla/openvla-7b-finetuned-libero-10",
         "80970322773f81baa2e22fe495d0487b93a05cfa",
+        None,
+        True,
+        LIBERO_OSC,
+    ),
+    "bridge_orig": Checkpoint(
+        "openvla/openvla-7b",
+        "47a0ec7fc4ec123775a391911046cf33cf9ed83f",
+        "bridge_orig",
+        False,
+        BRIDGE_EE_DELTA_EULER,
     ),
 }
 IMAGE_SIZE = 224
@@ -85,7 +130,8 @@ def prompt_for(instruction: str) -> str:
 
 
 class OpenVLAFacade(ChunkVLAFacade):
-    """``policy(image_224_rgb, instruction) -> raw 7-D action`` (denormalised, gripper in [0, 1])."""
+    """``policy(image_224_rgb, instruction) -> raw 7-D action`` (denormalised, gripper in [0, 1]),
+    answered in ``action_space``: LIBERO's (the gripper converted) or the raw Bridge action."""
 
     SERVICE_NAME = "openvla"
     horizon = 1
@@ -99,18 +145,20 @@ class OpenVLAFacade(ChunkVLAFacade):
         revision: str | None,
         suite: str | None = None,
         center_crop: bool = True,
+        action_space: str = LIBERO_OSC,
     ):
         self._policy = policy
         self._center_crop = center_crop
-        super().__init__(model=model, revision=revision, suite=suite)
+        super().__init__(
+            model=model, revision=revision, suite=suite, action_space=action_space
+        )
 
     def _act(self, frame: Frame) -> np.ndarray:
         image = resize_jpeg_lanczos(frame.main, IMAGE_SIZE)
         if self._center_crop:
             image = center_crop_resize(image, CROP_SCALE)
-        return libero_gripper(
-            np.asarray(self._policy(image, frame.instruction), np.float32)
-        )
+        raw = np.asarray(self._policy(image, frame.instruction), np.float32)
+        return libero_gripper(raw) if self._action_space == LIBERO_OSC else raw
 
 
 def load_policy(path: str, unnorm_key: str | None, attn: str) -> tuple[Policy, str]:
@@ -180,9 +228,11 @@ def main() -> None:
         "--suite",
         choices=sorted(OPENVLA_CHECKPOINTS),
         default=None,
-        help="the published LIBERO fine-tune to fetch when --model-path is unset (default "
-        "libero_spatial); with --model-path, the suite that checkpoint was fine-tuned on, reported "
-        "by vla.info so the robot refuses another suite's episode",
+        help="the published checkpoint to fetch when --model-path is unset (default "
+        "libero_spatial): a LIBERO fine-tune, or bridge_orig (openvla-7b with its Bridge V2 "
+        "statistics, for a Bridge rig such as ManiSkill's widowx250s); with --model-path, the suite "
+        "that checkpoint's actions are un-normalised with, reported by vla.info so the robot "
+        "refuses a tool it cannot run",
     )
     p.add_argument(
         "--revision",
@@ -192,13 +242,15 @@ def main() -> None:
     p.add_argument(
         "--unnorm-key",
         default=None,
-        help="norm_stats key for action denormalisation (default: the checkpoint's only key)",
+        help="norm_stats key for action denormalisation (default: the suite's, else the "
+        "checkpoint's only key)",
     )
     p.add_argument(
         "--center-crop",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="the 0.9 center crop of OpenVLA's LIBERO evaluation (the checkpoints were evaluated with it)",
+        default=None,
+        help="the 0.9 center crop of OpenVLA's LIBERO evaluation (default: on for the LIBERO "
+        "fine-tunes, which were evaluated with it; off for bridge_orig)",
     )
     p.add_argument(
         "--attn", default="sdpa", help="attention implementation (sdpa | eager)"
@@ -206,21 +258,31 @@ def main() -> None:
     args = p.parse_args()
     apply_cuda_device(args.cuda_device)
 
-    repo, pin = OPENVLA_CHECKPOINTS[args.suite or DEFAULT_SUITE]
-    model = args.model_path or repo
-    revision = args.revision or (pin if model == repo else None)
-    suite = reported_suite(args.suite, model, repo)
+    ckpt = OPENVLA_CHECKPOINTS[args.suite or DEFAULT_SUITE]
+    model = args.model_path or ckpt.repo
+    revision = args.revision or (ckpt.revision if model == ckpt.repo else None)
+    suite = reported_suite(args.suite, model, ckpt.repo)
+    center_crop = ckpt.center_crop if args.center_crop is None else args.center_crop
     t0 = time.time()
     path = snapshot(model, revision)
     logger.info("loading OpenVLA from %s (revision=%s) ...", path, revision)
-    policy, unnorm_key = load_policy(path, args.unnorm_key, args.attn)
-    logger.info("model ready in %.1fs (unnorm_key=%s)", time.time() - t0, unnorm_key)
+    policy, unnorm_key = load_policy(
+        path, args.unnorm_key or ckpt.unnorm_key, args.attn
+    )
+    logger.info(
+        "model ready in %.1fs (unnorm_key=%s, action_space=%s, center_crop=%s)",
+        time.time() - t0,
+        unnorm_key,
+        ckpt.action_space,
+        center_crop,
+    )
     OpenVLAFacade(
         policy=policy,
         model=model,
         revision=revision,
         suite=suite,
-        center_crop=args.center_crop,
+        center_crop=center_crop,
+        action_space=ckpt.action_space,
     ).serve(
         transport=args.transport,
         host=args.host,
