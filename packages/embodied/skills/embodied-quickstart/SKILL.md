@@ -101,6 +101,55 @@ sudo, anything touching real hardware, or a download the plan does not list. The
 experiment are separate: install, run the preflight, and end with the launch command; the user starts
 episodes with it. Do not start one.
 
+### Self-hosted planners
+
+`/embodied-setup`'s planner menu ends with the self-hosted planners (`src/infra/setup/selfhost.ts`), offered
+whether or not `~/.pi/agent/models.json` has them yet: `selfhost/qwen3.8-27b` (NInfer, Qwen3.8-27B NVFP4)
+and `selfhost/qwen3.8-flash-next-unsloth-q8_0` (Strata, Qwen3.8-Flash-Next Q8_0). Choosing one hands you
+the server: where it runs is the deployment's `selfhost.<id>` in `~/.pi/agent/embodied.json`:
+
+```json
+{ "deployments": { "default": { "selfhost": {
+  "qwen3.8-27b": { "base_url": "http://127.0.0.1:18000/v1", "start": "selfhost-planner ninfer start",
+                   "stop": "selfhost-planner ninfer stop", "run_on": "the Mac" } } } } }
+```
+
+If `<base_url>/models` does not answer, run `start` (or, with `run_on`, give the user the command for that
+machine and wait), register the model under `providers.selfhost` of models.json as the handoff spells out
+(`openai-completions`, `compat.thinkingFormat: "qwen-chat-template"`, `supportsDeveloperRole: false`,
+`maxTokensField: "max_tokens"`, `input: ["text", "image"]`, per-model `baseUrl`), and check one request
+with an image and one tool before you end. Without a deployment entry, set the engine up (below) on a box
+the user names, then add the entry. `/embodied-run` probes the URL before an episode and names `start`
+when it does not answer. The `selfhost` provider gets the cache-friendly defaults of `src/infra/params.ts`.
+
+Engines, unquantized where the hardware allows (the user's rule: no quantized build to save memory):
+
+- **vLLM** (any GPU; BF16 Hugging Face checkpoints): a venv with the vLLM wheel matching the driver's CUDA
+  (a CUDA 12.9 build runs on a 12.8 driver; it needs `ninja` on PATH), then `vllm serve <dir>
+  --served-model-name <id> --dtype bfloat16 --gpu-memory-utilization <fraction that fits the free memory>
+  --max-model-len 32768 --reasoning-parser qwen3 --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  --enable-prefix-caching --max-num-seqs 8 --limit-mm-per-prompt '{"image": 8}'` (`--max-num-seqs` small:
+  Qwen3.5's hybrid layers have few Mamba cache blocks).
+- **NInfer** (RTX 5090 / DGX Spark only; ships quantized artifacts only, NVFP4 is its best for 27B, whose
+  BF16 needs 55 GB): build from github.com/Neroued/ninfer with a CUDA 13 toolkit, CMake 3.28+, C++20,
+  liburing 2.5+, libcurl 7.85+, hwloc 2.5+, FFmpeg 6+; on Ubuntu 22.04 a conda-forge env provides them
+  (`ffmpeg>=6` explicitly, `libxml2-devel`, `cuda-profiler-api`, link with `-Wl,-rpath-link` to the env's
+  lib and to a directory holding only `libcuda.so.1` from the driver). `hf download
+  neroued/Qwen3.8-27B-nvfp4-NInfer qwen3_8_27b_nvfp4.ninfer`, then `ninfer-serve --config <toml>` from
+  `examples/configs/rtx5090-qwen3_8-27b-nvfp4.toml`. On a shared card set `context_capacity` explicitly
+  (not `auto`); with 8 GB taken by another job it fits only with MTP off, 2560 MiB context, one request.
+- **Strata** (consumer NVIDIA cards; Q8_0 is its highest Flash-Next pack, a BF16 GGUF also exists):
+  `install.sh` from its releases, then `strata launch --model-path <Q8_0 dir> --vision on --drafting mtp
+  --port 8080 --access local --no-tui --yes`. The experts need about 140 GB of RAM: under a smaller memory
+  limit (a 90 GB container) add `--set mmap-experts=on` and expect about 1 token/s, too slow for episodes;
+  a pinned `--resident-budget-gib` near the limit kills the engine.
+- Ollama's library tags are quantized by default (only `fp16` / `bf16` tags follow the rule); DeepInfer
+  runs DeepSeek-V4.1-Flash on SM100 or Ascend, offline, with no server.
+
+When the planner box and the robot box cannot reach each other, a machine that reaches both bridges the
+port: `ssh -f -N -L <p>:127.0.0.1:<server port> <gpu box>` and `ssh -f -N -R <p>:127.0.0.1:<p> <robot box>`.
+Headless `pi -p` over ssh needs `< /dev/null`.
+
 ## 2. Install
 
 Prerequisites; check them before the install and tell the user what is missing:
