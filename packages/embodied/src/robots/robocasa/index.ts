@@ -13,13 +13,15 @@
  * code mode; RLDX-1 runs here and steps the env action by action. Every action
  * returns a new numbered state with agentview, navview and wrist images; world maps are
  * kept per state for back-projection. Success is the env's own `_check_success()`
- * (`state.success`), recorded in the session's `robot_result` entry.
+ * (`state.success`), recorded in the session's `robot_result` entry. MotorMind mode (`--mm=true`,
+ * ../../modes/motormind) runs the arm on the server's `env.mm_observe` / `env.mm_run_step` (services
+ * utils/motormind.py); the base stays where the reset put it.
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
@@ -30,6 +32,7 @@ import { MOLMO, type ModelService, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
 import type { Move } from "../../modes/units/index.ts";
 import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
@@ -43,7 +46,7 @@ import {
 } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, median, round } from "../../robot.ts";
+import { attach, defineRobot, type Json, median, round } from "../../robot.ts";
 import { StringEnum } from "../../string-enum.ts";
 import { type Cell, loadTable, resolveCell } from "./tasks.ts";
 
@@ -179,6 +182,12 @@ export default function robocasa(pi: ExtensionAPI) {
 	let criteria = "";
 	let states: State[] = [];
 	let envSteps = 0;
+	/** MotorMind mode: the server's latched success (its replies), and its privileged truth log. */
+	let mmSolved = false;
+	let truthLog: string | undefined;
+	const mmOn = () => flagValue(pi.getFlag("mm")) === "true";
+	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
+	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
 	/**
 	 * A run_code program solved the task at some step of its run (the server's latched `success` /
 	 * `success_step`, services robots/robocasa/env_server.py `_finish_run`): the episode stays solved
@@ -375,6 +384,8 @@ export default function robocasa(pi: ExtensionAPI) {
 				reference: local() ? `${cell().task}_${cell().split}_s0` : `${cell().task}_s0`,
 			}),
 			primitives: PRIMITIVES,
+			// MotorMind mode replaces this prompt (its preset turns memory off); the robot's own prompt reads memory.
+			optional: mmOn,
 			// The robot base puts it at SYSTEM.md's {{memory}}; {{memory_files}} lists the task's published files.
 			prompt: (profile) =>
 				MEMORY[profile].replaceAll("{{task_name}}", cell().task).replaceAll("{{memory_files}}", hfMemoryFiles()),
@@ -420,7 +431,7 @@ export default function robocasa(pi: ExtensionAPI) {
 			scene: cell().scene === "" ? null : Number(cell().scene),
 			...(picked?.envId ? { env_id: picked.envId } : {}),
 			task_language: language,
-			success: states[states.length - 1]?.success ?? false,
+			success: (states[states.length - 1]?.success ?? false) || mmSolved,
 			env_steps: envSteps,
 			states: states.length,
 			attempts: attempt,
@@ -432,8 +443,21 @@ export default function robocasa(pi: ExtensionAPI) {
 		status: () => ({
 			language,
 			step: states.length - 1,
-			solved: states[states.length - 1]?.success ?? false,
+			solved: (states[states.length - 1]?.success ?? false) || mmSolved,
 		}),
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the
+		// episode's env steps and latched success (a timed-out segment's steps are counted at the next
+		// call); a segment's video frames come with it; `home` (--mm-home reset) is the episode reset.
+		motormind: {
+			observe: async (aim = {}) => mmReply(await env.call<Json>("env.mm_observe", aim, 120_000, [], robot.signal)),
+			runStep: async (seg, { timeoutMs, observe, ...aim }) =>
+				mmReply(await env.call<Json>("env.mm_run_step", { seg, observe, ...aim }, timeoutMs, [], robot.signal)),
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
+			task: () => language,
+			expect: () => ({ mm_home: mmHome() }),
+		},
 		finish: {
 			description:
 				"Declare the task finished: when success (robocasa_terminated) becomes true, or when genuinely stuck after honest exploration. Give a 1-3 sentence summary of what worked and what failed. Success is the env's state.success, not this call.",
@@ -605,6 +629,23 @@ export default function robocasa(pi: ExtensionAPI) {
 			const elapsed = round((Date.now() - t0) / 1000, 1);
 			return view(await capture({ action: name, ...params }, result, elapsed), { agent_elapsed_s: elapsed });
 		});
+	}
+
+	// ---- MotorMind mode ----
+
+	/**
+	 * A MotorMind reply (an observation, or a segment with its `observation`): its video frames to the
+	 * episode video, the episode's env steps and latched success from it.
+	 */
+	function mmReply(r: Json): Json {
+		const { frames, ...out } = r as Json & { frames?: NdArray[] };
+		for (const f of frames ?? []) robot.video.frame(f);
+		const o = (out.observation ?? out) as Json;
+		if (typeof o.env_steps === "number") envSteps = o.env_steps;
+		mmSolved = o.terminated === true;
+		const config = o.config as { truth?: unknown } | undefined;
+		if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
+		return out;
 	}
 
 	// ---- motion: the env server's methods ----
@@ -1078,6 +1119,7 @@ export default function robocasa(pi: ExtensionAPI) {
 	async function startEpisode() {
 		states = [];
 		envSteps = 0;
+		mmSolved = false;
 		codeSolved = false;
 		modality = lastPrompt = undefined;
 		hist = [];
@@ -1093,6 +1135,11 @@ export default function robocasa(pi: ExtensionAPI) {
 		vla = rldxClient;
 		const endpoint = pi.getFlag("env-url") as string | undefined;
 		const cuda = cudaDevice(pi) || undefined;
+		truthLog = mmOn() && !endpoint ? join(dir(pi, "logs", tmpdir()), `robocasa-${tag()}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		[env] = await Promise.all([
 			endpoint
 				? attach(endpoint)
@@ -1104,6 +1151,9 @@ export default function robocasa(pi: ExtensionAPI) {
 							...(scene === "" ? [] : ["--scene", scene]),
 							...(cuda ? ["--cuda-device", cuda] : []),
 							...detectionArgs(pi, { sam3: true }),
+							// MotorMind mode: its home and its truth log.
+							...(mmOn() ? ["--mm-home", mmHome()] : []),
+							...(truthLog ? ["--mm-truth", truthLog] : []),
 						],
 						cwd: services,
 						// RLDX_RESET_SEED would replay a legacy paired scene instead of --seed.

@@ -30,6 +30,11 @@ its RPC token and refuses other business calls while a program runs. A program's
 the robot's own observations only (the kitchen's object observations are privileged: they stay
 out, as does the reward's info), and every step it takes adds an agentview frame to the run's
 video; the run reports its env steps, the success and the new robot observation (``_finish_run``).
+
+MotorMind mode (``env.mm_observe`` / ``env.mm_run_step``, utils/motormind.py) drives the Panda arm
+of the PandaOmron, its base and torso held: the base frame is the arm controller's reference (its
+OSC_POSE origin, what an arm action's increments are expressed in), a tick is one control step
+(20 Hz), the capability table is LIBERO's Panda. Success latches at the first step it holds.
 """
 
 import argparse
@@ -45,11 +50,13 @@ from typing import Any
 import numpy as np
 
 from pi_embodied_services.components.env_facade_base import BaseEnvFacade
+from pi_embodied_services.robots.libero import motormind_rig as rig
 from pi_embodied_services.robots.robocasa import tasks
 from pi_embodied_services.utils import ground_truth
 from pi_embodied_services.utils.code_exec import CodeRunMixin
 from pi_embodied_services.utils.gpu import pin_egl
 from pi_embodied_services.utils.logging import get_logger
+from pi_embodied_services.utils.motormind import MotorMindMixin
 from pi_embodied_services.utils.perception import (
     add_perception_arguments,
     install_perception,
@@ -95,6 +102,26 @@ GRIPPER_STEPS = 15
 #: three (the Flywheel's observation while recording).
 VIDEO_SIZE = 256
 VLA_CAMERAS = ("robot0_agentview_left", "robot0_agentview_right", "robot0_eye_in_hand")
+#: MotorMind mode's views (the robot-mounted center agentview over the arm, the left one on the
+#: base's +Y side where MotorMind's side camera stands, the wrist) and capability fields (LIBERO's
+#: Panda, motormind_rig.libero_caps).
+MM_CAMERAS = {
+    "scene": "robot0_agentview_center",
+    "side": "robot0_agentview_left",
+    "wrist": "robot0_eye_in_hand",
+}
+MM_CAPS = {
+    "gripper_open_span_m": 0.0788,
+    "gripper_pad_length_m": 0.017,
+    "reach_m": 0.78,
+    "comfortable_reach_m": 0.727,
+    "tilt_limits_deg": {
+        "roll_cw": 88.6,
+        "roll_ccw": 83.7,
+        "pitch_down": 91.7,
+        "pitch_up": 53.6,
+    },
+}
 #: The methods that step the env and answer a motion report (frames, the new robot obs).
 MOTION_METHODS = (
     "env.move_to",
@@ -191,7 +218,9 @@ class _Stopped(Exception):
     """A stop arrived during a motion (internal)."""
 
 
-class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
+class RoboCasaEnvFacade(
+    MotorMindMixin, CodeRunMixin, MainThreadServeMixin, BaseEnvFacade
+):
     """Wraps the raw robosuite env and exposes ONLY basic calls via RPC.
 
     Mixes in :class:`MainThreadServeMixin` so every env op runs on a single
@@ -211,6 +240,8 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         camera_w=256,
         cameras=None,
         use_camera_obs=False,
+        mm_home="refuse",
+        mm_truth=None,
     ):
         """``scene`` (a manifest index, 0-49) picks the task's scene seed from the
         RoboCasa365 table and reseeds every reset with it; without one ``seed`` seeds
@@ -224,6 +255,10 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         # Code mode: the env steps (all of them, and before the run), the run's last robot
         # observation and its video frames.
         self._steps = 0
+        # MotorMind mode: the steps before this episode, and its latched success.
+        self._episode_start = 0
+        self._mm_success = False
+        self._mm_setup(mm_home, mm_truth)
         self._run_start = 0
         self._run_success_step: int | None = None
         self._run_obs: dict | None = None
@@ -312,6 +347,8 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.get_object_pose"] = self.get_object_pose
         for method in MOTION_METHODS:
             self._rpc[method] = getattr(self, method.removeprefix("env."))
+        # MotorMind mode (utils/motormind.py): the observation and one segment of an action.
+        self._rpc.update(self._mm_rpc())
         # Read-only methods
         self._readonly_methods.update(
             [
@@ -472,6 +509,9 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._pos_jac = self._fwd_offset = None
         rel = obs.get("robot0_base_to_eef_pos") if isinstance(obs, dict) else None
         self._home_rel = None if rel is None else np.asarray(rel, dtype=np.float64)
+        self._episode_start = self._steps
+        self._mm_success = False
+        self._mm_new_episode()
         return obs
 
     def step(self, flat_action):
@@ -1197,6 +1237,87 @@ class RoboCasaEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
                 prog[k] = round(float(v), 4)
         return prog
 
+    # ---- MotorMind mode (utils/motormind.py) ----
+
+    def _mm_arm(self):
+        """The arm's OSC_POSE part controller."""
+        return self.env.robots[0].composite_controller.part_controllers["right"]
+
+    def _mm_static(self) -> dict:
+        ctl = self._mm_arm()
+        out_max = np.asarray(ctl.output_max, dtype=np.float64).reshape(-1)
+        return {
+            "body": f"{self.env.robots[0].robot_model.naming_prefix}osc_origin",
+            "pos": np.asarray(ctl.origin_pos, dtype=np.float64).tolist(),
+            "xmat": np.asarray(ctl.origin_ori, dtype=np.float64).reshape(3, 3),
+            "max_translation_m": float(out_max[:3].max()),
+            "max_rotation_rad": float(out_max[3:6].max()),
+            "fingers": True,
+            "caps": MM_CAPS,
+        }
+
+    def _mm_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._eef(), _rot(self._vec_obs("robot0_eef_quat"))
+
+    def _mm_opening(self) -> float:
+        return rig.opening_m(self._vec_obs("robot0_gripper_qpos"))
+
+    def _mm_tick(self, dp_world, dr_world, grip: float, until=None) -> None:
+        """One control step: the arm's increments in its controller's frame (OSC_POSE's
+        ``base`` input frame is its origin) over its output limits, the base and torso still, the
+        gripper channel as given (the Panda gripper's action is incremental: 0 holds)."""
+        ctl = self._mm_arm()
+        r = np.asarray(ctl.origin_ori, dtype=np.float64).reshape(3, 3)
+        out_max = np.asarray(ctl.output_max, dtype=np.float64).reshape(-1)
+        a = self._zero()
+        a[:3] = np.clip(r.T @ dp_world / out_max[:3], -1, 1)
+        a[3:6] = np.clip(r.T @ dr_world / out_max[3:6], -1, 1)
+        a[6] = float(grip)
+        self.step(a)
+        self._mm_success = self._mm_success or self.check_success()
+
+    def _mm_status(self) -> tuple[bool, bool, int]:
+        return self._mm_success, False, self._steps - self._episode_start
+
+    def _mm_cameras(self) -> dict:
+        return dict(MM_CAMERAS)
+
+    def _mm_shots(self, cameras: dict, size: int, depth) -> dict:
+        """Upright renders (robosuite renders bottom-up) with LIBERO's calibration of them
+        (motormind_rig: the MuJoCo camera's fovy, position and orientation)."""
+        sim = self.env.sim
+        out = {}
+        for name, cam in cameras.items():
+            cid = sim.model.camera_name2id(cam)
+            want = name in depth
+            shot = self.render_camera(cam, size, size, want)
+            rgb, d = shot if want else (shot, None)
+            out[name] = {
+                "rgb": np.ascontiguousarray(np.asarray(rgb)[::-1]),
+                "K": rig.intrinsic(float(sim.model.cam_fovy[cid]), size, size),
+                "cam2world": rig.cam2world(
+                    sim.data.cam_xpos[cid], sim.data.cam_xmat[cid]
+                ),
+                **(
+                    {"depth": np.ascontiguousarray(np.asarray(d, np.float32)[::-1])}
+                    if want
+                    else {}
+                ),
+            }
+        return out
+
+    def _mm_video_frame(self):
+        return self._video_frame()
+
+    def _mm_reset_scene(self) -> None:
+        self.reset()
+
+    def _mm_truth_extra(self) -> dict:
+        return {
+            "success_now": self.check_success(),
+            "objects": self.ground_truth_poses()["poses"],
+        }
+
     def ground_truth_poses(self, names=None):
         """World poses of ``names`` (default all) from the kitchen's own object list
         (``--privileged``): its objects (``obj_body_id``), then its fixtures' root bodies."""
@@ -1242,6 +1363,15 @@ def main():
         default=None,
         help="RoboCasa365 manifest scene index (0-49); overrides --seed",
     )
+    p.add_argument(
+        "--mm-home",
+        choices=["refuse", "reset"],
+        default="refuse",
+        help="MotorMind mode's home: refused, or the episode reset",
+    )
+    p.add_argument(
+        "--mm-truth", default=None, help="MotorMind mode's privileged truth log (jsonl)"
+    )
     add_perception_arguments(p, sam3=True)
     args = p.parse_args()
 
@@ -1261,6 +1391,8 @@ def main():
         split=args.split,
         seed=args.seed,
         scene=args.scene,
+        mm_home=args.mm_home,
+        mm_truth=args.mm_truth,
     )
     # --sam3 / --unidepth: env.detect, env.select_detection, env.reject_detection,
     # env.enhance_depth, on the upright 256 px views the model sees.
@@ -1269,7 +1401,7 @@ def main():
         facade,
         args,
         cameras=["agentview", "navview", "wrist"],
-        mutating=MOTION_METHODS,
+        mutating=MOTION_METHODS + ("env.mm_run_step",),
         view=render_view(
             facade,
             size=256,

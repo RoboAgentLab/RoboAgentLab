@@ -69,7 +69,7 @@ so a session, its `robot_result` row and the eval scripts never notice which pla
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
 | LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash, MotorMind |
-| RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash |
+| RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, MotorMind; MotorMind drives the arm, the base held |
 | RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab |
 | ManiSkill | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash; `--vla-adapter openvla` (OpenVLA on the bridge WidowX) and its `--vla-alone` baseline |
 | RoboLab | `src/robots/robolab` | RoboLab's task predicate | memory, explore, video, units, VDM, code, `--privileged`, Flash |
