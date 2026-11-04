@@ -33,6 +33,11 @@ export type Deployment = {
 	ros_setup?: string;
 	/** Per-role auxiliary VLMs (provider/id) over --aux-model: the rare role that needs another model. */
 	aux?: Partial<Record<AuxRole, string>>;
+	/**
+	 * Self-hosted planners (setup/selfhost.ts) by model id: the base URL this box reaches the server at, and
+	 * the commands that start and stop it with the machine they run on when it is not this one.
+	 */
+	selfhost?: Record<string, { base_url: string; start?: string; stop?: string; run_on?: string }>;
 };
 export type ConfigFile = { deployments?: Record<string, Deployment>; presets?: Record<string, Record<string, string>> };
 
@@ -155,6 +160,8 @@ function select(pi: ExtensionAPI): { name: string; deployment: Deployment; probl
 
 /** The deployment in effect (empty when no file names one). */
 export const deployment = (pi: ExtensionAPI) => select(pi).deployment;
+/** The name of the deployment in effect ("" when no file names one). */
+export const deploymentName = (pi: ExtensionAPI) => select(pi).name;
 
 /** Why the config cannot be used (robot.ts refuses to start), else undefined. */
 export function configProblem(pi: ExtensionAPI): string | undefined {
@@ -169,6 +176,11 @@ export function configProblem(pi: ExtensionAPI): string | undefined {
 	const badAux = Object.keys(s.deployment.aux ?? {}).filter((k) => !(AUX_ROLES as readonly string[]).includes(k));
 	if (badAux.length)
 		return `deployment ${s.name}: unknown aux.${badAux.join(", aux.")} (known: ${AUX_ROLES.join(", ")})`;
+	const noUrl = Object.entries(s.deployment.selfhost ?? {}).filter(
+		([, v]) => !v || typeof v !== "object" || typeof v.base_url !== "string" || !v.base_url.trim(),
+	);
+	if (noUrl.length)
+		return `deployment ${s.name}: selfhost.${noUrl.map(([k]) => k).join(", selfhost.")} has no base_url`;
 	return undefined;
 }
 

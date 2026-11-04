@@ -38,12 +38,18 @@ import setup, {
 	PANELS,
 	PAPER,
 	PKG,
+	PLANNER,
 	ROBOTS,
 	RUN,
 	RUN_HOW,
 	runDeps,
 } from "../src/infra/setup/index.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
+import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
+
+/** The self-hosted planners every planner menu ends with (before the fine-tuned adapter). */
+const HOSTED = SELFHOST.map(selfhostLabel);
+
 import {
 	DASHBOARD_PORT,
 	episodeFlags,
@@ -111,6 +117,7 @@ function fakePi(
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerCommand: (name: string, c: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
 			commands.set(name, c),
+		getFlag: () => undefined,
 		getCommands: () => [
 			...[...commands.keys()].map((name) => ({
 				name,
@@ -156,6 +163,14 @@ function fakePi(
 				});
 				const first = c.render(80);
 				asked.push(first[0]);
+				// The planner list is searchable: type the select answer into its filter, then enter (escape when none).
+				if (first[0] === "Planner model") {
+					offered[first[0]] = (c as Component & { options: string[] }).options;
+					const want = a.select.shift();
+					for (const ch of want ?? "") c.handleInput?.(ch);
+					c.handleInput?.(want === undefined ? "\x1b" : "\r");
+					return result;
+				}
 				grids.push(first);
 				for (const k of a.keys.shift() ?? []) {
 					c.handleInput?.(k);
@@ -327,7 +342,7 @@ test("the placeholder model is never offered as the planner", async () => {
 	});
 	await p.run();
 	// A1 Code without a preset also offers the robot's fine-tuned adapter as the planner.
-	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6", FINETUNED]);
+	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6", ...HOSTED, FINETUNED]);
 	assert.match(p.confirms.at(-1) ?? "", /planner openai\/gpt-6/);
 	assert.ok(BUDGET.includes("--max-turns 40") && BUDGET.includes("--time-limit 900"));
 });
@@ -681,13 +696,13 @@ test("the grid takes the keys: arrows and vi keys move, enter picks, escape canc
 	p = run(["j", "j", "l", "l", "l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --code=true --privileged; planner/m);
-	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6"]);
+	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
 	// O1 × A1 Model on LIBERO: the VLA skill is required; the fine-tuned planner is A1 Code's only.
 	p = run(["l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --require-skills pi0; planner/m);
 	assert.ok(p.asked.includes("Model weights"), "A1 Model's VLA comes with the weights");
-	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6"]);
+	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
 });
 
 test("outside the TUI the grid and the picker are selects", async () => {
@@ -851,7 +866,7 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 		after.at(-1)?.some((l) => /^→ showharness: Show-Harness/.test(l)),
 		"show-h matches the name",
 	);
-	assert.deepEqual(q.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6"]);
+	assert.deepEqual(q.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
 	assert.match(q.confirms.at(-1) ?? "", /^flags: --preset showharness; planner/m);
 	// A cell with no ported setting (O1 × A3 on ManiSkill) skips the picker.
 	const r = fakePi({
@@ -1371,4 +1386,212 @@ test("/embodied-run panels: a work's own panel comes first when the robot serves
 	// freePort itself answers with a port at or after the start.
 	const port = await freePort(DASHBOARD_PORT);
 	assert.ok(port >= DASHBOARD_PORT && port < DASHBOARD_PORT + 20);
+});
+
+/** A deployment config for one test: PI_EMBODIED_CONFIG points at it; restore() puts the old value back. */
+function withConfig(cfg: unknown) {
+	const old = process.env.PI_EMBODIED_CONFIG;
+	const file = join(mkdtempSync(join(tmpdir(), "pi-embodied-cfg-")), "embodied.json");
+	writeFileSync(file, JSON.stringify(cfg));
+	process.env.PI_EMBODIED_CONFIG = file;
+	return () => {
+		if (old === undefined) delete process.env.PI_EMBODIED_CONFIG;
+		else process.env.PI_EMBODIED_CONFIG = old;
+	};
+}
+const NINFER = SELFHOST.find((x) => x.engine === "NInfer")!;
+const STRATA = SELFHOST.find((x) => x.engine === "Strata")!;
+
+test("the self-hosted planners: NInfer's Qwen3.8-27B and Strata's Qwen3.8-Flash-Next, as selfhost/<id>", () => {
+	assert.deepEqual(
+		SELFHOST.map((x) => `${x.engine}:${x.id}`),
+		["NInfer:qwen3.8-27b", "Strata:qwen3.8-flash-next-unsloth-q8_0"],
+	);
+	assert.equal(selfhostLabel(NINFER), "selfhost/qwen3.8-27b: NInfer · Qwen3.8-27B NVFP4 (started by the agent)");
+	assert.equal(selfhostOf("selfhost/qwen3.8-27b"), NINFER);
+	assert.equal(selfhostOf("openai/gpt-6"), undefined);
+	assert.equal(selfhostOf("selfhost/other"), undefined);
+	const e = modelsJsonEntry(STRATA, "http://127.0.0.1:18080/v1");
+	assert.equal(e.id, "qwen3.8-flash-next-unsloth-q8_0");
+	assert.deepEqual(e.input, ["text", "image"]);
+	assert.equal(e.contextWindow, 65536);
+	// With a deployment entry: start (on the Mac), register, check. Without: set it up, asking which box.
+	const lines = selfhostHandoff(
+		NINFER,
+		{
+			base_url: "http://127.0.0.1:18000/v1",
+			start: "selfhost-planner ninfer start",
+			stop: "selfhost-planner ninfer stop",
+			run_on: "the Mac",
+		},
+		"default",
+	);
+	assert.match(
+		lines[0],
+		/^- planner server: NInfer · Qwen3\.8-27B NVFP4 at http:\/\/127\.0\.0\.1:18000\/v1; if .*\/models does not answer, start it on the Mac \(this box cannot run it: show me the command, I run it there, then you continue\): `selfhost-planner ninfer start`; it stops with `selfhost-planner ninfer stop`/,
+	);
+	assert.match(
+		lines[1],
+		/^- planner registration: register it in ~\/\.pi\/agent\/models\.json under providers\.selfhost .*"id":"qwen3\.8-27b".*"baseUrl":"http:\/\/127\.0\.0\.1:18000\/v1"/,
+	);
+	assert.match(lines[2], /^- planner check: .*one chat request with a camera-sized image and one tool/);
+	const bare = selfhostHandoff(STRATA, undefined, "lab");
+	assert.equal(bare.length, 1);
+	assert.match(bare[0], /deployment lab has no selfhost\.qwen3\.8-flash-next-unsloth-q8_0 .*ask me which box first/);
+});
+
+test("/embodied-setup offers the self-hosted planners; choosing one hands the start, registration and check to the agent", async () => {
+	const restore = withConfig({
+		deployments: {
+			default: {
+				selfhost: {
+					"qwen3.8-27b": {
+						base_url: "http://127.0.0.1:18000/v1",
+						start: "selfhost-planner ninfer start",
+						stop: "selfhost-planner ninfer stop",
+						run_on: "the Mac",
+					},
+				},
+			},
+		},
+	});
+	try {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+		const p = fakePi({
+			cwd,
+			answers: { select: ["here", "selfhost/qwen3.8-27b"], input: [""], confirm: [true] },
+		});
+		await p.run("reproduce Show-Harness on metaworld");
+		assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
+		const summary = p.confirms.at(-1) ?? "";
+		assert.match(summary, /^flags: --preset showharness; planner selfhost\/qwen3\.8-27b$/m);
+		assert.match(
+			summary,
+			/^planner server: NInfer · Qwen3\.8-27B NVFP4 at http:\/\/127\.0\.0\.1:18000\/v1; the agent starts it if it is down \(its start runs on the Mac: you run that command\) and registers it in models\.json$/m,
+		);
+		const text = p.sent[0]?.text ?? "";
+		assert.match(text, /^- planner: selfhost\/qwen3\.8-27b$/m);
+		assert.match(text, /^- planner server: NInfer .*`selfhost-planner ninfer start`/m);
+		assert.match(text, /^- planner registration: /m);
+		const settings = JSON.parse(readFileSync(join(cwd, "embodied-metaworld/.pi/settings.json"), "utf8"));
+		assert.deepEqual([settings.defaultProvider, settings.defaultModel], ["selfhost", "qwen3.8-27b"]);
+		// Strata has no deployment entry: the agent sets it up, asking which box; the confirmation says so.
+		const q = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", "selfhost/qwen3.8-flash-next"], input: [""], confirm: [true] },
+		});
+		await q.run("reproduce Show-Harness on metaworld");
+		assert.match(
+			q.confirms.at(-1) ?? "",
+			/^planner server: Strata · Qwen3\.8-Flash-Next Q8_0 is not in the deployment yet; the agent sets it up on an NVIDIA card and about 140 GB of RAM/m,
+		);
+		assert.match(
+			q.sent[0]?.text ?? "",
+			/^- planner server: Strata · Qwen3\.8-Flash-Next Q8_0; deployment default has no selfhost\.qwen3\.8-flash-next-unsloth-q8_0/m,
+		);
+		// A request naming the planner by its id settles it without the menu.
+		const r = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			available: [
+				{ provider: "openai", id: "gpt-6" },
+				{ provider: "selfhost", id: "qwen3.8-27b" },
+			],
+			answers: { select: ["here"], input: [""], confirm: [false] },
+		});
+		await r.run("reproduce Show-Harness on metaworld with selfhost/qwen3.8-27b");
+		assert.ok(!r.asked.includes("Planner model"));
+		assert.match(r.confirms.at(-1) ?? "", /^planner server: NInfer /m);
+		assert.deepEqual(
+			fakePiOffered(r),
+			undefined,
+			"a registered selfhost model is not listed twice (it is the self-hosted entry)",
+		);
+	} finally {
+		restore();
+	}
+});
+
+/** The planner menu a run offered, if it asked. */
+const fakePiOffered = (p: { offered: Record<string, string[]> }) => p.offered["Planner model"];
+
+test("/embodied-run checks a self-hosted planner before the episode and names its start when it does not answer", async () => {
+	const restore = withConfig({
+		deployments: {
+			default: {
+				selfhost: {
+					"qwen3.8-27b": {
+						base_url: "http://127.0.0.1:18000/v1",
+						start: "selfhost-planner ninfer start",
+						run_on: "the Mac",
+					},
+				},
+			},
+		},
+	});
+	try {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+		const dir = installed(cwd, "embodied-metaworld", "metaworld", {});
+		const f = join(dir, ".pi/settings.json");
+		writeFileSync(
+			f,
+			JSON.stringify({
+				...JSON.parse(readFileSync(f, "utf8")),
+				defaultProvider: "selfhost",
+				defaultModel: "qwen3.8-27b",
+			}),
+		);
+		runDeps.gpus = () => [];
+		runDeps.freePort = async () => 8765;
+		runDeps.env = {};
+		runDeps.selfhostUp = async () => false;
+		let p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+		await p.commands.get(RUN)?.handler("", p.ctx);
+		assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O1 × A1 Code; planner selfhost\/qwen3\.8-27b$/m);
+		assert.match(
+			p.confirms.at(-1) ?? "",
+			/^planner server: NInfer does NOT answer at http:\/\/127\.0\.0\.1:18000\/v1; start it first on the Mac: selfhost-planner ninfer start$/m,
+		);
+		runDeps.selfhostUp = async () => true;
+		p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+		await p.commands.get(RUN)?.handler("", p.ctx);
+		assert.match(p.confirms.at(-1) ?? "", /^planner server: NInfer answers at http:\/\/127\.0\.0\.1:18000\/v1$/m);
+	} finally {
+		restore();
+	}
+});
+
+test("the planner list is searchable: typing narrows it, enter takes the first match, escape cancels", async () => {
+	const p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		available: [
+			{ provider: "openai", id: "gpt-6" },
+			{ provider: "openai", id: "gpt-6-astra" },
+			{ provider: "anthropic", id: "claude-opus-5" },
+		],
+		answers: { select: ["here", "astra"], input: [""], confirm: [false] },
+	});
+	await p.run("reproduce Show-Harness on metaworld");
+	assert.deepEqual(p.offered[PLANNER], ["anthropic/claude-opus-5", "openai/gpt-6", "openai/gpt-6-astra", ...HOSTED]);
+	assert.match(
+		p.confirms.at(-1) ?? "",
+		/^flags: --preset showharness; planner openai\/gpt-6-astra$/m,
+		"'astra' narrowed it to one",
+	);
+	// Typing an engine's name finds the self-hosted planner.
+	const q = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "strata"], input: [""], confirm: [false] },
+	});
+	await q.run("reproduce Show-Harness on metaworld");
+	assert.match(q.confirms.at(-1) ?? "", /planner selfhost\/qwen3\.8-flash-next-unsloth-q8_0$/m);
+	// Nothing typed and escape: nothing more is asked.
+	const r = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: { select: ["here"] } });
+	await r.run("reproduce Show-Harness on metaworld");
+	assert.equal(r.asked.at(-1), PLANNER);
+	assert.deepEqual(r.sent, []);
+	// The picker's lines: the filter and the count.
+	const entries = ["openai/gpt-6", "openai/gpt-6-astra", ...HOSTED].map((m) => ({ id: m, text: m }));
+	const lines = pickerLines(PLANNER, entries, "qwen", 0);
+	assert.match(lines[1], /^ {2}type to filter: qwen_\s+2 of 4$/);
+	assert.ok(lines.includes(`→ ${HOSTED[0]}`));
 });

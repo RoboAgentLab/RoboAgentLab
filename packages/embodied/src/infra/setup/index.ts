@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { deployment, deploymentName } from "../config.ts";
 import {
 	type Axes,
 	type Cell,
@@ -68,6 +69,7 @@ import {
 	scanExperiments,
 	tunnelHint,
 } from "./run.ts";
+import { SELFHOST, type SelfhostSpec, selfhostHandoff, selfhostLabel, selfhostOf, selfhostUp } from "./selfhost.ts";
 
 /** The package root and the services checkout next to it (absent in an npm install). */
 export const PKG = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
@@ -340,6 +342,12 @@ export type Choice = {
 	/** The robot's fine-tuned adapter is the planner (A1 Code). */
 	finetuned: boolean;
 	dir: string;
+	/** A self-hosted planner (selfhost/<id>), the deployment's entry for it when there is one, and that deployment's name. */
+	selfhost?: {
+		spec: SelfhostSpec;
+		deploy?: NonNullable<ReturnType<typeof deployment>["selfhost"]>[string];
+		deployment: string;
+	};
 };
 
 /** A robot extension is active when `/robot-task` (registered by every robot's base) exists. */
@@ -453,6 +461,7 @@ function handoff(c: Choice, settingsText: string): string {
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
 		...perception,
 		c.model ? `- planner: ${c.model}` : `- planner: ${FINETUNED}`,
+		...(c.selfhost ? selfhostHandoff(c.selfhost.spec, c.selfhost.deploy, c.selfhost.deployment) : []),
 		...finetuned,
 		`- experiment dir: ${c.dir}; ${settings}`,
 		`- launch: \`${launchCommand(c)}\` (I start episodes with it myself, afterwards)`,
@@ -502,22 +511,24 @@ function keyFrom(data: string, keybindings: { matches(data: string, id: string):
 					: keyOf(data, vi);
 }
 
-type Picked = { paper?: Paper };
+export const PLANNER = "Planner model";
 /**
- * The work to reproduce: the cell's ported settings, a searchable list (typing filters by the short name)
- * in the TUI, a select elsewhere. Cancelled: undefined.
+ * A searchable list: typing filters by id or text (case-insensitive), the arrows move, enter picks, escape
+ * cancels (undefined). A custom component in the TUI (its `options` are the entries' texts); a select elsewhere.
  */
-async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<Picked | undefined> {
-	const entries = pickEntries(papers, NO_PAPER);
+async function searchPick<T extends Pick>(
+	ctx: ExtensionCommandContext,
+	title: string,
+	entries: T[],
+): Promise<T | undefined> {
 	if (ctx.mode !== "tui") {
 		const picked = await ctx.ui.select(
-			PAPER,
+			title,
 			entries.map((e) => e.text),
 		);
-		const e = entries.find((x) => x.text === picked);
-		return e ? { paper: e.paper } : undefined;
+		return entries.find((x) => x.text === picked);
 	}
-	return ctx.ui.custom<Picked | undefined>((_tui, theme, keybindings, done) => {
+	return ctx.ui.custom<T | undefined>((_tui, theme, keybindings, done) => {
 		let q = "";
 		let idx = 0;
 		const paint: Paint = {
@@ -526,13 +537,14 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<
 			bold: (s) => theme.bold(s),
 		};
 		return {
-			render: () => pickerLines(PAPER, entries, q, idx, paint),
+			options: entries.map((e) => e.text),
+			render: () => pickerLines(title, entries, q, idx, paint),
 			invalidate: () => {},
 			handleInput: (data: string) => {
-				const shown: Pick[] = pickMatches(entries, q);
+				const shown = pickMatches(entries, q) as T[];
 				const key = keyFrom(data, keybindings, false);
 				if (key === "enter") {
-					if (shown[idx]) done({ paper: shown[idx].paper });
+					if (shown[idx]) done(shown[idx]);
 				} else if (key === "escape") done(undefined);
 				else if (key === "up") idx = Math.max(0, idx - 1);
 				else if (key === "down") idx = Math.min(shown.length - 1, idx + 1);
@@ -546,6 +558,13 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<
 			},
 		};
 	});
+}
+
+type Picked = { paper?: Paper };
+/** The work to reproduce: one of the cell's ported settings, or none. Cancelled: undefined. */
+async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<Picked | undefined> {
+	const e = await searchPick(ctx, PAPER, pickEntries(papers, NO_PAPER));
+	return e ? { paper: e.paper } : undefined;
 }
 
 async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
@@ -565,7 +584,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		return;
 	}
 	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
-	const req = parseRequest(args, ROBOTS, available);
+	const req = parseRequest(args, ROBOTS, [...available, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
@@ -653,10 +672,25 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	}
 
 	// The planner: a model of the registry, or (A1 Code, no preset) the robot's fine-tuned adapter.
-	const planners = [...new Set([...(current ? [current] : []), ...available])];
+	// The planner: a model of the registry, a self-hosted planner the agent starts (selfhost/<id>, offered
+	// whether or not models.json has it yet), or (A1 Code, no preset) the robot's fine-tuned adapter.
+	const registry = [...new Set([...(current ? [current] : []), ...available])].filter((m) => !selfhostOf(m));
+	const hosted = SELFHOST.map(selfhostLabel);
+	const planners = [...registry, ...hosted];
 	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
-	const planner = req.model ?? (await ui.select("Planner model", planners));
-	if (!planner) return;
+	// Searchable: the registry can list many models; typing filters them.
+	const picked =
+		req.model ??
+		(
+			await searchPick(
+				ctx,
+				PLANNER,
+				planners.map((m) => ({ id: m, text: m })),
+			)
+		)?.text;
+	if (!picked) return;
+	const hostedSpec = SELFHOST[hosted.indexOf(picked)] ?? selfhostOf(picked);
+	const planner = hostedSpec ? `selfhost/${hostedSpec.id}` : picked;
 	const finetuned = planner === FINETUNED;
 	const model = finetuned ? undefined : planner;
 	if (!finetuned && !model?.includes("/")) return;
@@ -669,7 +703,10 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	// The title names the default: an empty input field shows no placeholder in every TUI.
 	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
 	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
-	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir };
+	const selfhost = hostedSpec
+		? { spec: hostedSpec, deploy: deployment(pi).selfhost?.[hostedSpec.id], deployment: deploymentName(pi) }
+		: undefined;
+	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir, selfhost };
 
 	const file = join(dir, ".pi", "settings.json");
 	let existing: Settings = {};
@@ -690,6 +727,13 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		...(req.unknown.length ? [`not recognized (maybe not supported yet): ${req.unknown.join(", ")}`] : []),
 		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
 		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${model ?? FINETUNED}`,
+		...(selfhost
+			? [
+					selfhost.deploy
+						? `planner server: ${selfhost.spec.engine} · ${selfhost.spec.model} at ${selfhost.deploy.base_url}; the agent starts it if it is down${selfhost.deploy.run_on ? ` (its start runs on ${selfhost.deploy.run_on}: you run that command)` : ""} and registers it in models.json`
+						: `planner server: ${selfhost.spec.engine} · ${selfhost.spec.model} is not in the deployment yet; the agent sets it up on ${selfhost.spec.hardware}, asking you which box`,
+				]
+			: []),
 		`needs: ${robot.needs}`,
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
 		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${finetuned ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step), then the preflight; no episode is started`,
@@ -730,7 +774,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
  * and how: in this terminal (pi takes it over until the episode ends), headless by the agent, or printed.
  */
 /** What /embodied-run reads off the machine; a test replaces it. */
-export const runDeps = { gpus, freePort, env: process.env as NodeJS.ProcessEnv };
+export const runDeps = { gpus, freePort, env: process.env as NodeJS.ProcessEnv, selfhostUp };
 export const PANELS = "Panels";
 
 async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
@@ -838,8 +882,24 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		ctx.mode === "tui" ? [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print] : [RUN_HOW.headless, RUN_HOW.print];
 	const how = await ui.select("How to run?", hows);
 	if (!how) return;
+	// A self-hosted planner must answer before an episode is worth starting.
+	const plannerId = exp.planner ?? exp.record?.planner;
+	const hostedPlanner = selfhostOf(plannerId);
+	const hostedDeploy = hostedPlanner ? deployment(pi).selfhost?.[hostedPlanner.id] : undefined;
+	const hostedLine = !hostedPlanner
+		? []
+		: !hostedDeploy
+			? [
+					`planner server: ${hostedPlanner.engine} · ${hostedPlanner.model} is not in the deployment; run /embodied-setup to set it up`,
+				]
+			: (await runDeps.selfhostUp(hostedDeploy.base_url))
+				? [`planner server: ${hostedPlanner.engine} answers at ${hostedDeploy.base_url}`]
+				: [
+						`planner server: ${hostedPlanner.engine} does NOT answer at ${hostedDeploy.base_url}; start it first${hostedDeploy.run_on ? ` on ${hostedDeploy.run_on}` : ""}: ${hostedDeploy.start ?? "(no start command in the deployment)"}`,
+					];
 	const summary = [
-		`${exp.robot.label}: ${settingName}; planner ${exp.planner ?? exp.record?.planner ?? "the session's model"}`,
+		`${exp.robot.label}: ${settingName}; planner ${plannerId ?? "the session's model"}`,
+		...hostedLine,
 		`task: ${taskFlags}`,
 		gpu === undefined ? "GPU: any" : `GPU ${gpu}`,
 		`panels on this machine: ${urls.join("; ")}`,
