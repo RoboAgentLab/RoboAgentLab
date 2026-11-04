@@ -13,11 +13,13 @@
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
  * recorded in the session's `robot_result` entry. With `--xpolicy <ws url>`, `xpolicy_act` runs an
  * XPolicyLab policy (../xpolicy.ts, env_cfg aloha_agilex) instead: LingBot then connects only on the
- * first `lingbot_act`.
+ * first `lingbot_act`. MotorMind mode (`--mm=true`, ../../modes/motormind) drives one arm
+ * (`--robotwin-mm-arm`) on the server's `env.mm_observe` / `env.mm_run_step` (services utils/motormind.py).
  */
 
+import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { recipeFlash } from "../../capabilities/flash/recipe.ts";
@@ -28,6 +30,7 @@ import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
 import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import { norm as flagValue } from "../../infra/tiers.ts";
 import type { Move } from "../../modes/units/index.ts";
 import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
@@ -42,7 +45,7 @@ import {
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import type { XPolicyAction, XPolicyObs } from "../../primitives/xpolicy.ts";
-import { attach, defineRobot, median, rgbOf, u8 } from "../../robot.ts";
+import { attach, defineRobot, type Json, median, rgbOf, u8 } from "../../robot.ts";
 import { StringEnum } from "../../string-enum.ts";
 
 const read = (name: string) => template(new URL(name, import.meta.url));
@@ -406,6 +409,16 @@ export default function robotwin(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("seed", { type: "string", default: "100000", description: "Exact RoboTwin scene seed" });
 	pi.registerFlag("max-episode-steps", { type: "string", default: "10000", description: "Native action budget" });
+	pi.registerFlag("robotwin-mm-arm", {
+		type: "string",
+		default: "right",
+		description: "MotorMind mode's arm (left | right): MotorMind drives one, the other is held",
+	});
+	const mmOn = () => flagValue(pi.getFlag("mm")) === "true";
+	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
+	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
+	/** MotorMind mode: the env server's privileged truth log for this session (the server's own when attached). */
+	let truthLog: string | undefined;
 	pi.registerFlag("assets", {
 		type: "string",
 		default: process.env.ROBOTWIN_ASSETS_PATH ?? "",
@@ -569,6 +582,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			cell: () => ({ tag: tag(cell().seed), reference: local() ? tag("0") : `${cell().task}_s0` }),
 			primitives: ["lingbot_act", "move_to", "rotate_wrist", "set_gripper", "release"],
 			prompt: () => MEMORY,
+			// MotorMind mode replaces this prompt (its preset turns memory off); the robot's own prompt reads memory.
+			optional: mmOn,
 		},
 		video: true,
 		groundTruth: (names) => env.call("env.ground_truth_poses", { names: names ?? null }, READ_MS, [], robot.signal),
@@ -625,6 +640,19 @@ export default function robotwin(pi: ExtensionAPI) {
 			states: snapshots.length,
 		}),
 		status: () => ({ language, step: snapshots.length - 1, solved: success() }),
+		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the robot
+		// state and episode status (`info`: success, the action count and budget); a segment's video
+		// frames come with it; `home` (--mm-home reset) is the episode reset.
+		motormind: {
+			observe: async (aim = {}) => mmReply(await env.call<Json>("env.mm_observe", aim, READ_MS, [], robot.signal)),
+			runStep: async (seg, { timeoutMs, observe, ...aim }) =>
+				mmReply(await env.call<Json>("env.mm_run_step", { seg, observe, ...aim }, timeoutMs, [], robot.signal)),
+			endpoint: () =>
+				env ? `${env.url.replace(/\/call$/, "")}${env.token ? `#token=${env.token}` : ""}` : undefined,
+			truth: () => truthLog,
+			task: () => language,
+			expect: () => ({ mm_home: mmHome() }),
+		},
 		finish: {
 			description:
 				"Stop the run after a fresh status check. RoboTwin's eval_success is authoritative; requesting success cannot override it.",
@@ -652,6 +680,22 @@ export default function robotwin(pi: ExtensionAPI) {
 			path: [config, task, `seed_${seed.padStart(3, "0")}`],
 			metadata: { task_config: config, task_name: task, seed: Number(seed), task_language: language },
 		});
+	}
+
+	/**
+	 * A MotorMind reply (an observation, or a segment with its `observation`): its video frames to the
+	 * episode video, its robot state and episode status to `info`, its action count to the native ones.
+	 */
+	function mmReply(r: Json): Json {
+		const { frames, ...out } = r as Json & { frames?: NdArray[] };
+		for (const f of frames ?? []) robot.video.frame(f);
+		const o = (out.observation ?? out) as Json;
+		if (o.robot_state && o.episode_status)
+			info = { ...info, robot_state: o.robot_state, episode_status: o.episode_status as Status };
+		if (typeof o.env_steps === "number") nativeActions = o.env_steps;
+		const config = o.config as { truth?: unknown } | undefined;
+		if (config) truthLog = typeof config.truth === "string" ? config.truth : undefined;
+		return out;
 	}
 
 	const status = () => info.episode_status;
@@ -1174,6 +1218,14 @@ export default function robotwin(pi: ExtensionAPI) {
 		seeds.reset();
 		const { task, config, seed } = cell();
 		const endpoint = pi.getFlag("env-url") as string | undefined;
+		const arm = flag("robotwin-mm-arm", "right");
+		if (arm !== "left" && arm !== "right") throw new Error(`--robotwin-mm-arm must be left or right, not ${arm}`);
+		truthLog =
+			mmOn() && !endpoint ? join(tmpdir(), `pi-embodied-${tag(seed)}-${process.pid}_mm_truth.jsonl`) : undefined;
+		if (truthLog) {
+			mkdirSync(dirname(truthLog), { recursive: true });
+			rmSync(truthLog, { force: true });
+		}
 		if (endpoint) env = await attach(endpoint, 900_000);
 		else {
 			const services = servicesDir(pi);
@@ -1186,6 +1238,9 @@ export default function robotwin(pi: ExtensionAPI) {
 					...["--task-name", task, "--task-config", config, "--seed", seed],
 					...["--max-episode-steps", flag("max-episode-steps", "10000"), "--assets-path", assets],
 					...detectionArgs(pi, { sam3: true }),
+					// MotorMind mode: its arm, its home and its truth log.
+					...(mmOn() ? ["--mm-arm", arm, "--mm-home", mmHome()] : []),
+					...(truthLog ? ["--mm-truth", truthLog] : []),
 				],
 				cwd: services,
 				env: { ...process.env, PYTHONPATH: services, ROBOTWIN_ASSETS_PATH: assets },
