@@ -104,8 +104,9 @@ episodes with it. Do not start one.
 ### Self-hosted planners
 
 `/embodied-setup`'s planner menu ends with the self-hosted planners (`src/infra/setup/selfhost.ts`), offered
-whether or not `~/.pi/agent/models.json` has them yet: `selfhost/qwen3.8-27b` (NInfer, Qwen3.8-27B NVFP4)
-and `selfhost/qwen3.8-flash-next-unsloth-q8_0` (Strata, Qwen3.8-Flash-Next Q8_0). Choosing one hands you
+whether or not `~/.pi/agent/models.json` has them yet: `selfhost/qwen3.8-27b-bf16` (vLLM, Qwen3.8-27B BF16,
+unquantized, on a GPU with 80 GB or more), `selfhost/qwen3.8-27b` (NInfer, Qwen3.8-27B NVFP4) and
+`selfhost/qwen3.8-flash-next-unsloth-q8_0` (Strata, Qwen3.8-Flash-Next Q8_0). Choosing one hands you
 the server: where it runs is the deployment's `selfhost.<id>` in `~/.pi/agent/embodied.json`:
 
 ```json
