@@ -98,6 +98,9 @@ flywheel = [
 # and the pins below (see README). Checkpoints are pinned per server, fetched via HF_ENDPOINT.
 openvla = [
     "openvla @ git+https://github.com/openvla/openvla.git@c8f03f48af692657d3060c19588038c7220e9af9",
+    # The repo's tensorflow 2.15 holds protobuf at 4.x; tensorflow-metadata 1.16+ (pulled by its
+    # tensorflow-datasets) needs protobuf 5 and breaks `import prismatic` (measured on l40s-0003).
+    "tensorflow-metadata<1.16",
     "transformers==4.40.1",
     "timm==0.9.10",
     "tokenizers==0.19.1",

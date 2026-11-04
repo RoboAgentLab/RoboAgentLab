@@ -22,6 +22,9 @@
  * real2sim execution), with the per-call cap, stop and the latched success on the server;
  * every result carries the agentview and wrist images and the state; success is ManiSkill's own `success` flag, recorded in `robot_result`.
  * --collect-flywheel-data records every control step of a motion, per arm (services robots/maniskill/flywheel.py).
+ * `--vla-adapter openvla` mounts `openvla_act` (../../primitives/vla-adapters.ts): OpenVLA with its Bridge V2
+ * statistics on the bridge twins' WidowX 250 S (`--arm widowx250s`), each chunk translated by the env server
+ * (env.vla_step); `--vla-alone openvla` runs it alone instead of the planner (../../planner/vla-alone.ts).
  * Tools and code primitives: ../../primitives/manifests/maniskill.json (the env server reads it too).
  *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
@@ -46,10 +49,21 @@ import { NdArray, type RpcClient } from "../../infra/rpc.ts";
 import { MOVE_UNITS, type MoveUnit, type Vec3 } from "../../modes/units/index.ts";
 import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
+import { vlaSeeds } from "../../planner/vla-seed.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
 import { ikArgs, type Reach, registerIkFlag } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
+import {
+	adaptersFor,
+	embodimentMismatch,
+	type MountedAdapter,
+	mountAdapters,
+	registerVlaAdapterFlag,
+	vlaIdentity,
+	vlaInfo,
+} from "../../primitives/vla-adapters.ts";
 import { attach, defineRobot, type Json, rgbOf, toolResult } from "../../robot.ts";
 import { StringEnum } from "../../string-enum.ts";
 
@@ -158,6 +172,20 @@ type Info = Record<string, unknown>;
 type Frame = Obs & { action?: NdArray; success?: boolean };
 /** env.move_delta's answer: the call's result, every control step, the last observation and step info. */
 type MoveReturn = { result: Record<string, unknown>; frames: Frame[]; obs: Obs; info: Info };
+/** env.vla_observation's answer: the raw sensor frames a VLA takes and the arm's state (8). */
+type VlaObs = { main: NdArray; wrist: NdArray | null; state: NdArray };
+/** env.vla_step's answer: every control step of the chunk, as env.move_delta's frames. */
+type VlaStepReturn = {
+	error?: string;
+	frames: Frame[];
+	obs: Obs;
+	info: Info;
+	steps: number;
+	gripper: number;
+	cancelled?: boolean;
+};
+/** A VLA adapter tool's parameters (manifests/maniskill.json). */
+type VlaActParams = { prompt?: string; chunks?: number };
 /**
  * The RLinf rigs (BlockPAP-v1 / BlockStack-v1), measured on BlockPAP seed 20000 by stepping each
  * unit 4 cm and tracking the block's segmentation centroid: agentview = the calibrated front
@@ -193,6 +221,8 @@ type Meta = {
 	view_size?: number;
 	/** The env server's --robot (absent: a server from before it, a Panda). */
 	robot?: string;
+	/** The task's registered episode length (the VLA-alone default budget); null when unregistered. */
+	episode_steps?: number | null;
 	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 } & Partial<typeof VIEW_SETUP>;
 /** The raw agentview frame both scene kinds render (env server AGENTVIEW, the rigs' external_cam), letterboxed to view_size. */
@@ -343,6 +373,8 @@ const WIDOWX250S: ManiskillRobot = {
 	emptyWidthM: 0.031,
 	frame: "a world-frame `[dx, dy, dz]` in metres: +x toward the camera and the robot base (the image bottom), +y toward the image right, +z up",
 	setup: { agentview: "3rd_view_camera", wrist_mount: "none", wrist_rotation: 0, wrist_flip: "none" },
+	// Bridge V2's actions in the scene's own controller (env server VLA_ACTION_SPACES).
+	vlaActions: ["bridge_ee_delta_euler"],
 	views: WIDOWX250S_VIEWS,
 	scene: {
 		table: "The table top is at about z = 0.87 (the sink's floor at about z = 0.91 in the eggplant scene)",
@@ -370,6 +402,8 @@ export type ManiskillRobot = {
 	frame?: string;
 	/** The env server's camera setup (VIEW_SETUP); `wrist_mount: "none"`: no wrist camera, the agentview alone. */
 	setup: { agentview: string; wrist_mount: string; wrist_rotation: number; wrist_flip: string };
+	/** The VLA action spaces its env server translates into its control mode (VLA_ACTION_SPACES; none: no adapter runs it). */
+	vlaActions?: readonly string[];
 	/** The units `views` text, and SYSTEM.md's scene sentences (SCENE_TEXT.stock with this robot's views and object). */
 	views: string;
 	scene: { table: string; object: string; views: string };
@@ -555,6 +589,9 @@ export default function maniskill(pi: ExtensionAPI) {
 	registerDetectionFlags(pi);
 	// --point: Molmo's point over services.molmo (../primitives/pointing.ts).
 	registerPointFlags(pi);
+	// --vla-adapter openvla: openvla_act over services.openvla (../../primitives/vla-adapters.ts).
+	const vlaAdapterNames = registerVlaAdapterFlag(pi, "maniskill");
+	const seeds = vlaSeeds(pi, () => ["maniskill", robot.task]);
 	pi.registerFlag("probe-axes", {
 		type: "boolean",
 		default: false,
@@ -563,6 +600,11 @@ export default function maniskill(pi: ExtensionAPI) {
 	});
 
 	let env: RpcClient;
+	/** The VLA adapters this run mounted, by tool name, and which VLA each tool used this episode. */
+	const adapters = new Map<string, MountedAdapter>();
+	const vlaUsed: Record<string, string> = {};
+	/** The task's registered episode length (meta.episode_steps; 0 unknown): the VLA-alone budget. */
+	let episodeSteps = 0;
 	let obs: Obs;
 	let info: Info = {};
 	let success = false;
@@ -723,6 +765,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			// The exploration `reset` tool is not a robot.tool, so robot.signal is unset here; use its own signal.
 			reset: async (result, _ctx, signal) => {
 				const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000, [], signal);
+				seeds.reset();
 				success = everGrasped = false;
 				envStep = 0;
 				grippers = {};
@@ -771,6 +814,9 @@ export default function maniskill(pi: ExtensionAPI) {
 			success,
 			ever_grasped: everGrasped,
 			env_steps: envStep,
+			// The VLA each adapter tool ran (healthz name, model@revision), and a VLA-alone run.
+			...(adapters.size ? { vla: { ...vlaUsed } } : {}),
+			...va.result(),
 		}),
 		status: () => ({ language, step: envStep, solved: success }),
 		finish: {
@@ -838,6 +884,12 @@ export default function maniskill(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		mounted: vlaAdapterNames,
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
 
 	const call = <T = unknown>(
 		method: string,
@@ -925,6 +977,130 @@ export default function maniskill(pi: ExtensionAPI) {
 	}
 
 	robot.primitive("view_env_state", async () => observe({}));
+
+	// Every adapter with a ManiSkill embodiment (manifests/maniskill.json declares its tool), active when mounted.
+	for (const a of adaptersFor("maniskill"))
+		robot.primitive(a.tool, async (params, signal) => observe(await vlaAct(a.tool, params as VlaActParams, signal)));
+
+	/**
+	 * One VLA chunk on the rig: the raw frames of the adapter's cameras (env.vla_observation) go to the
+	 * policy with `prompt`; its chunk, at most `limit` actions of it, runs on the env server (env.vla_step,
+	 * which translates it into the arm's control mode). The first call of a tool records which VLA
+	 * answered, and refuses a checkpoint this rig cannot run (it stays unrecorded, so every call refuses
+	 * until the right server is up). Every control step goes to the video and the Flywheel.
+	 */
+	async function vlaChunk(m: MountedAdapter, prompt: string, signal: AbortSignal | undefined, limit = Infinity) {
+		const toolName = m.adapter.tool;
+		if (!(toolName in vlaUsed)) {
+			const info = await vlaInfo(m.client).catch(() => undefined);
+			const why = info && embodimentMismatch(info, m, "maniskill");
+			if (why) throw new Error(why);
+			vlaUsed[toolName] = info ? vlaIdentity(info) : "unknown";
+		}
+		const { main, wrist } = m.embodiment.cameras;
+		const v = await env.call<VlaObs>(
+			"env.vla_observation",
+			{ main, ...(wrist ? { wrist } : {}) },
+			60_000,
+			[],
+			signal,
+		);
+		const wire = {
+			main_images: v.main.batched(),
+			wrist_images: v.wrist ? v.wrist.batched() : null,
+			extra_view_images: null,
+			states: v.state.batched(),
+			task_descriptions: [prompt],
+		};
+		const seed = seeds.next();
+		const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
+		const actions = await m.client.call<NdArray>("vla.predict", {}, 120_000, [wire, options], signal);
+		// [1, horizon, 7] -> the first `limit` actions.
+		const [horizon, width] = actions.shape.slice(1);
+		const n = Math.min(horizon, limit);
+		const bytes = actions.data.length / (horizon * width);
+		const chunk = new NdArray(actions.dtype, [n, width], actions.data.subarray(0, n * width * bytes));
+		const vlaId = fly.proposal(prompt, chunk);
+		const r = await env.call<VlaStepReturn>(
+			"env.vla_step",
+			{ action_space: m.embodiment.action },
+			300_000,
+			[chunk],
+			signal,
+		);
+		r.frames.forEach((f, i) => {
+			video.frame(f.wrist ? sideBySide(f.agentview, f.wrist) : f.agentview);
+			if (fly.recording && f.action)
+				fly.transition(
+					f.action.toArray(),
+					flyObs(f, arms()),
+					f.success ? 1 : 0,
+					Boolean(f.success),
+					false,
+					vlaId,
+					i,
+				);
+		});
+		envStep += r.steps;
+		grippers[""] = r.gripper > 0 ? 1 : -1;
+		absorb(r.obs, r.info);
+		return { seed, steps: r.steps, error: r.error, cancelled: r.cancelled === true };
+	}
+
+	/** An adapter tool: `chunks` closed-loop chunks on `prompt` (default the task's), stopping at success. */
+	async function vlaAct(toolName: string, p: VlaActParams, signal: AbortSignal | undefined) {
+		const m = adapters.get(toolName);
+		if (!m) throw new Error(`${toolName} is not mounted: pass --vla-adapter`);
+		const prompt = p.prompt?.trim() || language;
+		const chunks = p.chunks ?? 1;
+		const before = envStep;
+		const vla_seeds: (number | null)[] = [];
+		let used = 0;
+		let error: string | undefined;
+		while (used < chunks && !success) {
+			const r = await vlaChunk(m, prompt, signal);
+			used++;
+			vla_seeds.push(r.seed ?? null);
+			error = r.error;
+			if (error || r.cancelled) break;
+		}
+		if (!used) error = "the task is already solved; call finish";
+		return {
+			name: toolName,
+			instruction: prompt,
+			chunks_used: used,
+			env_steps: envStep - before,
+			vla_seeds,
+			...(error ? { error } : {}),
+		};
+	}
+
+	/**
+	 * `--vla-alone <adapter>`: its chunks on the task instruction until success or `steps` env steps (0:
+	 * the task's registered episode length, SimplerEnv's for the bridge twins).
+	 */
+	async function runVlaAlone(name: string, steps: number) {
+		const m = [...adapters.values()].find((x) => x.adapter.flag === name)!;
+		const budget = steps || episodeSteps;
+		if (!budget)
+			throw new Error(`--vla-alone: ${robot.task.task} registers no episode length; pass --vla-alone-steps`);
+		const before = envStep;
+		let chunks = 0;
+		while (envStep - before < budget && !success) {
+			const r = await vlaChunk(m, language, undefined, budget - (envStep - before));
+			chunks++;
+			if (r.error) throw new Error(r.error);
+			if (r.steps === 0) break;
+		}
+		return {
+			tool: m.adapter.tool,
+			instruction: language,
+			steps_budget: budget,
+			env_steps: envStep - before,
+			chunks,
+			success,
+		};
+	}
 
 	// The manifest's parameters go to the server as they are (manifests/maniskill.json: delta_xyz, gripper, arm).
 	robot.primitive("move_delta", async (params, signal) => observe(await move(params as Json, signal)));
@@ -1024,6 +1200,7 @@ export default function maniskill(pi: ExtensionAPI) {
 		rig = Boolean(meta.scene);
 		tableZ = meta.table_z ?? 0;
 		viewSize = meta.view_size ?? 256;
+		episodeSteps = meta.episode_steps ?? 0;
 		const want = rig ? RIG_VIEW_SETUP : arm().setup;
 		const setup = Object.entries(want).filter(([k, v]) => meta[k as keyof typeof VIEW_SETUP] !== v);
 		if (setup.length)
@@ -1034,8 +1211,25 @@ export default function maniskill(pi: ExtensionAPI) {
 		envStep = 0;
 		grippers = {};
 		vectors = calibration = undefined;
+		// --vla-adapter: each adapter's client; this arm's env server must execute its action space.
+		adapters.clear();
+		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
+		for (const [toolName, m] of mountAdapters(pi, vlaAdapterNames(), "maniskill")) {
+			if (rig || !arm().vlaActions?.includes(m.embodiment.action)) {
+				const can = ROBOT_IDS.filter((id) =>
+					(ROBOTS[id] as ManiskillRobot).vlaActions?.includes(m.embodiment.action),
+				);
+				throw new Error(
+					`--vla-adapter ${m.adapter.flag} answers in ${m.embodiment.action}, which ${rig ? envId : `--arm ${robotId}`} does not execute (--arm ${can.join(", ")} does)`,
+				);
+			}
+			adapters.set(toolName, m);
+		}
+		const why = va.configError();
+		if (why) throw new Error(why);
 		if (pi.getFlag("probe-axes") === true) await probeAxes(ctx);
 		const [o, i] = await env.call<[Obs, Info]>("env.reset", {}, 300_000);
+		seeds.reset();
 		absorb(o, i);
 		language = await env.call<string>("env.get_task_language");
 		fly.reset(flyObs(o, arms()), flyMeta());
@@ -1046,6 +1240,7 @@ export default function maniskill(pi: ExtensionAPI) {
 			...(pi.getFlag("ik") === true ? ["preview_reach"] : []),
 			...detectionActive(pi, meta.capabilities?.perception),
 			...pointActive(pi),
+			...adapters.keys(),
 		];
 	}
 }

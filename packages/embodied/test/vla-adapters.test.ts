@@ -5,8 +5,13 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RpcClient } from "../src/infra/rpc.ts";
+import { loadManifest, toolSchema } from "../src/primitives/manifest.ts";
+import { codePrimitives } from "../src/primitives/registry.ts";
 import {
+	adaptersFor,
 	baseSuite,
+	embodimentMismatch,
+	mountAdapters,
 	PICK_PARAMETERS,
 	pickTracker,
 	suiteMismatch,
@@ -16,6 +21,8 @@ import {
 } from "../src/primitives/vla-adapters.ts";
 import { toolSections } from "../src/robot.ts";
 import libero from "../src/robots/libero/index.ts";
+import { ROBOT_IDS, ROBOTS } from "../src/robots/maniskill/index.ts";
+import { useDeployment } from "./helpers/deployment.ts";
 
 type Tool = { name: string; description: string; parameters: unknown };
 
@@ -173,4 +180,107 @@ test("vlaInfo reads healthz and vla.info; a server without vla.info is its healt
 	assert.deepEqual(adapter, { service: "openvla", model: "openvla/x", revision: "abc", suite: "libero_10" });
 	const bare = await vlaInfo(new RpcClient(await serve(undefined)));
 	assert.deepEqual(bare, { service: "openvla" });
+});
+
+test("every adapter runs on LIBERO; OpenVLA's Bridge statistics also on ManiSkill's bridge WidowX", () => {
+	assert.deepEqual(
+		adaptersFor("libero").map((a) => a.tool),
+		["openvla_act", "openvla_oft_act", "gr00t_act"],
+	);
+	assert.deepEqual(
+		adaptersFor("maniskill").map((a) => a.tool),
+		["openvla_act"],
+	);
+	const ms = VLA_ADAPTERS[0].embodiments.maniskill!;
+	assert.deepEqual(ms, { suites: ["bridge_orig"], action: "bridge_ee_delta_euler", cameras: { main: "agentview" } });
+	// The arms whose env server translates that action space: the server's VLA_ACTION_SPACES, the same rows.
+	const server = readFileSync(
+		new URL("../../../services/pi_embodied_services/robots/maniskill/env_server.py", import.meta.url),
+		"utf8",
+	);
+	const table = /^VLA_ACTION_SPACES = \{"([a-z_]+)": \(\(([^)]*)\)/m.exec(server)!;
+	assert.equal(table[1], ms.action);
+	assert.deepEqual(
+		[...table[2].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]),
+		ROBOT_IDS.filter((id) => (ROBOTS[id] as { vlaActions?: readonly string[] }).vlaActions?.includes(ms.action)),
+	);
+	// The Bridge checkpoint the embodiment names is the one the OpenVLA server publishes.
+	const openvla = readFileSync(
+		new URL("../../../services/pi_embodied_services/components/openvla_server.py", import.meta.url),
+		"utf8",
+	);
+	assert.match(
+		openvla,
+		/"bridge_orig": Checkpoint\(\s*"openvla\/openvla-7b",\s*"47a0ec7fc4ec123775a391911046cf33cf9ed83f",\s*"bridge_orig",\s*False,\s*BRIDGE_EE_DELTA_EULER,/,
+	);
+});
+
+test("mountAdapters: a client per named adapter, refused without an embodiment, a known name or an endpoint", () => {
+	const pi = { getFlag: () => "" } as unknown as ExtensionAPI;
+	useDeployment({ services: { openvla: "http://127.0.0.1:18600", gr00t: "http://127.0.0.1:18800" } });
+	const m = mountAdapters(pi, ["openvla"], "maniskill");
+	assert.deepEqual([...m.keys()], ["openvla_act"]);
+	assert.equal(m.get("openvla_act")!.embodiment.action, "bridge_ee_delta_euler");
+	assert.deepEqual([...mountAdapters(pi, ["openvla", "gr00t"], "libero").keys()], ["openvla_act", "gr00t_act"]);
+	assert.throws(
+		() => mountAdapters(pi, ["gr00t"], "maniskill"),
+		/--vla-adapter gr00t has no maniskill embodiment \(its checkpoints run libero\); maniskill mounts openvla/,
+	);
+	assert.throws(
+		() => mountAdapters(pi, ["octo"], "maniskill"),
+		/--vla-adapter octo: not one of openvla, openvla-oft, gr00t/,
+	);
+	assert.throws(
+		() => mountAdapters(pi, ["openvla-oft"], "libero"),
+		/--vla-adapter openvla-oft needs services\.openvla_oft/,
+	);
+	assert.equal(mountAdapters(pi, [], "maniskill").size, 0);
+});
+
+test("embodimentMismatch: the action space must be the rig's; a known suite must be one it runs", () => {
+	const m = {
+		adapter: VLA_ADAPTERS[0],
+		embodiment: VLA_ADAPTERS[0].embodiments.maniskill!,
+		client: undefined as never,
+	};
+	const bridge = {
+		service: "openvla",
+		model: "openvla/openvla-7b",
+		revision: "r",
+		suite: "bridge_orig",
+		action_space: "bridge_ee_delta_euler",
+	};
+	assert.equal(embodimentMismatch(bridge, m, "maniskill"), undefined);
+	assert.equal(embodimentMismatch({ ...bridge, suite: null }, m, "maniskill"), undefined, "a custom checkpoint");
+	assert.match(
+		embodimentMismatch({ ...bridge, suite: "libero_spatial", action_space: "libero_osc" }, m, "maniskill")!,
+		/^openvla openvla\/openvla-7b@r answers in libero_osc, but maniskill executes bridge_ee_delta_euler: restart it with --suite bridge_orig before using openvla_act\.$/,
+	);
+	// A server from before action_space answers LIBERO's.
+	assert.match(
+		embodimentMismatch({ service: "openvla", suite: "libero_10" }, m, "maniskill")!,
+		/answers in libero_osc/,
+	);
+	assert.match(
+		embodimentMismatch({ ...bridge, suite: "fractal20220817_data" }, m, "maniskill")!,
+		/un-normalises with fractal20220817_data, but maniskill runs bridge_orig/,
+	);
+	// LIBERO keeps its per-episode check: a Bridge checkpoint is another suite's.
+	assert.match(suiteMismatch(bridge, "libero_goal")!, /is the bridge_orig fine-tune, but this episode is libero_goal/);
+});
+
+test("ManiSkill's openvla_act is a tool only: declared in its manifest, never a program's primitive, its RPC methods internal", () => {
+	const m = loadManifest("maniskill");
+	const e = m.primitives.find((p) => p.name === "openvla_act")!;
+	assert.equal(e.side, "ts");
+	assert.equal(e.tier, "high");
+	assert.deepEqual(JSON.parse(JSON.stringify(toolSchema(e).properties.chunks)), {
+		description: "Action chunks to run closed-loop, stopping at success (default 1; each is one 0.2 s action)",
+		minimum: 1,
+		maximum: 60,
+		type: "integer",
+	});
+	for (const tier of ["high", "low", "raw", "privileged"] as const)
+		assert.ok(!codePrimitives(m, tier, () => true).some((p) => p.name === "openvla_act"), tier);
+	assert.deepEqual(m.internal, ["env.vla_observation", "env.vla_step"]);
 });

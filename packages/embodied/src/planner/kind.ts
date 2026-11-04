@@ -1,7 +1,8 @@
 /**
  * Who planned an episode, from the providers of its assistant messages: `human` (./human.ts) when
  * any turn was a person's, else the planner provider of the last turn (`ensemble`, `fallback`,
- * `finetuned`, `flash`, `motormind`, `replay`), else `model`. The robot's result (`planner`), the memory recipe
+ * `finetuned`, `flash`, `motormind`, `replay`), else `model`. `vla` is no provider: a VLA-alone
+ * baseline (./vla-alone.ts) asks no planner, and the robot base records it. The robot's result (`planner`), the memory recipe
  * sidecar (../capabilities/memory) and planner export (services flywheel/planner_export.py) read it, so a human
  * or replayed solve is never counted or trained on as a model's.
  */
@@ -15,6 +16,7 @@ export const PLANNERS = [
 	"flash",
 	"motormind",
 	"replay",
+	"vla",
 ] as const;
 export type Planner = (typeof PLANNERS)[number];
 

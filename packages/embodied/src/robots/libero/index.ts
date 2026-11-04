@@ -18,7 +18,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { type FlywheelObs, type FlywheelSpec, flywheelSuite } from "../../capabilities/flywheel.ts";
 import { probeSkill, type SkillState, skillsOff } from "../../capabilities/skills.ts";
-import { cudaDevice, python, requireService, service, servicesDir } from "../../infra/config.ts";
+import { cudaDevice, python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, pi05, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { decodePng, decodePngChannel, encodePng } from "../../infra/png.ts";
@@ -59,12 +59,14 @@ import {
 } from "../../primitives/ik.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import {
+	adaptersFor,
+	mountAdapters,
 	PICK_PARAMETERS,
 	type PickParams,
 	pickDescription,
 	pickTracker,
+	registerVlaAdapterFlag,
 	suiteMismatch,
-	VLA_ADAPTERS,
 	vlaIdentity,
 	vlaInfo,
 } from "../../primitives/vla-adapters.ts";
@@ -498,16 +500,7 @@ export default function libero(pi: ExtensionAPI) {
 	});
 	// The third-party VLAs (../vla-adapters.ts): `--vla-adapter openvla` mounts `openvla_act` over
 	// services.openvla, and so on; unset mounts nothing.
-	pi.registerFlag("vla-adapter", {
-		type: "string",
-		default: "",
-		description: `Third-party VLAs to mount, comma-separated: ${VLA_ADAPTERS.map((a) => a.flag).join(" | ")} (endpoints: services.<name> of the deployment config)`,
-	});
-	const vlaAdapterNames = () =>
-		String(pi.getFlag("vla-adapter") ?? "")
-			.split(",")
-			.map((x) => x.trim())
-			.filter(Boolean);
+	const vlaAdapterNames = registerVlaAdapterFlag(pi, "libero");
 	const seeds = vlaSeeds(pi, () => ["libero", robot.task]);
 	registerIkFlag(pi);
 	pi.registerFlag("env-url", {
@@ -1432,7 +1425,7 @@ export default function libero(pi: ExtensionAPI) {
 	// The same grasp tool per third-party VLA (`--vla-adapter openvla` etc.): registered always, because pi sets
 	// the command-line flag values only after the extensions have loaded (a getFlag here reads the
 	// default), and made active at start only when --vla-adapter names it; the client is made there too.
-	for (const a of VLA_ADAPTERS)
+	for (const a of adaptersFor("libero"))
 		tool(a.tool, pickDescription(a.model), PICK_PARAMETERS, (p) => pick(adapters.get(a.tool)!, a.tool, p));
 
 	tool("pi0_doubled", "", Type.Object({}), async ({ prompt, max_chunks = 20 }: Json) => {
@@ -1976,13 +1969,8 @@ export default function libero(pi: ExtensionAPI) {
 		vla = new RpcClient(service(pi, "vla"));
 		// Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it.
 		skills.pi0 = await probeSkill(pi, "pi0", service(pi, "vla"), () => vla.ready(3_000));
-		for (const name of vlaAdapterNames()) {
-			const a = VLA_ADAPTERS.find((x) => x.flag === name);
-			if (!a) throw new Error(`--vla-adapter ${name}: not one of ${VLA_ADAPTERS.map((x) => x.flag).join(", ")}`);
-			const s = requireService(pi, a.service, `--vla-adapter ${name}`);
-			if ("error" in s) throw new Error(s.error);
-			adapters.set(a.tool, new RpcClient(s.url));
-		}
+		adapters.clear();
+		for (const [toolName, m] of mountAdapters(pi, vlaAdapterNames(), "libero")) adapters.set(toolName, m.client);
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
 		sam3 = new RpcClient(service(pi, "sam3"));
 		const endpoint = pi.getFlag("env-url") as string | undefined;

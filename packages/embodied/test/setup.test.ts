@@ -1184,7 +1184,7 @@ test("the run module: experiments are read from their settings and record, the c
 	assert.equal(runCommand(e, flags), `cd ${dir} && source ${e.env} && pi ${flags} "Solve the task."`);
 	assert.equal(
 		headlessCommand(e, flags, 5),
-		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi -a -p ${flags} "Solve the task."`,
+		`cd ${dir} && source ${e.env} && CUDA_VISIBLE_DEVICES=5 MUJOCO_EGL_DEVICE_ID=5 pi -a -p ${flags} "Solve the task." < /dev/null`,
 	);
 	// No record, three LIBEROs share the extension: the one whose venv exists is the robot.
 	const lib = installed(cwd, "libero-old", "libero-plus");
@@ -1241,7 +1241,7 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	assert.match(text, /^\/skill:embodied-quickstart Run one episode now, in the background/);
 	assert.match(
 		text,
-		/pi -a -p --task push-v3 --seed 3 --units=true --max-turns 10 --dashboard=true --dashboard-port 8765 "Solve the task\."`$/m,
+		/pi -a -p --task push-v3 --seed 3 --units=true --max-turns 10 --dashboard=true --dashboard-port 8765 "Solve the task\." < \/dev\/null`$/m,
 	);
 	assert.match(text, /robot_result/);
 	// Outside the TUI "here" is not offered.
