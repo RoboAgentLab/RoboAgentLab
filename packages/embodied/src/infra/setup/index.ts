@@ -97,6 +97,18 @@ export const NO_MODEL =
 	"/embodied-setup: no model is configured. The agent that runs the install (and the planner) needs one: run /login, or add a provider to ~/.pi/agent/models.json (pi's docs/models.md), then /embodied-setup again.";
 /** The quickstart's episode budget: an interactive episode has none by default and can run (and bill) for an hour. */
 export const BUDGET = "--max-turns 40 --time-limit 900";
+/** The budgets /embodied-run offers, the quickstart's first. */
+export const BUDGETS = [
+	{ value: BUDGET, label: `40 turns or 15 minutes: ${BUDGET}` },
+	{
+		value: "--max-turns 10 --time-limit 300",
+		label: "10 turns or 5 minutes, a quick check: --max-turns 10 --time-limit 300",
+	},
+	{
+		value: "--max-turns 100 --time-limit 2700",
+		label: "100 turns or 45 minutes, a long task: --max-turns 100 --time-limit 2700",
+	},
+];
 export const GRID = "Observation × Execution";
 export const PAPER = "Work to reproduce (optional)";
 export const NO_PAPER = "none: the cell's plain flags";
@@ -565,6 +577,41 @@ async function searchPick<T extends Pick>(
 	});
 }
 
+/** The mark of the option a menu suggests, listed first: taking it is never wrong for a first run. */
+export const RECOMMENDED = " (recommended)";
+export const rec = (s: string) => `${s}${RECOMMENDED}`;
+/** The menu option that asks for a value instead of picking one. */
+export const OTHER = "other: type it";
+/**
+ * A value chosen from a menu: the suggested ones (the first marked recommended unless `recommend` is
+ * false), and OTHER, which asks for it as text. Undefined when cancelled.
+ */
+async function chooseValue(
+	ctx: ExtensionCommandContext,
+	title: string,
+	values: { value: string; label?: string }[],
+	recommend = true,
+): Promise<string | undefined> {
+	const labels = values.map((v, i) => (i === 0 && recommend ? rec(v.label ?? v.value) : (v.label ?? v.value)));
+	const picked = await ctx.ui.select(title, [...labels, OTHER]);
+	if (picked === undefined) return undefined;
+	if (picked === OTHER) return (await ctx.ui.input(title, values[0]?.value ?? ""))?.trim() || undefined;
+	return values[labels.indexOf(picked)]?.value;
+}
+/** The hosts of ~/.ssh/config (no patterns): the remote boxes the user already reaches. */
+export function sshHosts(file = join(homedir(), ".ssh", "config")): string[] {
+	try {
+		const out = new Set<string>();
+		for (const m of readFileSync(file, "utf8").matchAll(/^\s*Host\s+(.+)$/gim))
+			for (const h of m[1].trim().split(/\s+/)) if (!/[*?!]/.test(h)) out.add(h);
+		return [...out];
+	} catch {
+		return [];
+	}
+}
+/** What /embodied-setup reads off the machine; a test replaces it. */
+export const setupDeps = { sshHosts: () => sshHosts() };
+
 type Picked = { paper?: Paper };
 /** The work to reproduce: one of the cell's ported settings, or none. Cancelled: undefined. */
 async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<Picked | undefined> {
@@ -660,40 +707,52 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 			? "a remote"
 			: req.where === "here"
 				? "here"
-				: await ui.select("Where do the services run?", ["here (this machine)", "a remote GPU box over ssh"]);
+				: await ui.select("Where do the services run?", [rec("here (this machine)"), "a remote GPU box over ssh"]);
 	if (!where) return;
 	let remote: Choice["remote"];
 	let services = SERVICES;
 	if (where.startsWith("a remote")) {
-		const host = req.host ?? (await ui.input("ssh host", "user@gpu-box"))?.trim();
+		// The hosts of the user's ssh config are the choice; none: typed.
+		const hosts = setupDeps.sshHosts();
+		const host =
+			req.host ??
+			(hosts.length
+				? await chooseValue(
+						ctx,
+						"ssh host",
+						hosts.map((h) => ({ value: h })),
+						false,
+					)
+				: (await ui.input("ssh host", "user@gpu-box"))?.trim());
 		if (!host) return;
-		const checkout = (await ui.input("pi-embodied checkout on the box", "~/pi-embodied"))?.trim() || "~/pi-embodied";
+		const checkout = await chooseValue(ctx, "pi-embodied checkout on the box", [{ value: "~/pi-embodied" }]);
+		if (!checkout) return;
 		remote = { host, checkout };
 		services = `${checkout}/services`;
 	} else if (!existsSync(SERVICES)) {
-		const checkout = (
-			await ui.input(`pi-embodied checkout (cloned from ${REPO} if missing)`, "~/pi-embodied")
-		)?.trim();
-		services = `${(checkout || "~/pi-embodied").replace(/^~(?=\/|$)/, homedir())}/services`;
+		const checkout = await chooseValue(ctx, `pi-embodied checkout (cloned from ${REPO} if missing)`, [
+			{ value: "~/pi-embodied" },
+		]);
+		if (!checkout) return;
+		services = `${checkout.replace(/^~(?=\/|$)/, homedir())}/services`;
 	}
 
-	// The planner: a model of the registry, or (A1 Code, no preset) the robot's fine-tuned adapter.
 	// The planner: a model of the registry, a self-hosted planner the agent starts (selfhost/<id>, offered
 	// whether or not models.json has it yet), or (A1 Code, no preset) the robot's fine-tuned adapter.
 	const registry = [...new Set([...(current ? [current] : []), ...available])].filter((m) => !selfhostOf(m));
 	const hosted = SELFHOST.map(selfhostLabel);
 	const planners = [...registry, ...hosted];
 	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
-	// Searchable: the registry can list many models; typing filters them.
+	// Searchable: the registry can list many models; typing filters them. This session's model is the suggestion.
 	const picked =
 		req.model ??
 		(
 			await searchPick(
 				ctx,
 				PLANNER,
-				planners.map((m) => ({ id: m, text: m })),
+				planners.map((m) => ({ id: m, text: m === current ? rec(m) : m })),
 			)
-		)?.text;
+		)?.id;
 	if (!picked) return;
 	const hostedSpec = SELFHOST[hosted.indexOf(picked)] ?? selfhostOf(picked);
 	const planner = hostedSpec ? `selfhost/${hostedSpec.id}` : picked;
@@ -703,12 +762,15 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	// The weights setup.sh --weights fetches serve the VLA of A1 Model and A2, and O2's SAM3.
 	const weights =
 		robot.weights && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")
-			? await ui.confirm("Model weights", `Also download ${robot.weights}?`)
+			? await ui.confirm(
+					"Model weights",
+					`Also download ${robot.weights}? (recommended: this cell's tools need them)`,
+				)
 			: false;
 	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
-	// The title names the default: an empty input field shows no placeholder in every TUI.
-	const answer = (await ui.input(`Experiment directory (empty: ${fallback})`, fallback))?.trim();
-	const dir = resolve(ctx.cwd, (answer || fallback).replace(/^~(?=\/|$)/, homedir()));
+	const answer = await chooseValue(ctx, "Experiment directory", [{ value: fallback }]);
+	if (!answer) return;
+	const dir = resolve(ctx.cwd, answer.replace(/^~(?=\/|$)/, homedir()));
 	const selfhost = hostedSpec
 		? { spec: hostedSpec, deploy: deployment(pi).selfhost?.[hostedSpec.id], deployment: deploymentName(pi) }
 		: undefined;
@@ -792,7 +854,7 @@ export const SETUP_NOW = "set it up now with /embodied-setup";
 async function offerSetup(pi: ExtensionAPI, ctx: ExtensionCommandContext, why: string, request: string): Promise<void> {
 	const command = `/${COMMAND}${request ? ` ${request}` : ""}`;
 	ctx.ui.notify(`${why}\nto install it: ${command}`, "warning");
-	const picked = await ctx.ui.select("Not installed", [`${SETUP_NOW}: ${command}`, "no"]);
+	const picked = await ctx.ui.select("Not installed", [rec(`${SETUP_NOW}: ${command}`), "no"]);
 	if (picked?.startsWith(SETUP_NOW)) await setup(pi, ctx, request);
 }
 
@@ -895,15 +957,20 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	if (opts.task !== undefined || opts.seed !== undefined || opts.suite !== undefined)
 		taskFlags = withRunOptions(recordedTask, opts);
 	else {
-		const task = (await ui.input(`Task flags (empty: ${recordedTask})`, recordedTask))?.trim();
+		const task = await chooseValue(ctx, "Task flags", [
+			{ value: recordedTask, label: `the recorded task: ${recordedTask}` },
+		]);
 		if (task === undefined) return;
-		taskFlags = task || recordedTask;
+		taskFlags = task;
 	}
 	// A GPU: the request's, else the freest first; none when nvidia-smi says nothing.
 	let gpu: number | undefined = opts.gpu;
 	const devices = gpu === undefined ? runDeps.gpus() : [];
 	if (devices.length > 1) {
-		const choices = [...devices.map(gpuLabel), "any: no CUDA_VISIBLE_DEVICES"];
+		const choices = [
+			...devices.map((d, i) => (i === 0 ? rec(gpuLabel(d)) : gpuLabel(d))),
+			"any: no CUDA_VISIBLE_DEVICES",
+		];
 		const g = await ui.select("GPU", choices);
 		if (g === undefined) return;
 		gpu = devices[choices.indexOf(g)]?.index;
@@ -911,7 +978,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	const budget =
 		opts.turns !== undefined
 			? BUDGET.replace(/--max-turns \d+/, `--max-turns ${opts.turns}`)
-			: (await ui.input(`Episode budget (empty: ${BUDGET})`, BUDGET))?.trim();
+			: await chooseValue(ctx, "Episode budget", BUDGETS);
 	if (budget === undefined) return;
 	// Panels: the work's own (the ported setting's, when the robot serves them), else the robot's, with the dashboard; or the dashboard alone.
 	const paperOf = exp.record?.paper ? PAPERS.find((p) => p.id === exp.record?.paper) : undefined;
@@ -923,9 +990,9 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		const withOwn = own.length
 			? `${chosen?.name}'s own: ${own.map((p) => p.name).join(", ")}, with the dashboard`
 			: `the robot's: ${robotPanels.map((p) => p.name).join(", ")}, with the dashboard`;
-		const picked = await ui.select(PANELS, [withOwn, "the dashboard only"]);
+		const picked = await ui.select(PANELS, [rec(withOwn), "the dashboard only"]);
 		if (!picked) return;
-		if (picked === withOwn) panels = own.length ? own : robotPanels;
+		if (picked === rec(withOwn)) panels = own.length ? own : robotPanels;
 	}
 	const port = await runDeps.freePort(DASHBOARD_PORT);
 	const flags = episodeFlags(taskFlags, setting, budget || BUDGET, panelFlags(port, panels));
@@ -934,7 +1001,9 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	const tunnel = tunnelHint([port, ...panels.map((p) => p.port)], runDeps.env);
 	const hows =
 		ctx.mode === "tui" ? [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print] : [RUN_HOW.headless, RUN_HOW.print];
-	const how = opts.how ? RUN_HOW[opts.how] : await ui.select("How to run?", hows);
+	// The first way is the suggestion: in this terminal, else headless.
+	const howPicked = opts.how ? RUN_HOW[opts.how] : await ui.select("How to run?", [rec(hows[0]), ...hows.slice(1)]);
+	const how = howPicked?.replace(RECOMMENDED, "");
 	if (!how) return;
 	// A self-hosted planner must answer before an episode is worth starting.
 	const plannerId = req.model ?? exp.planner ?? exp.record?.planner;
