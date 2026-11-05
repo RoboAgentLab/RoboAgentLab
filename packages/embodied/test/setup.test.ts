@@ -43,6 +43,7 @@ import setup, {
 	RUN,
 	RUN_HOW,
 	runDeps,
+	SETUP_NOW,
 } from "../src/infra/setup/index.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
@@ -62,8 +63,10 @@ import {
 	RECORD,
 	readExperiment,
 	runCommand,
+	runOptions,
 	scanExperiments,
 	tunnelHint,
+	withRunOptions,
 } from "../src/infra/setup/run.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -977,6 +980,11 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 		["Experiment directory (empty: ...)", "Set up pi-embodied?"],
 	);
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset showharness; planner openai\/gpt-6$/m);
+	// The episode is /embodied-run with the same request.
+	assert.match(
+		p.confirms.at(-1) ?? "",
+		/^or, from .*: \/embodied-run reproduce Show-Harness on metaworld here with openai\/gpt-6$/m,
+	);
 	// "franka" is three robots: the menu offers those three only; the rest is the usual flow.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
@@ -1270,7 +1278,7 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	assert.match(p.notes.at(-1) ?? "", /^no experiment here: .*run \/embodied-setup first$/);
 });
 
-test("/embodied-run: several experiments are a menu, a request's robot picks one, an unrecorded setting is chosen as in setup, not installed is refused", async () => {
+test("/embodied-run: several experiments are a menu, a request's robot picks one, an unrecorded setting is chosen as in setup, not installed offers setup", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
 	installed(cwd, "embodied-metaworld", "metaworld", {});
 	installed(cwd, "libero-old", "libero");
@@ -1318,16 +1326,101 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 	]);
 	assert.match(
 		p.notes.at(-1) ?? "",
-		/^UR5e is not installed: .*\.venv-ur5e\/pi-embodied\.env is missing; run \/embodied-setup$/,
+		/^UR5e is not installed: .*\.venv-ur5e\/pi-embodied\.env is missing\nto install it: \/embodied-setup ur5e$/,
 	);
-	// A request's levels override a recorded setting (the grid is skipped), the picker of that cell still asks.
-	p = fakePi({ cwd, answers: { select: ["any", RUN_HOW.print], input: ["", ""], confirm: [true], keys: [["\r"]] } });
+	// Another setting than the installed one is not started here: setup is offered with the same request.
+	p = fakePi({ cwd, answers: { select: ["no"] } });
 	await p.commands.get(RUN)?.handler("metaworld privileged code", p.ctx);
-	assert.equal(p.grids.length, 2, "no grid; the picker of O3 × A3 (CaP-X S1), answered none");
-	assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O3 × A3; planner/m);
-	assert.match(p.confirms.at(-1) ?? "", /^GPU: any$/m);
-	assert.match(p.notes.at(-1) ?? "", /&& pi --task x --seed 0 --code=true --privileged --max-turns 40/);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/^nothing installed here is robot Metaworld; O3 × A3; installed: .*\nto install it: \/embodied-setup metaworld privileged code$/,
+	);
+	assert.deepEqual(p.offered["Not installed"], [`${SETUP_NOW}: /embodied-setup metaworld privileged code`, "no"]);
+	assert.equal(p.grids.length, 0);
+	assert.deepEqual(p.sent, []);
 	runDeps.gpus = () => [];
+});
+
+test("the run options: what a request says about one episode is split off, the rest is what /embodied-setup reads", () => {
+	assert.deepEqual(runOptions("reproduce RPent on LIBERO libero_90 task 3 seed 1 gpu 2 20 turns headless"), {
+		rest: "reproduce RPent on LIBERO libero",
+		opts: { suite: "libero_90", task: "3", seed: "1", gpu: 2, turns: 20, how: "headless" },
+	});
+	assert.deepEqual(runOptions("在 LIBERO-pro 里复现 RPent 任务 5 显卡 3 后台"), {
+		rest: "在 LIBERO-pro 里复现 RPent",
+		opts: { task: "5", gpu: 3, how: "headless" },
+	});
+	assert.deepEqual(runOptions("metaworld --task push-v3 --max-turns 10 print"), {
+		rest: "metaworld",
+		opts: { task: "push-v3", turns: 10, how: "print" },
+	});
+	assert.deepEqual(runOptions("Show-Harness on metaworld here with openai/gpt-6"), {
+		rest: "Show-Harness on metaworld here with openai/gpt-6",
+		opts: {},
+	});
+	assert.equal(
+		withRunOptions("--libero-type standard --suite libero_10 --task 0 --seed 0", { suite: "libero_90", task: "3" }),
+		"--libero-type standard --suite libero_90 --task 3 --seed 0",
+	);
+	assert.equal(withRunOptions("--task reach-v3", { seed: "2" }), "--task reach-v3 --seed 2");
+});
+
+test("/embodied-run <request>: setup's request finds the installed experiment, the episode's words answer its questions, nothing installed offers setup", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	installed(cwd, "embodied-libero", "libero", {
+		cell: { o: "O1", a: "A2" },
+		paper: "rpent",
+		flags: "--preset rpent",
+		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
+	});
+	installed(cwd, "embodied-metaworld", "metaworld", {});
+	runDeps.gpus = () => [
+		{ index: 5, freeMiB: 16275, totalMiB: 46068 },
+		{ index: 0, freeMiB: 4713, totalMiB: 46068 },
+	];
+	runDeps.freePort = async () => 8765;
+	runDeps.env = {};
+	// The text /embodied-setup took, with the episode's words: only the panels and the confirmation are asked.
+	let p = fakePi({ cwd, answers: { select: ["the dashboard only"], confirm: [true] } });
+	await p.commands.get(RUN)?.handler("reproduce RPent on LIBERO libero_90 task 3 seed 1 gpu 2 20 turns print", p.ctx);
+	assert.deepEqual(p.asked, [PANELS, "Start the episode?"]);
+	assert.match(p.confirms.at(-1) ?? "", /^LIBERO: O1 × A2, rpent; planner openai\/gpt-6$/m);
+	assert.equal(
+		p.notes.at(-1),
+		`cd ${cwd}/embodied-libero && source ${cwd}/services/.venv-libero/pi-embodied.env && CUDA_VISIBLE_DEVICES=2 MUJOCO_EGL_DEVICE_ID=2 pi --libero-type standard --suite libero_90 --task 3 --seed 1 --preset rpent --max-turns 20 --time-limit 900 --dashboard=true --dashboard-port 8765 "Solve the task."`,
+	);
+	// A planner named is this episode's --model; headless goes to the agent.
+	p = fakePi({
+		cwd,
+		available: [
+			{ provider: "openai", id: "gpt-6" },
+			{ provider: "anthropic", id: "claude-opus-5" },
+		],
+		answers: { select: ["GPU 5", "the dashboard only"], input: [""], confirm: [true] },
+	});
+	await p.commands.get(RUN)?.handler("rpent libero anthropic/claude-opus-5 task 2 headless", p.ctx);
+	assert.match(p.confirms.at(-1) ?? "", /^LIBERO: O1 × A2, rpent; planner anthropic\/claude-opus-5$/m);
+	assert.match(
+		p.sent[0]?.text ?? "",
+		/pi -a -p --libero-type standard --suite libero_10 --task 2 --seed 0 --preset rpent --model anthropic\/claude-opus-5 --max-turns 40/,
+	);
+	// Not installed: why, and /embodied-setup with the same request; declined, nothing happens.
+	p = fakePi({ cwd, answers: { select: ["no"] } });
+	await p.commands.get(RUN)?.handler("capx-S1 on libero task 3", p.ctx);
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/^nothing installed here is robot LIBERO; CaP-X S1's setting .*; installed: .*embodied-libero: LIBERO, O1 × A2, rpent.*\nto install it: \/embodied-setup capx-S1 on libero task 3$/,
+	);
+	assert.deepEqual(p.sent, []);
+	// Taken: /embodied-setup runs on that request (the episode's words are left for /embodied-run).
+	p = fakePi({ cwd, answers: { select: [SETUP_NOW, "here", "openai/gpt-6"], input: [""], confirm: [false] } });
+	await p.commands.get(RUN)?.handler("capx-S1 on libero task 3", p.ctx);
+	assert.ok(p.asked.includes("Set up pi-embodied?"));
+	assert.match(p.confirms.at(-1) ?? "", /^LIBERO \(sim\): O3 × A3/m);
+	assert.doesNotMatch(p.confirms.at(-1) ?? "", /not recognized/);
+	assert.match(p.confirms.at(-1) ?? "", /^or, from .*: \/embodied-run capx-S1 on libero task 3$/m);
+	runDeps.gpus = () => [];
+	runDeps.freePort = freePort;
 });
 
 test("/embodied-run panels: a work's own panel comes first when the robot serves it, the dashboard port is fixed, over ssh the tunnel is shown", async () => {

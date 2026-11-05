@@ -225,9 +225,12 @@ loopback on the box, so from another machine the ports are tunnelled: the confir
 `ssh -N -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080 <box>` when pi runs over ssh; a `LocalForward`
 of the same ports in the user's ssh config entry for the box makes every ssh session carry them, and
 then http://127.0.0.1:8765/ on the user's machine is the dashboard. `--dashboard-language zh-cn`
-switches the dashboard's UI language. A request names the robot
-(`/embodied-run libero`) or overrides the setting (`metaworld privileged code`). An experiment
-whose venv is missing is refused: run /embodied-setup. The command it builds is the one below.
+switches the dashboard's UI language. A request is the one /embodied-setup
+took (`/embodied-run reproduce RPent on LIBERO`): its robot, setting, work or levels pick the installed
+experiment, a planner it names is that episode's `--model`, and `task 3`, `seed 1`, `libero_90`,
+`gpu 2`, `20 turns`, `headless` or `print` answer those questions (setup ignores them). It never
+installs and never starts another setting than the recorded one: when nothing installed matches, or the
+venv is missing, it says why and offers `/embodied-setup <the same request>`. The command it builds is the one below.
 
 
 The launch command `/embodied-setup` hands over (`[setting flags]`: the cell's flags from the table

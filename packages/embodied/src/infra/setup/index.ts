@@ -61,13 +61,18 @@ import {
 	gpuLabel,
 	gpus,
 	headlessCommand,
+	matchExperiments,
+	namesInstall,
 	panelFlags,
 	panelUrls,
 	RECORD,
 	runCommand,
+	runOptions,
 	type SetupRecord,
 	scanExperiments,
+	setupRequest,
 	tunnelHint,
+	withRunOptions,
 } from "./run.ts";
 import { SELFHOST, type SelfhostSpec, selfhostHandoff, selfhostLabel, selfhostOf, selfhostUp } from "./selfhost.ts";
 
@@ -584,7 +589,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		return;
 	}
 	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
-	const req = parseRequest(args, ROBOTS, [...available, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
+	// What only an episode uses (task 3, gpu 5, headless) is /embodied-run's: the same text works there.
+	const req = parseRequest(runOptions(args).rest, ROBOTS, [...available, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
@@ -739,6 +745,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${finetuned ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step), then the preflight; no episode is started`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,
 		`launch (you run it afterwards): ${launchCommand(choice)}`,
+		`or, from ${ctx.cwd}: /${RUN}${args.trim() ? ` ${args.trim()}` : ""}`,
 	].join("\n");
 	if (!(await ui.confirm("Set up pi-embodied?", summary))) {
 		ui.notify("Nothing written or installed.", "info");
@@ -769,10 +776,26 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 
 /**
  * /embodied-run [request]: an episode of an installed experiment. The experiment directories here (this
- * one and its subdirectories) are listed; a request naming a robot picks among them. The setting is the
- * recorded one, else the grid and the picker as in /embodied-setup. Then the task flags, a GPU, the budget,
- * and how: in this terminal (pi takes it over until the episode ends), headless by the agent, or printed.
+ * one and its subdirectories) are listed; a request is read as /embodied-setup reads it, and the
+ * experiments whose robot and recorded setting it names are the choice (none: the setup command is
+ * offered with the same request). The setting is the recorded one, else (a hand-made experiment) the
+ * grid and the picker as in /embodied-setup. Then the task flags, a GPU, the budget, and how: in this
+ * terminal (pi takes it over until the episode ends), headless by the agent, or printed; a request's
+ * task 3, seed 1, libero_90, gpu 5, 20 turns, headless or print answer those instead.
  */
+/** The answer to /embodied-run's offer that hands its request to /embodied-setup. */
+export const SETUP_NOW = "set it up now with /embodied-setup";
+/**
+ * Nothing installed matches: say why, and offer /embodied-setup with the same request (the rest is asked
+ * there). Setup installs and records; the episode is then this command again.
+ */
+async function offerSetup(pi: ExtensionAPI, ctx: ExtensionCommandContext, why: string, request: string): Promise<void> {
+	const command = `/${COMMAND}${request ? ` ${request}` : ""}`;
+	ctx.ui.notify(`${why}\nto install it: ${command}`, "warning");
+	const picked = await ctx.ui.select("Not installed", [`${SETUP_NOW}: ${command}`, "no"]);
+	if (picked?.startsWith(SETUP_NOW)) await setup(pi, ctx, request);
+}
+
 /** What /embodied-run reads off the machine; a test replaces it. */
 export const runDeps = { gpus, freePort, env: process.env as NodeJS.ProcessEnv, selfhostUp };
 export const PANELS = "Panels";
@@ -787,41 +810,61 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		return;
 	}
 	const ui = ctx.ui;
+	// The request: what it says about the episode (task, GPU, turns, how) is split off; the rest names what is installed.
+	const text = args.trim();
+	const { rest, opts } = runOptions(text);
+	const req = parseRequest(rest, ROBOTS, [
+		...ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`),
+		...SELFHOST.map((x) => `selfhost/${x.id}`),
+	]);
+	if (req.unknown.length)
+		ui.notify(
+			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name`,
+			"warning",
+		);
+	if (req.where === "remote")
+		ui.notify(
+			`/${RUN} starts episodes on this machine${req.host ? `; for ${req.host}, run it there` : ""}`,
+			"warning",
+		);
 	const all = scanExperiments(ctx.cwd, ROBOTS);
 	if (!all.length) {
-		ui.notify(
-			`no experiment here: no .pi/settings.json loading a robot in ${ctx.cwd} or its subdirectories; run /embodied-setup first`,
-			"error",
+		const why = `no experiment here: no .pi/settings.json loading a robot in ${ctx.cwd} or its subdirectories`;
+		if (rest) await offerSetup(pi, ctx, why, text);
+		else ui.notify(`${why}; run /embodied-setup first`, "error");
+		return;
+	}
+	// The experiments the request describes; when it names robot or setting and none is installed, setup is next.
+	const pool = namesInstall(req) ? matchExperiments(all, req) : all;
+	if (!pool.length) {
+		await offerSetup(
+			pi,
+			ctx,
+			`nothing installed here is ${req.settled.filter((x) => !x.startsWith("planner")).join("; ")}; installed: ${all.map(experimentLabel).join("; ")}`,
+			text,
 		);
 		return;
 	}
-	const req = parseRequest(
-		args,
-		ROBOTS,
-		ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`),
-	);
-	const named = req.robots ? all.filter((e) => req.robots?.some((r) => e.robots.includes(r))) : all;
-	const pool = named.length ? named : all;
-	if (req.robots && !named.length)
-		ui.notify(`no experiment here for ${req.robots.map((r) => r.label).join(" / ")}; these are installed`, "warning");
 	let exp: Experiment<Robot> | undefined = pool.length === 1 ? pool[0] : undefined;
 	if (!exp) {
-		const opts = pool.map(experimentLabel);
-		exp = pool[opts.indexOf((await ui.select("Experiment", opts)) ?? "")];
+		const labels = pool.map(experimentLabel);
+		exp = pool[labels.indexOf((await ui.select("Experiment", labels)) ?? "")];
 	}
 	if (!exp) return;
 	if (!exp.env) {
-		ui.notify(
-			`${exp.robot.label} is not installed: ${exp.services}/.venv-${exp.robot.id}/pi-embodied.env is missing; run /embodied-setup`,
-			"error",
+		await offerSetup(
+			pi,
+			ctx,
+			`${exp.robot.label} is not installed: ${exp.services}/.venv-${exp.robot.id}/pi-embodied.env is missing`,
+			namesInstall(req) ? text : setupRequest(exp),
 		);
 		return;
 	}
-	// The setting: recorded, else chosen as in /embodied-setup (a request's setting or levels count).
+	// The setting is the recorded one; only a hand-made experiment (no record) has it chosen here, as in /embodied-setup.
 	let setting = exp.record?.flags;
 	let settingName = exp.record ? `${cellName(exp.record.cell)}${exp.record.paper ? `, ${exp.record.paper}` : ""}` : "";
 	let settingPaper: Paper | undefined;
-	if (setting === undefined || req.paper || requestCell(req)) {
+	if (setting === undefined) {
 		const robot = exp.robot;
 		let cell: Cell | undefined;
 		let paper: Paper | undefined;
@@ -843,21 +886,32 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		settingName = `${cellName(cell)}${paper ? `, ${paper.id}` : ""}`;
 		settingPaper = paper;
 	}
-	const task = (
-		await ui.input(`Task flags (empty: ${exp.record?.task ?? exp.robot.task})`, exp.record?.task ?? exp.robot.task)
-	)?.trim();
-	if (task === undefined) return;
-	const taskFlags = task || exp.record?.task || exp.robot.task;
-	// A GPU, the freest first; none when nvidia-smi says nothing.
-	let gpu: number | undefined;
-	const devices = runDeps.gpus();
+	// A planner the request names replaces the experiment's for this episode.
+	if (req.model && req.model !== (exp.planner ?? exp.record?.planner))
+		setting = `${setting} --model ${req.model}`.trim();
+	// The task: the request's task, seed and suite on the recorded flags; else asked.
+	const recordedTask = exp.record?.task ?? exp.robot.task;
+	let taskFlags: string;
+	if (opts.task !== undefined || opts.seed !== undefined || opts.suite !== undefined)
+		taskFlags = withRunOptions(recordedTask, opts);
+	else {
+		const task = (await ui.input(`Task flags (empty: ${recordedTask})`, recordedTask))?.trim();
+		if (task === undefined) return;
+		taskFlags = task || recordedTask;
+	}
+	// A GPU: the request's, else the freest first; none when nvidia-smi says nothing.
+	let gpu: number | undefined = opts.gpu;
+	const devices = gpu === undefined ? runDeps.gpus() : [];
 	if (devices.length > 1) {
-		const opts = [...devices.map(gpuLabel), "any: no CUDA_VISIBLE_DEVICES"];
-		const g = await ui.select("GPU", opts);
+		const choices = [...devices.map(gpuLabel), "any: no CUDA_VISIBLE_DEVICES"];
+		const g = await ui.select("GPU", choices);
 		if (g === undefined) return;
-		gpu = devices[opts.indexOf(g)]?.index;
+		gpu = devices[choices.indexOf(g)]?.index;
 	} else if (devices.length === 1) gpu = devices[0].index;
-	const budget = (await ui.input(`Episode budget (empty: ${BUDGET})`, BUDGET))?.trim();
+	const budget =
+		opts.turns !== undefined
+			? BUDGET.replace(/--max-turns \d+/, `--max-turns ${opts.turns}`)
+			: (await ui.input(`Episode budget (empty: ${BUDGET})`, BUDGET))?.trim();
 	if (budget === undefined) return;
 	// Panels: the work's own (the ported setting's, when the robot serves them), else the robot's, with the dashboard; or the dashboard alone.
 	const paperOf = exp.record?.paper ? PAPERS.find((p) => p.id === exp.record?.paper) : undefined;
@@ -880,17 +934,17 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	const tunnel = tunnelHint([port, ...panels.map((p) => p.port)], runDeps.env);
 	const hows =
 		ctx.mode === "tui" ? [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print] : [RUN_HOW.headless, RUN_HOW.print];
-	const how = await ui.select("How to run?", hows);
+	const how = opts.how ? RUN_HOW[opts.how] : await ui.select("How to run?", hows);
 	if (!how) return;
 	// A self-hosted planner must answer before an episode is worth starting.
-	const plannerId = exp.planner ?? exp.record?.planner;
+	const plannerId = req.model ?? exp.planner ?? exp.record?.planner;
 	const hostedPlanner = selfhostOf(plannerId);
 	const hostedDeploy = hostedPlanner ? deployment(pi).selfhost?.[hostedPlanner.id] : undefined;
 	const hostedLine = !hostedPlanner
 		? []
 		: !hostedDeploy
 			? [
-					`planner server: ${hostedPlanner.engine} · ${hostedPlanner.model} is not in the deployment; run /embodied-setup to set it up`,
+					`planner server: ${hostedPlanner.engine} · ${hostedPlanner.model} is not in the deployment; run /embodied-setup ${setupRequest(exp)} ${plannerId} to set it up`,
 				]
 			: (await runDeps.selfhostUp(hostedDeploy.base_url))
 				? [`planner server: ${hostedPlanner.engine} answers at ${hostedDeploy.base_url}`]
@@ -946,7 +1000,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 export default function embodiedSetup(pi: ExtensionAPI) {
 	pi.registerCommand(RUN, {
 		description:
-			"Start an episode of an installed experiment: the directory, its recorded setting, task flags, a GPU, then in this terminal, headless by the agent, or printed",
+			"Start an episode of an installed experiment. A request after it is read as /embodied-setup reads it (robot, work, cell, planner) to find the experiment, plus task / seed / suite / gpu / turns / headless / print; not installed: /embodied-setup is offered with the same request",
 		handler: (args, ctx) => run(pi, ctx, args),
 	});
 	pi.registerCommand(COMMAND, {

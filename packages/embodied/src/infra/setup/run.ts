@@ -5,6 +5,11 @@
  * record /embodied-setup leaves there (robot, cell, ported setting, flags), and it is ready when the
  * services venv setup.sh built (`<services>/.venv-<robot>/pi-embodied.env`) exists. The GPUs come from
  * nvidia-smi. Nothing here asks or runs: ./index.ts asks for what is not recorded and starts pi.
+ *
+ * /embodied-setup and /embodied-run take the same request. Setup settles what is installed (robot,
+ * setting, planner, where); run finds the installed experiment that request describes and starts it,
+ * and names the setup command when nothing installed matches. What only an episode uses (task, seed,
+ * suite, GPU, turns, headless or printed) is split off first: setup ignores it, run takes it.
  */
 
 import { spawnSync } from "node:child_process";
@@ -12,7 +17,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { type Cell, cellName, type Panel } from "./axes.ts";
+import { type Cell, cellKey, cellName, PAPERS, type Panel } from "./axes.ts";
+import type { Request } from "./request.ts";
 
 type RobotLike = { id: string; label: string; kind: "sim" | "real"; extension: string; task: string };
 
@@ -201,3 +207,135 @@ export function headlessCommand(e: Experiment, flags: string, gpu?: number, prom
 	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
 	return `cd ${e.dir} && source ${e.env} && ${dev}pi -a -p ${flags} ${JSON.stringify(prompt)} < /dev/null`;
 }
+
+/** What a request says about one episode only; none of it changes what is installed. */
+export type RunOptions = {
+	task?: string;
+	seed?: string;
+	suite?: string;
+	gpu?: number;
+	turns?: number;
+	how?: "headless" | "print";
+};
+
+const RUN_WORDS: [RegExp, (o: RunOptions, v: string) => void][] = [
+	[
+		/\b(libero_(?:10|90|spatial|object|goal))\b/i,
+		(o, v) => {
+			o.suite = v.toLowerCase();
+		},
+	],
+	[
+		/(?:--)?\bsuite[ =:]+([\w.-]+)/i,
+		(o, v) => {
+			o.suite = v;
+		},
+	],
+	[
+		/(?:--)?(?:\btask|任务)[ =:：]*([\w.-]+)/i,
+		(o, v) => {
+			o.task = v;
+		},
+	],
+	[
+		/(?:--)?(?:\bseed|种子)[ =:：]*(\d+)/i,
+		(o, v) => {
+			o.seed = v;
+		},
+	],
+	[
+		/(?:\bgpu|显卡)[ =:：]*(\d+)/i,
+		(o, v) => {
+			o.gpu = Number(v);
+		},
+	],
+	[
+		/(?:--)?\b(?:max[ -]?)?turns?[ =:]+(\d+)\b|\b(\d+)[ -]?turns?\b|(\d+)\s*轮/i,
+		(o, v) => {
+			o.turns = Number(v);
+		},
+	],
+	[
+		/\b(headless)\b|(后台)/i,
+		(o) => {
+			o.how = "headless";
+		},
+	],
+	[
+		/\b(print)\b|(只打印)/i,
+		(o) => {
+			o.how = "print";
+		},
+	],
+];
+
+/**
+ * The episode options in a request, and the rest of it (what /embodied-setup reads). A LIBERO suite
+ * stays in the rest as "libero", so that "libero_10 task 3" still names the robot.
+ */
+export function runOptions(text: string): { rest: string; opts: RunOptions } {
+	const opts: RunOptions = {};
+	let rest = text;
+	for (const [re, set] of RUN_WORDS) {
+		const m = re.exec(rest);
+		if (!m) continue;
+		set(opts, m.slice(1).find((x) => x !== undefined) ?? "");
+		rest = rest.replace(m[0], /^libero_/i.test(m[1] ?? "") ? " libero " : " ");
+	}
+	return { rest: rest.replace(/\s+/g, " ").trim(), opts };
+}
+
+/** The task flags with a request's task, seed and suite in place of the recorded ones (appended when absent). */
+export function withRunOptions(task: string, o: RunOptions): string {
+	let out = task;
+	for (const [flag, v] of [
+		["--suite", o.suite],
+		["--task", o.task],
+		["--seed", o.seed],
+	] as const) {
+		if (v === undefined) continue;
+		const re = new RegExp(`${flag} \\S+`);
+		out = re.test(out) ? out.replace(re, `${flag} ${v}`) : `${out} ${flag} ${v}`.trim();
+	}
+	return out;
+}
+
+/** Whether a request names anything installed: a robot, a setting, a work or a level. */
+export const namesInstall = (r: Request): boolean => Boolean(r.robots || r.paper || r.work || r.o || r.a);
+
+/**
+ * The experiments a request describes: the robot it names, and the setting (a ported setting, a work's
+ * cells, a level) its record holds. An experiment without a record matches on the robot alone: its
+ * setting is chosen when it starts. The planner is not matched: an episode may use another.
+ */
+export function matchExperiments<R extends RobotLike>(all: Experiment<R>[], r: Request<R>): Experiment<R>[] {
+	return all
+		.map((e): Experiment<R> | undefined => {
+			let robot = e.robot;
+			if (r.robots) {
+				const named = e.record
+					? r.robots.includes(e.robot)
+						? [e.robot]
+						: []
+					: e.robots.filter((x) => r.robots?.includes(x));
+				if (!named.length) return undefined;
+				robot = named.includes(e.robot) ? e.robot : named[0];
+			}
+			const rec = e.record;
+			if (rec) {
+				if (r.paper && rec.paper !== r.paper.id) return undefined;
+				if (!r.paper && r.work) {
+					const ported = PAPERS.find((p) => p.id === rec.paper)?.work === r.work.id;
+					if (!ported && !r.work.cells.includes(cellKey(rec.cell))) return undefined;
+				}
+				if (r.o && rec.cell.o !== r.o) return undefined;
+				if (r.a && rec.cell.a !== r.a) return undefined;
+			}
+			return robot === e.robot ? e : { ...e, robot };
+		})
+		.filter((e): e is Experiment<R> => e !== undefined);
+}
+
+/** The /embodied-setup request that installs an experiment like this one: its robot and setting. */
+export const setupRequest = (e: Experiment): string =>
+	[e.robot.id, e.record ? (e.record.paper ?? cellName(e.record.cell)) : ""].filter(Boolean).join(" ");
