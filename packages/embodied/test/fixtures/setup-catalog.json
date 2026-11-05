@@ -1,0 +1,1998 @@
+{
+	"grid": {
+		"observation": {
+			"O1": "Sensory Inputs",
+			"O2": "Perception Tools",
+			"O3": "Privileged State"
+		},
+		"execution": {
+			"A1C": "Behavior Selection · Code",
+			"A1M": "Behavior Selection · Model",
+			"A2": "Tool Orchestration",
+			"A3": "Code Synthesis"
+		}
+	},
+	"robots": [
+		{
+			"id": "libero",
+			"label": "LIBERO",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--require-skills pi0",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--require-skills pi0 --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--require-skills pi0 --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": [
+						"capx-S1"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [
+					"pi0_pick"
+				],
+				"vla_adapters": [
+					"openvla",
+					"openvla-oft",
+					"gr00t"
+				]
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+			"example_task_flags": "--libero-type standard --suite libero_10 --task 0 --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/libero/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "libero-pro",
+			"label": "LIBERO-PRO",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--require-skills pi0",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--require-skills pi0 --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--require-skills pi0 --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": [
+						"capx-S1"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [
+					"pi0_pick"
+				],
+				"vla_adapters": [
+					"openvla",
+					"openvla-oft",
+					"gr00t"
+				]
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+			"example_task_flags": "--libero-type pro --suite libero_10 --task 0 --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/libero/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "libero-plus",
+			"label": "LIBERO-plus",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--require-skills pi0",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--require-skills pi0 --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--require-skills pi0 --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": [
+						"capx-S1"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [
+					"pi0_pick"
+				],
+				"vla_adapters": [
+					"openvla",
+					"openvla-oft",
+					"gr00t"
+				]
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
+			"example_task_flags": "--libero-type plus --suite libero_10 --task 0 --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/libero/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "maniskill",
+			"label": "ManiSkill 3",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [],
+				"vla_adapters": [
+					"openvla"
+				]
+			},
+			"vla_alone": {
+				"mounted": true,
+				"setup_flags": "--arm widowx250s --vla-adapter openvla --vla-alone openvla",
+				"example_task": "--task PutCarrotOnPlateInScene-v1 --seed 0"
+			},
+			"fine_tuned_units_adapter": "--model finetuned/qwen3_5_2b_showharness_sim",
+			"example_task_flags": "--task PickCube-v1 --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/maniskill/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <env-ids> <seeds> [pi args...]      (env-ids \"-\" = BlockPAP-v1, the default scene)",
+					"eval.sh runs/ms - 0-9 --model <provider/model> --thinking low --scene table_tex=white",
+					"eval.sh runs/ms PickCube-v1,StackCube-v1 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/ms-units PickCube-v1 0-4,10-14 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/ms-xarm PickCube-v1,StackCube-v1 0-9 --arm xarm6_robotiq --model <provider/model>",
+					"eval.sh runs/ms-vla PutCarrotOnPlateInScene-v1 0-2 --arm widowx250s --vla-adapter openvla --vla-alone openvla"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "metaworld",
+			"label": "Metaworld",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task reach-v3 --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/metaworld/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (tasks \"-\" = reach-v3)",
+					"eval.sh runs/mw - 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/mw pick-place-v3,button-press-v3 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/mw-units reach-v3 0-4,10-14 --units=true --model <provider/model> --thinking low"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "robosuite",
+			"label": "Robosuite",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": [
+						"capx-S1"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task Lift --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/robosuite/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (tasks \"-\" = all seven CaP-X tasks)",
+					"eval.sh runs/rs - 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/rs Lift,Stack,Restack 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/rs-units Lift 0-4,10-14 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/rs-oracle Lift 0-9 --code=true --privileged --code-oracle lift_privileged"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "genesis",
+			"label": "Genesis",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task cube_pick --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/genesis/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (tasks \"-\" = cube_pick, the default task)",
+					"eval.sh runs/gs - 0-9 --model <provider/model> --thinking low",
+					"eval.sh runs/gs-units cube_pick 0-4,10-14 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/gs-code - 0-9 --code=true --code-api=low --model <provider/model>"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "robocasa",
+			"label": "RoboCasa365",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--require-skills rldx",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--require-skills rldx --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--require-skills rldx --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": [
+						"capx-S1"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [
+					"rldx_skill"
+				],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task OpenDrawer --split target --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/robocasa/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <splits|all> [pi args...]",
+					"eval.sh runs/t50 all --model openai/gpt-5.5 --thinking xhigh --memory-profile local   (memory root: PI_EMBODIED_DIRS_MEMORY=target50-memory/robocasa or dirs.memory)",
+					"TASKS=OpenDrawer,CloseFridge and SEEDS=1,2 narrow the matrix.",
+					"TASKS=OpenDrawer,PrepareCoffee and SCENES=0-4 (ranges or lists of manifest indices).",
+					"eval.sh runs/rc365 target --model openai/gpt-5.5 --thinking low",
+					"eval.sh runs/t50-code all --model openai/gpt-5.5 --code=true --code-api=low"
+				],
+				"env": [
+					"PI_EMBODIED_DIRS_MEMORY",
+					"TASKS",
+					"SEEDS",
+					"SCENES"
+				]
+			}
+		},
+		{
+			"id": "robotwin",
+			"label": "RoboTwin 2",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--require-skills lingbot",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": [
+						"motormind"
+					]
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--require-skills lingbot --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--require-skills lingbot --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": true,
+				"xpolicy": true,
+				"flash": true,
+				"vla_skills": [
+					"lingbot_act"
+				],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task beat_block_hammer --task-config demo_randomized --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/robotwin/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks|all> [pi args...]",
+					"eval.sh runs/rt all --model openai/gpt-5.5 --thinking xhigh",
+					"eval.sh runs/rt beat_block_hammer,adjust_bottle --model ...",
+					"eval.sh runs/rt-code beat_block_hammer --code=true --code-api=low --model <provider/model>"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "robolab",
+			"label": "RoboLab",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": true,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": "--model finetuned/qwen3_5_2b_showharness_sim",
+			"example_task_flags": "--task BananaInBowlTask --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/robolab/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]",
+					"eval.sh runs/rl BananaInBowlTask,BananaOnPlateTask 0-4 --model <provider/model> --thinking low",
+					"eval.sh runs/rl-units BananaInBowlTask 0-2 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/rl-code BananaInBowlTask 0-4 --code=true --code-api=low --model <provider/model>"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "robodojo",
+			"label": "RoboDojo",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": true,
+				"flash": true,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task stack_bowls --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/robodojo/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]",
+					"eval.sh runs/rd stack_bowls,push_T 0-4 --model <provider/model> --thinking low",
+					"eval.sh runs/rd-units stack_bowls 0-2 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/rd-code stack_bowls 0-4 --code=true --code-api=low --model <provider/model>"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "behavior",
+			"label": "BEHAVIOR-1K",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S3",
+						"capx-S4",
+						"capx-M4"
+					]
+				},
+				{
+					"cell": "O3/A1C",
+					"flags": "--units=true --privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A2",
+					"flags": "--privileged",
+					"settings": []
+				},
+				{
+					"cell": "O3/A3",
+					"flags": "--code=true --privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--task turning_on_radio --seed 0",
+			"eval": {
+				"script": "packages/embodied/src/robots/behavior/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (seeds are the tasks' pre-sampled instance ids)",
+					"eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --thinking low   (GPU: cuda_device of the deployment config, or PI_EMBODIED_CUDA_DEVICE=1)",
+					"eval.sh runs/b1k-gt turning_on_radio 0-2 --privileged --model <provider/model> --thinking low",
+					"eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --model <provider/model>"
+				],
+				"env": [
+					"PI_EMBODIED_CUDA_DEVICE"
+				]
+			}
+		},
+		{
+			"id": "humanclaw",
+			"label": "HumanCLAW",
+			"kind": "sim",
+			"cells": [
+				{
+					"cell": "O1/A1M",
+					"flags": "",
+					"settings": [
+						"humanclaw"
+					]
+				},
+				{
+					"cell": "O3/A1M",
+					"flags": "--privileged",
+					"settings": []
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": false,
+				"code_tiers": [
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": true,
+				"memory": false,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--units=both --humanclaw-mode pi --episode one",
+			"eval": {
+				"script": "packages/embodied/src/robots/humanclaw/eval.sh",
+				"usage": [
+					"eval.sh <out-dir> [--episodes one|val100|fullval|<list.json>] [--mode paper|pi] [--metrics] [--video] [--smoke] [pi args...]",
+					"eval.sh runs/hc-paper --episodes one --mode paper --metrics --model humanclaw-psv/selfhost/muse-glimmer-30b",
+					"eval.sh runs/hc-pi --episodes val100 --mode pi --metrics --model selfhost/muse-glimmer-30b   (GPU: cuda_device or PI_EMBODIED_CUDA_DEVICE)"
+				],
+				"env": []
+			}
+		},
+		{
+			"id": "franka",
+			"label": "Franka (RLinf)",
+			"kind": "real",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--vla",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--vla --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--segment",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --segment",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low"
+				],
+				"vdm": true,
+				"ground_truth": false,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [
+					"vla_grasp"
+				],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--robot-config <yaml> --task 0 --operator=true",
+			"eval": null
+		},
+		{
+			"id": "franka-polymetis",
+			"label": "Franka (Polymetis)",
+			"kind": "real",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--segment",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --segment",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low"
+				],
+				"vdm": true,
+				"ground_truth": false,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [
+					"vla_grasp"
+				],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--backend polymetis --robot-config <yaml> --operator=true",
+			"eval": null
+		},
+		{
+			"id": "dual-franka",
+			"label": "Dual Franka",
+			"kind": "real",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A1M",
+					"flags": "--vla",
+					"settings": []
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": [
+						"rpent"
+					]
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1M",
+					"flags": "--vla --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--segment",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --segment",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low"
+				],
+				"vdm": true,
+				"ground_truth": false,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": true,
+				"flash": false,
+				"vla_skills": [
+					"vla_right_grasp",
+					"vla_handoff",
+					"vla_left_place"
+				],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--robot-config <yaml> --operator=true",
+			"eval": null
+		},
+		{
+			"id": "piper",
+			"label": "AgileX Piper",
+			"kind": "real",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --detections",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--detections",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --detections",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low",
+					"raw"
+				],
+				"vdm": true,
+				"ground_truth": false,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": "--model finetuned/qwen3_5_2b_showharness_ft --ft-prompt v4-piper",
+			"example_task_flags": "--robot-config <yaml> --task banana_plate --operator=true",
+			"eval": null
+		},
+		{
+			"id": "ur5e",
+			"label": "UR5e",
+			"kind": "real",
+			"cells": [
+				{
+					"cell": "O1/A1C",
+					"flags": "--units=true",
+					"settings": [
+						"showharness"
+					]
+				},
+				{
+					"cell": "O1/A2",
+					"flags": "",
+					"settings": []
+				},
+				{
+					"cell": "O1/A3",
+					"flags": "--code=true",
+					"settings": []
+				},
+				{
+					"cell": "O2/A1C",
+					"flags": "--units=true --segment",
+					"settings": []
+				},
+				{
+					"cell": "O2/A2",
+					"flags": "--segment",
+					"settings": [
+						"openeta"
+					]
+				},
+				{
+					"cell": "O2/A3",
+					"flags": "--code=true --segment",
+					"settings": [
+						"capx-S2",
+						"capx-S3",
+						"capx-S4",
+						"capx-M1",
+						"capx-M2",
+						"capx-M3",
+						"capx-M4"
+					]
+				}
+			],
+			"mounts": {
+				"units": true,
+				"code": true,
+				"code_tiers": [
+					"high",
+					"low"
+				],
+				"vdm": true,
+				"ground_truth": false,
+				"memory": true,
+				"motormind": false,
+				"xpolicy": false,
+				"flash": false,
+				"vla_skills": [],
+				"vla_adapters": []
+			},
+			"vla_alone": {
+				"mounted": false
+			},
+			"fine_tuned_units_adapter": null,
+			"example_task_flags": "--arm <controller serial> --robot-config <yaml> --task <task> --operator=true",
+			"eval": null
+		}
+	],
+	"settings": [
+		{
+			"id": "showharness",
+			"name": "Show-Harness",
+			"cell": "O1/A1C",
+			"flags": "--preset showharness",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "action units with image feedback, no VLA"
+		},
+		{
+			"id": "motormind",
+			"name": "MotorMind",
+			"cell": "O2/A1C",
+			"flags": "--preset motormind",
+			"robots": [
+				"libero",
+				"libero-pro",
+				"libero-plus",
+				"maniskill",
+				"metaworld",
+				"robosuite",
+				"robocasa",
+				"robotwin"
+			],
+			"turns": "multi",
+			"note": "MotorMind mode, no cross-task memory; LIBERO adds its side camera and settle ticks"
+		},
+		{
+			"id": "humanclaw",
+			"name": "HumanCLAW",
+			"cell": "O1/A1M",
+			"flags": "--preset humanclaw",
+			"robots": [
+				"humanclaw"
+			],
+			"turns": "multi",
+			"note": "the paper's mode: its units, run by the motion model"
+		},
+		{
+			"id": "rpent",
+			"name": "RPent",
+			"cell": "O1/A2",
+			"flags": "--preset rpent",
+			"robot_flags": {
+				"franka": "--vla",
+				"dual-franka": "--vla"
+			},
+			"robots": [
+				"libero",
+				"libero-pro",
+				"libero-plus",
+				"robocasa",
+				"robotwin",
+				"franka",
+				"dual-franka"
+			],
+			"turns": "multi",
+			"note": "tools with memory and a VLA skill"
+		},
+		{
+			"id": "openeta",
+			"name": "OpenETA",
+			"cell": "O2/A2",
+			"flags": "--preset openeta",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "tools with visual differencing (VDM) and the anchor image"
+		},
+		{
+			"id": "capx-S1",
+			"name": "CaP-X S1",
+			"cell": "O3/A3",
+			"flags": "--tier S1",
+			"robots": "any robot with the cell",
+			"turns": "single",
+			"note": "one program, high-level API, simulator ground truth"
+		},
+		{
+			"id": "capx-S2",
+			"name": "CaP-X S2",
+			"cell": "O2/A3",
+			"flags": "--tier S2",
+			"robots": "any robot with the cell",
+			"turns": "single",
+			"note": "one program, high-level API"
+		},
+		{
+			"id": "capx-S3",
+			"name": "CaP-X S3",
+			"cell": "O2/A3",
+			"flags": "--tier S3",
+			"robots": "any robot with the cell",
+			"turns": "single",
+			"note": "one program, low-level API with examples"
+		},
+		{
+			"id": "capx-S4",
+			"name": "CaP-X S4",
+			"cell": "O2/A3",
+			"flags": "--tier S4",
+			"robots": "any robot with the cell",
+			"turns": "single",
+			"note": "one program, low-level API, no examples"
+		},
+		{
+			"id": "capx-M1",
+			"name": "CaP-X M1",
+			"cell": "O2/A3",
+			"flags": "--tier M1",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "multi-turn, text feedback, high-level API"
+		},
+		{
+			"id": "capx-M2",
+			"name": "CaP-X M2",
+			"cell": "O2/A3",
+			"flags": "--tier M2",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "multi-turn, image feedback, high-level API"
+		},
+		{
+			"id": "capx-M3",
+			"name": "CaP-X M3",
+			"cell": "O2/A3",
+			"flags": "--tier M3",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "multi-turn, VDM feedback, high-level API"
+		},
+		{
+			"id": "capx-M4",
+			"name": "CaP-X M4",
+			"cell": "O2/A3",
+			"flags": "--tier M4",
+			"robots": "any robot with the cell",
+			"turns": "multi",
+			"note": "multi-turn, VDM feedback, low-level API"
+		}
+	],
+	"presets": {
+		"showharness": {
+			"needs": [
+				"units"
+			],
+			"expands_to": {
+				"units": "true",
+				"code": null,
+				"vdm": false,
+				"vdm-video": false
+			}
+		},
+		"humanclaw": {
+			"needs": [
+				"humanclaw"
+			],
+			"expands_to": {
+				"units": "both",
+				"humanclaw-mode": "paper",
+				"vdm": false,
+				"vdm-video": false
+			}
+		},
+		"rpent": {
+			"needs": [
+				"memory",
+				"vla"
+			],
+			"expands_to": {
+				"code": null,
+				"units": null,
+				"vdm": false,
+				"vdm-video": false,
+				"stateless": false
+			}
+		},
+		"openeta": {
+			"needs": [
+				"vdm"
+			],
+			"expands_to": {
+				"vdm": true,
+				"anchor-image": true,
+				"code": null,
+				"units": null
+			}
+		},
+		"xpolicylab": {
+			"needs": [
+				"xpolicy"
+			],
+			"expands_to": {
+				"code": null,
+				"units": null,
+				"vdm": false,
+				"vdm-video": false
+			}
+		},
+		"motormind": {
+			"needs": [
+				"motormind"
+			],
+			"expands_to": {
+				"mm": "true",
+				"libero-side-camera": "true",
+				"libero-settle-ticks": "32",
+				"libero-max-steps": "300000",
+				"memory-profile": "off",
+				"units": null,
+				"code": null,
+				"vdm": false,
+				"vdm-video": false
+			}
+		}
+	},
+	"capx_tiers": {
+		"capx-S1": {
+			"turns": "single",
+			"feedback": "none",
+			"api": "high",
+			"privileged": true
+		},
+		"capx-S2": {
+			"turns": "single",
+			"feedback": "none",
+			"api": "high",
+			"privileged": false
+		},
+		"capx-S3": {
+			"turns": "single",
+			"feedback": "none",
+			"api": "low",
+			"privileged": false
+		},
+		"capx-S4": {
+			"turns": "single",
+			"feedback": "none",
+			"api": "low-noexamples",
+			"privileged": false
+		},
+		"capx-M1": {
+			"turns": "multi",
+			"feedback": "text",
+			"api": "high"
+		},
+		"capx-M2": {
+			"turns": "multi",
+			"feedback": "image",
+			"api": "high"
+		},
+		"capx-M3": {
+			"turns": "multi",
+			"feedback": "vdm",
+			"api": "high"
+		},
+		"capx-M4": {
+			"turns": "multi",
+			"feedback": "vdm",
+			"api": "low"
+		}
+	},
+	"planners": {
+		"registry": [
+			{
+				"ref": "openai/gpt-6",
+				"name": "GPT-6"
+			}
+		],
+		"special": {
+			"finetuned": "the fine-tuned student: units in A1 Code (robots with a fine_tuned_units_adapter, alone or with showharness), tools in A1 Model and A2, code in A3; not with motormind or humanclaw",
+			"flash/replay": "replays a recorded plan, no model: robots that mount flash; not with motormind or humanclaw"
+		}
+	},
+	"thinking_levels": [
+		"off",
+		"minimal",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+		"max"
+	]
+}

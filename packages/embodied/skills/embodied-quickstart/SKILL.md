@@ -26,8 +26,15 @@ episode the tool is not available: the policy runs without a human.
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
 observation × execution grid (Figure A1a), optionally the work to reproduce in that cell, where
 services run, the planner and the experiment directory. A request after the command
-(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language,
-the names in ASCII) settles what it names, and only the rest is asked: a robot by id or label (a
+(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language) settles what it names, and only the
+rest is asked. The session's model reads it (`src/infra/setup/interpret.ts`) against a catalog that
+`src/infra/setup/catalog.ts` generates from the code at that moment: every robot's cells and the ported
+settings it runs (a CaP-X tier only where the manifest has its API level), what it mounts (units, code
+tiers, memory, VDM, MotorMind, Flash, its VLA skills and adapters, the VLA alone), its flags and its
+`eval.sh` usage, the presets and tiers, the planners. Its JSON answer is checked against the same
+catalog and `src/infra/tiers.ts` (`choose`, `conflicts`, `unsupported`); a failed check goes back with
+the reasons, at most twice more, and what it says is not offered is shown as "not supported". Without a
+model, offline, or when no answer passes, the keywords read the request instead: a robot by id or label (a
 name several share, `franka`, narrows the menu to them), a ported setting or a work of the survey
 by short name or id (a work with several cells on the robot asks which; its ported settings narrow
 the picker; a robot's own name, `CaP-X on RoboTwin`, is the robot, not the paper that introduced it),
@@ -243,8 +250,17 @@ loopback on the box, so from another machine the ports are tunnelled: the confir
 `ssh -N -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080 <box>` when pi runs over ssh; a `LocalForward`
 of the same ports in the user's ssh config entry for the box makes every ssh session carry them, and
 then http://127.0.0.1:8765/ on the user's machine is the dashboard. `--dashboard-language zh-cn`
-switches the dashboard's UI language. A request is the one /embodied-setup
-took (`/embodied-run reproduce RPent on LIBERO`): its robot, setting, work or levels pick the installed
+switches the dashboard's UI language. A request is read as /embodied-setup reads it, by the session's
+model against a catalog of the experiments here (directory, robot, recorded setting and planner, ready
+or not), each robot's task flags and `eval.sh` usage (positional arguments and the variables its header
+names, such as `TASKS` / `SEEDS` / `SCENES`), the free GPUs and the default budget. It answers with the
+experiment, the task flags or a batch (`packages/embodied/src/robots/<robot>/eval.sh runs/<name> ...`
+over the tasks and seeds asked for, run from the checkout with the robot's environment and the
+experiment's setting and planner; the agent runs it in the background and reports the summary, or it is
+printed), the GPU, a planner, thinking level or budget for this run, and what is not supported; flags the
+robot does not take, a tier the setting cannot run, an experiment that is not here and arguments a
+command line cannot carry are sent back. With the keywords instead (`/embodied-run reproduce RPent on
+LIBERO`): its robot, setting, work or levels pick the installed
 experiment, a planner it names is that episode's `--model`, and `task 3`, `seed 1`, `libero_90`,
 `gpu 2`, `20 turns`, `headless` or `print` answer those questions (setup ignores them). It never
 installs and never starts another setting than the recorded one: when nothing installed matches, or the

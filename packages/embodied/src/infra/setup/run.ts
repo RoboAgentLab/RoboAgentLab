@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { hostname } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { type Cell, cellKey, cellName, PAPERS, type Panel } from "./axes.ts";
 import type { Request } from "./request.ts";
 
@@ -210,6 +210,22 @@ export function headlessCommand(e: Experiment, flags: string, gpu?: number, prom
 	return `cd ${e.dir} && source ${e.env} && ${dev}pi -a -p ${flags} ${JSON.stringify(prompt)} < /dev/null`;
 }
 
+/**
+ * The batch command of a run the model read (./interpret.ts `RunPlan.batch`): in the checkout, with the
+ * robot's environment, its eval.sh (repo-relative) over the tasks and seeds, then the setting's flags.
+ */
+export function batchCommand(
+	e: Experiment,
+	script: string,
+	b: { args: string[]; env: Record<string, string>; flags: string },
+	flags: string,
+	gpu?: number,
+): string {
+	const dev = gpu === undefined ? "" : `CUDA_VISIBLE_DEVICES=${gpu} MUJOCO_EGL_DEVICE_ID=${gpu} `;
+	const env = Object.entries(b.env).map(([k, v]) => `${k}=${v} `);
+	return `cd ${dirname(e.services)} && source ${e.env} && ${dev}${env.join("")}${[script, ...b.args, flags, b.flags].filter(Boolean).join(" ")}`;
+}
+
 /** What a request says about one episode only; none of it changes what is installed. */
 export type RunOptions = {
 	task?: string;
@@ -217,7 +233,7 @@ export type RunOptions = {
 	suite?: string;
 	gpu?: number;
 	turns?: number;
-	how?: "headless" | "print";
+	how?: "here" | "headless" | "print";
 };
 
 const RUN_WORDS: [RegExp, (o: RunOptions, v: string) => void][] = [
