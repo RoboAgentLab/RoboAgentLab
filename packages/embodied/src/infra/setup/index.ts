@@ -42,7 +42,9 @@ import {
 	type Panel,
 	type Paper,
 	type Pick,
+	paperFlag,
 	papersFor,
+	paperTurns,
 	pickEntries,
 	pickerLines,
 	pickMatches,
@@ -51,7 +53,7 @@ import {
 	typed,
 	VISER,
 } from "./axes.ts";
-import { parseRequest, requestCell } from "./request.ts";
+import { FINETUNED_REF, FLASH_REF, parseRequest, requestCell } from "./request.ts";
 import {
 	DASHBOARD_PORT,
 	type Experiment,
@@ -114,6 +116,17 @@ export const PAPER = "Work to reproduce (optional)";
 export const NO_PAPER = "none: the cell's plain flags";
 /** The planner option that runs the robot's fine-tuned adapter instead of a model of the registry (A1 Code only). */
 export const FINETUNED = "fine-tuned: a small VLM + LoRA picks each unit (served by vLLM)";
+/** The action surface the fine-tuned student speaks (../../modes/finetuned `--ft-surface`): A1 Code's units, A1 Model's and A2's tools, A3's code. */
+export type Surface = "units" | "tools" | "code";
+export const FINETUNED_AS: Record<Surface, string> = {
+	units: FINETUNED,
+	tools: "fine-tuned (tools surface): a small VLM + LoRA picks each tool call; no released adapter, you serve one",
+	code: "fine-tuned (code surface): a small VLM + LoRA writes each program; no released adapter, you serve one",
+};
+/** The no-model planner: Flash replays a recorded plan (../../capabilities/flash), on a robot with a Flash hook. */
+export const FLASH = `${FLASH_REF}: no model; replays a recorded plan (a solved episode's, or --flash-plan <file>)`;
+/** The settings whose own planner loop the student and Flash do not stand in for: MotorMind's roles, HumanCLAW's paper mode. */
+const OWN_LOOP = new Set(["motormind2026", "humanclaw"]);
 
 export type Kind = "sim" | "real";
 export const KINDS: Record<Kind, string> = {
@@ -142,28 +155,28 @@ export type Robot = {
 	adapter?: string;
 	/** Live panels the robot can serve besides the dashboard (the Viser 3D view: LIBERO, the Frankas). */
 	panels?: Panel[];
+	/** Flash mounts (`--model flash/replay`): the robot has a hook that replays its recorded plans. */
+	flash?: boolean;
+	/** The VLA-alone baseline (`--vla-alone`, ../../planner/vla-alone.ts): its flags, an example task, what it needs. */
+	vlaAlone?: { flags: string; task: string; needs: string };
 };
 
 /** A simulator with ground truth, units and code mode; A1 Model needs a VLA skill (LIBERO's Pi0.5: `LIBERO`). */
 const SIM: Axes = { O1: "", O2: "--detections", O3: "--privileged", A1C: "--units=true", A2: "", A3: "--code=true" };
 const LIBERO: Axes = { ...SIM, A1M: "--require-skills pi0" };
-/** A simulator whose tools are a VLA (RLDX-1, LingBot): no units. */
-const VLA_SIM = (skill: string): Axes => ({
-	O1: "",
-	O2: "--detections",
-	O3: "--privileged",
-	A1M: `--require-skills ${skill}`,
-	A2: "",
-	A3: "--code=true",
-});
-/** A real Franka: SAM3 through its own --segment, Pi0.5 through --vla, no ground truth. */
+/** A simulator with a VLA skill of its own (RLDX-1, LingBot) besides units and code mode. */
+const VLA_SIM = (skill: string): Axes => ({ ...SIM, A1M: `--require-skills ${skill}` });
+/** A real Franka: SAM3 through its own --segment, Pi0.5 through --vla (RLinf only), no ground truth. */
 const ARM: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A1M: "--vla", A2: "", A3: "--code=true" };
+/** The Polymetis backend has no VLA action space (its env server's has_vla is false): no A1 Model. */
+const POLYMETIS: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A2: "", A3: "--code=true" };
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
 const LIBERO_FT = "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero";
 export const ROBOTS: Robot[] = [
 	{
 		id: "libero",
 		kind: "sim",
+		flash: true,
 		label: "LIBERO",
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
@@ -176,6 +189,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "libero-pro",
 		kind: "sim",
+		flash: true,
 		label: "LIBERO-PRO",
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
@@ -188,6 +202,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "libero-plus",
 		kind: "sim",
+		flash: true,
 		label: "LIBERO-plus",
 		panels: [VISER],
 		extension: "src/robots/libero/index.ts",
@@ -200,6 +215,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "maniskill",
 		kind: "sim",
+		flash: true,
 		label: "ManiSkill 3",
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
@@ -207,6 +223,11 @@ export const ROBOTS: Robot[] = [
 		task: "--task PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
 		adapter: "qwen3_5_2b_sim",
+		vlaAlone: {
+			flags: "--arm widowx250s --vla-adapter openvla --vla-alone openvla",
+			task: "--task PutCarrotOnPlateInScene-v1 --seed 0",
+			needs: "the OpenVLA server at services.openvla (openvla-7b with --suite bridge_orig, ~16 GB of GPU; the services' openvla extra) and the bridge_v2_real2sim assets",
+		},
 	},
 	{
 		id: "metaworld",
@@ -238,6 +259,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "robocasa",
 		kind: "sim",
+		flash: true,
 		label: "RoboCasa365",
 		extension: "src/robots/robocasa/index.ts",
 		needs: "NVIDIA GPU, ~10 GB kitchen assets",
@@ -248,6 +270,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "robotwin",
 		kind: "sim",
+		flash: true,
 		label: "RoboTwin 2",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build; two arms",
@@ -258,6 +281,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "robolab",
 		kind: "sim",
+		flash: true,
 		label: "RoboLab",
 		extension: "src/robots/robolab/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0",
@@ -269,6 +293,7 @@ export const ROBOTS: Robot[] = [
 	{
 		id: "robodojo",
 		kind: "sim",
+		flash: true,
 		label: "RoboDojo",
 		extension: "src/robots/robodojo/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets; two arms",
@@ -311,7 +336,7 @@ export const ROBOTS: Robot[] = [
 		panels: [VISER],
 		extension: "src/robots/franka/index.ts",
 		needs: "real Franka on a Polymetis NUC, an operator at the e-stop",
-		axes: ARM,
+		axes: POLYMETIS,
 		task: "--backend polymetis --robot-config <yaml> --operator=true",
 	},
 	{
@@ -348,7 +373,10 @@ export const ROBOTS: Robot[] = [
 type Settings = Record<string, unknown> & { packages?: unknown[]; extensions?: unknown[] };
 export type Choice = {
 	robot: Robot;
-	cell: Cell;
+	/** The grid's cell; none for the VLA-alone baseline, which has no agent to place. */
+	cell?: Cell;
+	/** The VLA runs alone (the robot's `vlaAlone`): no planner, no cell. */
+	vlaAlone?: boolean;
 	/** A ported work's setting, run as its preset or tier. */
 	paper?: Paper;
 	remote?: { host: string; checkout: string };
@@ -356,8 +384,9 @@ export type Choice = {
 	weights: boolean;
 	/** The planner of the registry, or none when `finetuned`. */
 	model?: string;
-	/** The robot's fine-tuned adapter is the planner (A1 Code). */
+	/** The robot's fine-tuned adapter is the planner, speaking `surface` (units: the released adapters). */
 	finetuned: boolean;
+	surface?: Surface;
 	dir: string;
 	/** A self-hosted planner (selfhost/<id>), the deployment's entry for it when there is one, and that deployment's name. */
 	selfhost?: {
@@ -388,16 +417,29 @@ function packageSource(pi: ExtensionAPI): string {
 	return PKG;
 }
 
-/** The setting's flags: the ported work's preset or tier, else the cell's, then the fine-tuned planner's. */
+/** The fine-tuned student's flags: the robot's released units adapter, else an adapter the user serves on that surface. */
+const finetunedFlags = (c: Choice) =>
+	(c.surface ?? "units") === "units"
+		? c.robot.finetuned
+		: `--model finetuned/local --ft-model <served adapter> --ft-surface ${c.surface}`;
+
+/** The setting's flags: the VLA alone's, else the ported work's preset or tier, else the cell's; then a planner's that is no registry model. */
 export function settingFlags(c: Choice): string {
-	const cell = c.paper ? c.paper.flag : cellFlags(c.robot.axes, c.cell);
-	return [cell, c.finetuned ? c.robot.finetuned : undefined].filter(Boolean).join(" ");
+	if (c.vlaAlone) return c.robot.vlaAlone?.flags ?? "";
+	const cell = c.paper ? paperFlag(c.paper, c.robot.id) : c.cell ? cellFlags(c.robot.axes, c.cell) : "";
+	const planner = c.finetuned ? finetunedFlags(c) : c.model === FLASH_REF ? `--model ${FLASH_REF}` : undefined;
+	return [cell, planner].filter(Boolean).join(" ");
 }
 
 /** The launch flags for a choice (after `pi`), with the quickstart's episode budget. */
 export function launchFlags(c: Choice): string {
-	return [c.robot.task, settingFlags(c), BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
+	const task = c.vlaAlone ? c.robot.vlaAlone?.task : c.robot.task;
+	return [task, settingFlags(c), BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
 }
+
+/** The planner in a few words: a registry model, the student, Flash, or none (the VLA alone). */
+export const plannerName = (c: Choice) =>
+	c.vlaAlone ? "none (the VLA alone)" : c.finetuned ? FINETUNED_AS[c.surface ?? "units"] : (c.model ?? FINETUNED);
 
 /** The experiment directory's settings: this package without onboarding, the robot, the dashboard, the planner. */
 export function experimentSettings(c: Choice, source: string, root: string, existing: Settings = {}): Settings {
@@ -419,7 +461,8 @@ export function experimentSettings(c: Choice, source: string, root: string, exis
 			...extensions,
 		],
 	};
-	if (c.model) {
+	// Flash's provider is the robot's own (registered when it loads): the launch flags name it.
+	if (c.model && c.model !== FLASH_REF) {
 		const i = c.model.indexOf("/");
 		out.defaultProvider = c.model.slice(0, i);
 		out.defaultModel = c.model.slice(i + 1);
@@ -438,6 +481,7 @@ const realModel = (m: { provider: string; id: string } | undefined) =>
 
 /** The setting in one line: the cell with the survey's sections and names, the ported work, or the work to reproduce. */
 export const settingLine = (c: Choice) => {
+	if (!c.cell) return "the VLA alone, no agent (the VLA-alone baseline, outside the observation × execution grid)";
 	const O = OBSERVATION[c.cell.o];
 	const A = EXECUTION[c.cell.a];
 	return `${cellName(c.cell)} (${O.section} ${O.name} × ${A.section} ${A.name})${c.paper ? `, ${c.paper.name}'s setting` : ""}`;
@@ -455,18 +499,21 @@ function handoff(c: Choice, settingsText: string): string {
 		: `${join(c.dir, ".pi/settings.json")} is written`;
 	// O2: the perception server the flags attach to.
 	const perception =
-		c.cell.o === "O2"
+		c.cell?.o === "O2"
 			? [
 					`- perception (O2): a SAM3 server at the deployment's services.sam3 must be running for the episodes (\`--serve-models sam3\` per episode, or the robot's serve.sh; SAM3 is gated: HF_TOKEN)`,
 				]
 			: [];
 	// Fine-tuned planner: the adapter and its base model, and the vLLM server services.finetuned (default :8010) names.
-	const ft = c.robot.adapter ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
+	const units = (c.surface ?? "units") === "units";
+	const ft = c.robot.adapter && units ? `FT_ADAPTER=${c.robot.adapter} ${c.services}/setup.sh finetuned` : undefined;
 	const finetuned = c.finetuned
 		? [
 				ft
 					? `- adapter: \`${ft}\` (finetuned/download.py fetches the adapter and its base model, pinned and verified)`
-					: "- adapter: none is released for this robot; ask me which adapter to serve and where its files are",
+					: units
+						? "- adapter: none is released for this robot; ask me which adapter to serve and where its files are"
+						: `- adapter: none is released for the ${c.surface} surface (sessions_to_sft.ts --surface ${c.surface} makes training pairs from teacher sessions); ask me which adapter to serve and where its files are`,
 				`- serve: \`MODEL=<base dir> LORA=<name>=<adapter dir> VLLM_VENV=<venv with vllm> bash ${c.services}/pi_embodied_services/finetuned/serve.sh\` (${ft ? "setup.sh finetuned prints the exact command; " : ""}services.finetuned defaults to http://127.0.0.1:8010/v1); it must be running for the episodes`,
 			]
 		: [];
@@ -477,7 +524,7 @@ function handoff(c: Choice, settingsText: string): string {
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
 		...perception,
-		c.model ? `- planner: ${c.model}` : `- planner: ${FINETUNED}`,
+		...plannerLines(c),
 		...(c.selfhost ? selfhostHandoff(c.selfhost.spec, c.selfhost.deploy, c.selfhost.deployment) : []),
 		...finetuned,
 		`- experiment dir: ${c.dir}; ${settings}`,
@@ -486,6 +533,29 @@ function handoff(c: Choice, settingsText: string): string {
 		"Run the install, then the preflight, fix what fails, and end with the launch command. Do not start an episode. Ask me before sudo, anything touching real hardware, or downloads not listed here.",
 	].join("\n");
 }
+
+/** The handoff's planner lines: what plans, and what it needs before an episode. */
+function plannerLines(c: Choice): string[] {
+	if (c.vlaAlone)
+		return [
+			`- planner: none; the VLA runs alone (\`--vla-alone\`) and no model is asked; it needs ${c.robot.vlaAlone?.needs}`,
+		];
+	if (c.model === FLASH_REF)
+		return [
+			`- planner: ${FLASH}`,
+			"- plan: flash/replay needs a recorded plan before an episode: the robot's plan directories (dirs.flash_plans, else the memory's flash/ and task_only/) or --flash-plan <file>; capabilities/flash/generate.ts writes one from a solved session; tell me when there is none yet",
+		];
+	return [`- planner: ${plannerName(c)}`];
+}
+
+/** The fine-tuned student's surface for a setting, when it can plan it: none for a setting with its own loop. */
+export function surfaceFor(robot: Robot, cell: Cell, paper?: Paper): Surface | undefined {
+	if (robot.id === "humanclaw" || (paper && OWN_LOOP.has(paper.work))) return undefined;
+	if (cell.a === "A1C") return robot.finetuned && (!paper || paper.id === "showharness") ? "units" : undefined;
+	return cell.a === "A3" ? "code" : "tools";
+}
+/** Whether Flash can replay a plan for a setting: the robot has a Flash hook and the setting no loop of its own. */
+export const flashFor = (robot: Robot, paper?: Paper) => Boolean(robot.flash) && !(paper && OWN_LOOP.has(paper.work));
 
 /** The grid: a custom component in the TUI, a list of the supported cells elsewhere. */
 async function pickCell(ctx: ExtensionCommandContext, robot: Robot): Promise<Cell | undefined> {
@@ -614,8 +684,8 @@ export const setupDeps = { sshHosts: () => sshHosts() };
 
 type Picked = { paper?: Paper };
 /** The work to reproduce: one of the cell's ported settings, or none. Cancelled: undefined. */
-async function pickWork(ctx: ExtensionCommandContext, papers: Paper[]): Promise<Picked | undefined> {
-	const e = await searchPick(ctx, PAPER, pickEntries(papers, NO_PAPER));
+async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], robot = ""): Promise<Picked | undefined> {
+	const e = await searchPick(ctx, PAPER, pickEntries(papers, NO_PAPER, robot));
 	return e ? { paper: e.paper } : undefined;
 }
 
@@ -630,20 +700,37 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	}
 	const ui = ctx.ui;
 	const current = realModel(ctx.model);
-	const available = ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+	// The registry's models with their display names: a request may name one either way (Claude Fable 5.1).
+	const refs = ctx.modelRegistry.getAvailable().map((m) => ({ ref: `${m.provider}/${m.id}`, name: m.name }));
+	const available = refs.map((m) => m.ref);
 	if (!available.length) {
 		ui.notify(NO_MODEL, "error");
 		return;
 	}
 	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
 	// What only an episode uses (task 3, gpu 5, headless) is /embodied-run's: the same text works there.
-	const req = parseRequest(runOptions(args).rest, ROBOTS, [...available, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
+	const req = parseRequest(runOptions(args).rest, ROBOTS, [...refs, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
 			"warning",
 		);
-	let kind = req.kind;
+	// The VLA alone: only robots that run --vla-alone; a named robot that does not is refused, not misread as A1 Model.
+	const alone = req.vlaAlone ? (req.robots ?? ROBOTS).filter((r) => r.vlaAlone) : undefined;
+	if (alone && !alone.length) {
+		ui.notify(
+			`the VLA alone (no agent) is not supported on ${req.robots?.map((r) => r.label).join(" / ")}: only ${ROBOTS.filter(
+				(r) => r.vlaAlone,
+			)
+				.map((r) => r.label)
+				.join(
+					", ",
+				)} runs a VLA alone (--vla-alone: OpenVLA on the Bridge WidowX). Nothing set up; for the agent driving the robot's VLA, ask for A1 Model.`,
+			"error",
+		);
+		return;
+	}
+	let kind = req.kind ?? (alone?.every((r) => r.kind === alone[0].kind) ? alone[0].kind : undefined);
 	if (!kind) {
 		const kindOpts = Object.values(KINDS);
 		kind = (Object.keys(KINDS) as Kind[])[
@@ -652,7 +739,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		if (!kind) return;
 	}
 	// One named robot is taken; several named (franka) narrow the menu to them.
-	const robots = req.robots ?? ROBOTS.filter((r) => r.kind === kind);
+	const robots = alone ?? req.robots ?? ROBOTS.filter((r) => r.kind === kind);
 	let robot: Robot | undefined = robots.length === 1 ? robots[0] : undefined;
 	if (!robot) {
 		const robotOpts = robots.map((r) => r.label);
@@ -669,8 +756,13 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	} else if (req.paper) {
 		ui.notify(`${req.paper.name}'s setting is not on ${robot.label}; pick a cell`, "warning");
 	}
-	const ports = req.work ? PAPERS.filter((p) => p.work === req.work?.id) : [];
-	if (!cell && req.work) {
+	// Single or multi-turn narrows a work's ported settings (CaP-X multi-turn: M1–M4), when any are left.
+	const byTurns = (ps: Paper[]) => {
+		const kept = ps.filter((p) => !req.turns || paperTurns(p) === req.turns);
+		return kept.length ? kept : ps;
+	};
+	const ports = req.work ? byTurns(PAPERS.filter((p) => p.work === req.work?.id)) : [];
+	if (!cell && req.work && !req.vlaAlone) {
 		const cells = supportedCells(robot.axes).filter(
 			(c) =>
 				req.work?.cells.includes(cellKey(c)) &&
@@ -689,16 +781,19 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		} else ui.notify(`${robot.label} has none of ${req.work.name}'s cells; pick a cell`, "warning");
 	}
 	const named = requestCell(req);
-	if (!cell && named && supported(robot.axes, named)) cell = named;
-	if (!cell) cell = await pickCell(ctx, robot);
-	if (!cell) return;
-	// The work to reproduce: one of the cell's ported settings; a named work narrows them to its own.
-	if (!paper) {
-		const papers = papersFor(robot, cell).filter((p) => !ports.length || p.work === req.work?.id);
-		if (papers.length) {
-			const picked = await pickWork(ctx, papers);
-			if (!picked) return;
-			paper = picked.paper;
+	const vlaAlone = Boolean(alone);
+	if (!vlaAlone) {
+		if (!cell && named && supported(robot.axes, named)) cell = named;
+		if (!cell) cell = await pickCell(ctx, robot);
+		if (!cell) return;
+		// The work to reproduce: one of the cell's ported settings; a named work narrows them to its own.
+		if (!paper) {
+			const papers = byTurns(papersFor(robot, cell).filter((p) => !ports.length || ports.includes(p)));
+			if (papers.length) {
+				const picked = await pickWork(ctx, papers, robot.id);
+				if (!picked) return;
+				paper = picked.paper;
+			}
 		}
 	}
 
@@ -738,30 +833,48 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	}
 
 	// The planner: a model of the registry, a self-hosted planner the agent starts (selfhost/<id>, offered
-	// whether or not models.json has it yet), or (A1 Code, no preset) the robot's fine-tuned adapter.
+	// whether or not models.json has it yet), the fine-tuned student on the cell's surface (A1 Code: the
+	// robot's released units adapter, alone or with Show-Harness's preset; A1 Model and A2: tools; A3:
+	// code), or Flash's replay of a recorded plan. The VLA alone has none.
 	const registry = [...new Set([...(current ? [current] : []), ...available])].filter((m) => !selfhostOf(m));
 	const hosted = SELFHOST.map(selfhostLabel);
 	const planners = [...registry, ...hosted];
-	if (cell.a === "A1C" && robot.finetuned && !paper) planners.push(FINETUNED);
+	const surface = cell ? surfaceFor(robot, cell, paper) : undefined;
+	if (surface) planners.push(FINETUNED_AS[surface]);
+	if (cell && flashFor(robot, paper)) planners.push(FLASH);
+	// A planner that is no registry model, named in the request: taken where this setting offers it.
+	const asked =
+		req.model === FINETUNED_REF
+			? surface && FINETUNED_AS[surface]
+			: req.model === FLASH_REF
+				? planners.includes(FLASH) && FLASH
+				: req.model;
+	if (req.model && !asked && !vlaAlone)
+		ui.notify(
+			`${req.model === FINETUNED_REF ? "the fine-tuned student" : FLASH_REF} is not offered for this setting on ${robot.label}; pick a planner`,
+			"warning",
+		);
 	// Searchable: the registry can list many models; typing filters them. This session's model is the suggestion.
-	const picked =
-		req.model ??
-		(
-			await searchPick(
-				ctx,
-				PLANNER,
-				planners.map((m) => ({ id: m, text: m === current ? rec(m) : m })),
-			)
-		)?.id;
-	if (!picked) return;
-	const hostedSpec = SELFHOST[hosted.indexOf(picked)] ?? selfhostOf(picked);
+	const picked = vlaAlone
+		? ""
+		: asked ||
+			(
+				await searchPick(
+					ctx,
+					PLANNER,
+					planners.map((m) => ({ id: m, text: m === current ? rec(m) : m })),
+				)
+			)?.id;
+	if (picked === undefined || (!vlaAlone && !picked)) return;
+	const hostedSpec = vlaAlone ? undefined : (SELFHOST[hosted.indexOf(picked)] ?? selfhostOf(picked));
 	const planner = hostedSpec ? `selfhost/${hostedSpec.id}` : picked;
-	const finetuned = planner === FINETUNED;
-	const model = finetuned ? undefined : planner;
-	if (!finetuned && !model?.includes("/")) return;
+	const ftSurface = (Object.keys(FINETUNED_AS) as Surface[]).find((k) => FINETUNED_AS[k] === planner);
+	const finetuned = ftSurface !== undefined;
+	const model = finetuned || vlaAlone ? undefined : planner === FLASH ? FLASH_REF : planner;
+	if (!finetuned && !vlaAlone && !model?.includes("/")) return;
 	// The weights setup.sh --weights fetches serve the VLA of A1 Model and A2, and O2's SAM3.
 	const weights =
-		robot.weights && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")
+		robot.weights && cell && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")
 			? await ui.confirm(
 					"Model weights",
 					`Also download ${robot.weights}? (recommended: this cell's tools need them)`,
@@ -774,7 +887,20 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	const selfhost = hostedSpec
 		? { spec: hostedSpec, deploy: deployment(pi).selfhost?.[hostedSpec.id], deployment: deploymentName(pi) }
 		: undefined;
-	const choice: Choice = { robot, cell, paper, remote, services, weights, model, finetuned, dir, selfhost };
+	const choice: Choice = {
+		robot,
+		cell,
+		vlaAlone,
+		paper,
+		remote,
+		services,
+		weights,
+		model,
+		finetuned,
+		surface: ftSurface,
+		dir,
+		selfhost,
+	};
 
 	const file = join(dir, ".pi", "settings.json");
 	let existing: Settings = {};
@@ -794,7 +920,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		...(req.settled.length ? [`from your request: ${req.settled.join("; ")}`] : []),
 		...(req.unknown.length ? [`not recognized (maybe not supported yet): ${req.unknown.join(", ")}`] : []),
 		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
-		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${model ?? FINETUNED}`,
+		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${plannerName(choice)}`,
 		...(selfhost
 			? [
 					selfhost.deploy
@@ -802,7 +928,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 						: `planner server: ${selfhost.spec.engine} · ${selfhost.spec.model} is not in the deployment yet; the agent sets it up on ${selfhost.spec.hardware}, asking you which box`,
 				]
 			: []),
-		`needs: ${robot.needs}`,
+		`needs: ${robot.needs}${vlaAlone ? `; ${robot.vlaAlone?.needs}` : ""}`,
 		remote ? `services on ${remote.host}:${services}` : `services at ${services}`,
 		`install: ${services}/setup.sh ${robot.id}${weights ? " --weights" : ""}${finetuned ? ", the adapter download and the vLLM server" : ""}; the agent runs it after this confirmation (pi does not ask per step), then the preflight; no episode is started`,
 		remote ? "settings: the agent writes them on the box" : `writes ${file}`,
@@ -820,11 +946,12 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		const record: SetupRecord = {
 			robot: robot.id,
 			cell,
+			...(vlaAlone ? { vlaAlone: true } : {}),
 			paper: paper?.id,
 			flags: settingFlags(choice),
-			task: robot.task,
+			task: (vlaAlone ? robot.vlaAlone?.task : undefined) ?? robot.task,
 			services,
-			planner: model ?? "finetuned",
+			planner: vlaAlone ? "vla" : (model ?? "finetuned"),
 			created: new Date().toISOString(),
 		};
 		writeFileSync(join(dir, RECORD), `${JSON.stringify(record, null, "\t")}\n`);
@@ -876,7 +1003,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	const text = args.trim();
 	const { rest, opts } = runOptions(text);
 	const req = parseRequest(rest, ROBOTS, [
-		...ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`),
+		...ctx.modelRegistry.getAvailable().map((m) => ({ ref: `${m.provider}/${m.id}`, name: m.name })),
 		...SELFHOST.map((x) => `selfhost/${x.id}`),
 	]);
 	if (req.unknown.length)
@@ -924,7 +1051,9 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	}
 	// The setting is the recorded one; only a hand-made experiment (no record) has it chosen here, as in /embodied-setup.
 	let setting = exp.record?.flags;
-	let settingName = exp.record ? `${cellName(exp.record.cell)}${exp.record.paper ? `, ${exp.record.paper}` : ""}` : "";
+	let settingName = exp.record
+		? `${exp.record.cell ? cellName(exp.record.cell) : "the VLA alone"}${exp.record.paper ? `, ${exp.record.paper}` : ""}`
+		: "";
 	let settingPaper: Paper | undefined;
 	if (setting === undefined) {
 		const robot = exp.robot;
@@ -939,12 +1068,12 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 			if (!cell) return;
 			const papers = papersFor(robot, cell);
 			if (papers.length) {
-				const picked = await pickWork(ctx, papers);
+				const picked = await pickWork(ctx, papers, robot.id);
 				if (!picked) return;
 				paper = picked.paper;
 			}
 		}
-		setting = paper ? paper.flag : cellFlags(robot.axes, cell);
+		setting = paper ? paperFlag(paper, robot.id) : cellFlags(robot.axes, cell);
 		settingName = `${cellName(cell)}${paper ? `, ${paper.id}` : ""}`;
 		settingPaper = paper;
 	}

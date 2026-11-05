@@ -502,7 +502,7 @@ test("a preset needs what it stands for mounted", () => {
 	assert.equal(unsupported(c("rpent"), none), "--preset rpent plans with RPent's memory, which toy does not mount");
 	assert.equal(
 		unsupported(c("rpent"), { ...none, memory: true }),
-		"--preset rpent calls a VLA skill (pi0_pick), which toy's manifest does not declare",
+		"--preset rpent calls a VLA skill of the robot's own (pi0_pick, rldx_skill, lingbot_act, vla_grasp), which toy's manifest does not declare",
 	);
 	assert.equal(unsupported(c("rpent"), { ...none, memory: true, vla: true }), undefined);
 	assert.equal(

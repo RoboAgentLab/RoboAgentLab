@@ -19,9 +19,12 @@ services run, the planner and the experiment directory. A request after the comm
 the names in ASCII) settles what it names, and only the rest is asked: a robot by id or label (a
 name several share, `franka`, narrows the menu to them), a ported setting or a work of the survey
 by short name or id (a work with several cells on the robot asks which; its ported settings narrow
-the picker), levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `here` / `remote` / an ssh
-host, a planner (`openai/gpt-6-astra` or `gpt-6-astra`). The confirmation starts with what the
-request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
+the picker; a robot's own name, `CaP-X on RoboTwin`, is the robot, not the paper that introduced it),
+levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `single-turn` / `multi-turn` (CaP-X's S or M
+tiers), `here` / `remote` / an ssh host, a planner (a registry model by provider/id, id or
+display name: `openai/gpt-6-astra`, `gpt-6-astra`, `Claude Fable 5.1`; `fine-tuned student`; `flash replay`). `VLA only` / `no agent` is the VLA-alone
+baseline (`--vla-alone`, outside the grid; ManiSkill's OpenVLA on the Bridge WidowX only), never A1
+Model; on another robot it is refused. The confirmation starts with what the request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
 flags; the task and the setting go on the command line. With no model configured it writes nothing and
@@ -68,9 +71,9 @@ whether it is ported and the preset:
 | short name | work | cell | flags | robots |
 | --- | --- | --- | --- | --- |
 | showharness | Show-Harness | O1 × A1 Code | `--preset showharness` | any with units |
-| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (MotorMind mode, no memory; LIBERO adds its side camera and settle ticks) | LIBERO, ManiSkill, Metaworld, Robosuite, RoboCasa, RoboTwin |
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
-| rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
+| rpent | RPent | O1 × A2 | `--preset rpent` (memory + the robot's own VLA skill; the Frankas add `--vla`) | LIBERO, RoboCasa, RoboTwin, Franka (RLinf), dual Franka |
 | openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
 | capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth) | simulators with code |
 | capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
@@ -81,11 +84,15 @@ A work not in works.json is answered the same way: read its observation access (
 beyond the frames) and execution interface (behaviors to a programmed or learned executor, tools, or
 code) off the taxonomy, name the cell, then the flags.
 
-The planner is a model of the registry or, in A1 Code without a preset, the robot's fine-tuned adapter
-(`src/modes/finetuned` extension, `--model finetuned/<adapter>`): a small VLM + LoRA picks each unit,
-served by vLLM. Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no planner;
-LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) is not an experiment setting and is started
-by hand.
+The planner is a model of the registry, the fine-tuned student (`src/modes/finetuned` extension) or
+Flash. The student is a small VLM + LoRA served by vLLM, on the cell's surface: in A1 Code (alone or
+with Show-Harness's preset) the robot's released adapter picks each unit (`--model finetuned/<adapter>`);
+in A1 Model and A2 it picks each tool call, in A3 it writes each program
+(`--model finetuned/local --ft-model <served adapter> --ft-surface tools|code`; no adapter is released
+for those surfaces). Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no
+model; LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) needs a plan before the first episode
+(a solved session's, from `capabilities/flash/generate.ts`, or `--flash-plan <file>`). Neither is
+offered with MotorMind's or HumanCLAW's settings, which plan in their own loop.
 
 The fine-tuned planner needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
 finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
