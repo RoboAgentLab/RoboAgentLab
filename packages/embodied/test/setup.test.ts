@@ -6,6 +6,7 @@ import { basename, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SPECS } from "../src/infra/check.ts";
+import { TYPE_OWN } from "../src/infra/setup/ask.ts";
 import {
 	AS,
 	type Axes,
@@ -57,7 +58,15 @@ import setup, {
 	setupDeps,
 	sshHosts,
 } from "../src/infra/setup/index.ts";
-import { type Ask, checkRun, checkSetup, interpret } from "../src/infra/setup/interpret.ts";
+import {
+	type Ask,
+	checkRun,
+	checkSetup,
+	interpret,
+	openQuestions,
+	SETUP_QUESTIONS,
+	withAnswers,
+} from "../src/infra/setup/interpret.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
 
@@ -2440,4 +2449,174 @@ test("/embodied-run <request> with a model: a batch over tasks and seeds with th
 		p.notes.at(-1) ?? "",
 		/pi --libero-type pro --suite libero_10 --task 3 --seed 2 --preset rpent --model anthropic\/claude-fable-5-1 --max-turns 40/,
 	);
+});
+
+test("the model's questions: only open fields, only options that pass the checks, the recommended one first", () => {
+	const x = { robots: ROBOTS, planners: ["openai/gpt-6", "anthropic/claude-opus-5"] };
+	const check = (j: Record<string, unknown>) => checkSetup(j, x);
+	const json = {
+		robots: ["robotwin"],
+		where: "here",
+		questions: [
+			{
+				field: "planner",
+				header: "Planner",
+				question: "Which model plans?",
+				options: [
+					{ value: "invented/model", label: "Invented" },
+					{ value: "anthropic/claude-opus-5", label: "Claude Opus 5" },
+					{ value: "openai/gpt-6", label: "GPT-6 (Recommended)", description: "this session's model" },
+				],
+			},
+			// Settled by the answer: not asked again.
+			{
+				field: "where",
+				header: "Where",
+				question: "Where?",
+				options: [
+					{ value: "here", label: "here" },
+					{ value: "remote", label: "remote" },
+				],
+			},
+			// One option left after the checks: dropped, the menus ask it.
+			{
+				field: "setting",
+				header: "Setting",
+				question: "Which setting?",
+				options: [
+					{ value: "nope", label: "Nope" },
+					{ value: "rpent", label: "RPent" },
+				],
+			},
+			// Not a field the model may ask about.
+			{
+				field: "summary",
+				header: "S",
+				question: "?",
+				options: [
+					{ value: "a", label: "a" },
+					{ value: "b", label: "b" },
+				],
+			},
+		],
+	};
+	const qs = openQuestions(json, check, SETUP_QUESTIONS);
+	assert.deepEqual(
+		qs.map((q) => [q.field, q.options.map((o) => o.label), q.values]),
+		[["planner", ["GPT-6 (Recommended)", "Claude Opus 5"], ["openai/gpt-6", "anthropic/claude-opus-5"]]],
+	);
+	// The user's choice goes in and is checked; a typed answer the checks refuse is left out.
+	let r = withAnswers(json, qs, [{ header: "Planner", selected: ["Claude Opus 5"] }], check);
+	assert.equal(r.value?.model, "anthropic/claude-opus-5");
+	assert.deepEqual(r.refused, []);
+	r = withAnswers(json, qs, [{ header: "Planner", selected: [], typed: "made/up" }], check);
+	assert.equal(r.value?.model, undefined);
+	assert.match(r.refused[0] ?? "", /^planner made\/up: planner: made\/up is not a planner of the catalog$/);
+});
+
+test("/embodied-setup <request> with a model: what the request leaves open the model asks as choices, the rest is the usual menus; cancelling stops", async () => {
+	const reading = {
+		robots: ["robotwin"],
+		setting: "rpent",
+		where: "here",
+		questions: [
+			{
+				field: "planner",
+				header: "Planner",
+				question: "Which model plans each step?",
+				options: [
+					{
+						value: "openai/gpt-6",
+						label: "GPT-6 (Recommended)",
+						description: "this session's model, sees images",
+					},
+					{ value: "anthropic/claude-opus-5", label: "Claude Opus 5" },
+				],
+			},
+			{
+				field: "thinking",
+				header: "Thinking",
+				question: "How much should it think per step?",
+				options: [
+					{ value: "low", label: "Low (Recommended)", description: "fast turns" },
+					{ value: "high", label: "High" },
+				],
+			},
+		],
+	};
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	let p = fakePi({
+		cwd,
+		available: [
+			{ provider: "openai", id: "gpt-6" },
+			{ provider: "anthropic", id: "claude-opus-5" },
+		],
+		answers: { select: ["Claude Opus 5", "Low", ""], confirm: [false] },
+	});
+	await withAsk(scripted([reading]).ask, () => p.run("RPent on RoboTwin here"));
+	assert.deepEqual(p.offered["Planner: Which model plans each step?"], [
+		"GPT-6 (Recommended) — this session's model, sees images",
+		"Claude Opus 5",
+		TYPE_OWN,
+	]);
+	assert.ok(!p.asked.includes(PLANNER), "the planner menu is not asked again");
+	assert.deepEqual(p.asked.slice(-2), ["Experiment directory", "Set up pi-embodied?"]);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset rpent; planner anthropic\/claude-opus-5 \(thinking low\)$/m);
+	// Cancelled: nothing is asked after it, nothing is written.
+	p = fakePi({
+		cwd,
+		available: [
+			{ provider: "openai", id: "gpt-6" },
+			{ provider: "anthropic", id: "claude-opus-5" },
+		],
+		answers: { select: [] },
+	});
+	await withAsk(scripted([reading]).ask, () => p.run("RPent on RoboTwin here"));
+	assert.deepEqual(p.asked, ["Planner: Which model plans each step?"]);
+	assert.equal(p.notes.at(-1), "Nothing written or installed.");
+});
+
+test("/embodied-run <request> with a model: an experiment the request does not single out is the model's question", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	const pro = installed(cwd, "embodied-libero-pro", "libero-pro", {
+		paper: "rpent",
+		cell: cell("O1", "A2"),
+		flags: "--preset rpent",
+		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
+	});
+	const tw = installed(cwd, "embodied-robotwin", "robotwin", {
+		paper: "capx-M4",
+		cell: cell("O2", "A3"),
+		flags: "--tier M4",
+	});
+	runDeps.gpus = () => [];
+	runDeps.freePort = async () => 8765;
+	runDeps.env = {};
+	const m = scripted([
+		{
+			mode: "print",
+			questions: [
+				{
+					field: "experiment",
+					header: "Experiment",
+					question: "Which installed experiment?",
+					options: [
+						{ value: pro, label: "LIBERO-PRO RPent (Recommended)", description: "matches 'the libero one'" },
+						{ value: tw, label: "RoboTwin CaP-X M4" },
+						{ value: "/elsewhere", label: "Not installed" },
+					],
+				},
+			],
+		},
+	]);
+	const p = fakePi({ cwd, answers: { select: ["RoboTwin", "", "", RUN_HOW.print], confirm: [true] } });
+	await withAsk(m.ask, () => p.commands.get(RUN)?.handler("run one episode, print it", p.ctx) ?? Promise.resolve());
+	assert.deepEqual(
+		p.offered["Experiment: Which installed experiment?"]?.length,
+		3,
+		"the uninstalled option is dropped",
+	);
+	assert.ok(!p.asked.includes("Experiment"), "the experiment menu is not asked again");
+	assert.match(p.notes.at(-1) ?? "", new RegExp(`^cd ${tw} && .*--tier M4`));
+	runDeps.freePort = freePort;
 });

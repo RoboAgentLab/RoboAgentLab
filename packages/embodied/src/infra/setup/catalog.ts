@@ -162,7 +162,7 @@ const settings = () =>
 	}));
 
 /** What /embodied-setup's reader gets: the grid, every robot, the settings, presets and tiers, the planners. */
-export function setupCatalog(robots: CatalogRobot[], planners: { ref: string; name?: string }[]) {
+export function setupCatalog(robots: CatalogRobot[], planners: { ref: string; name?: string }[], session?: string) {
 	return {
 		grid: {
 			observation: Object.fromEntries(OS.map((o) => [o, OBSERVATION[o].name])),
@@ -176,6 +176,7 @@ export function setupCatalog(robots: CatalogRobot[], planners: { ref: string; na
 		capx_tiers: Object.fromEntries(Object.entries(TIERS).map(([k, v]) => [`capx-${k}`, v])),
 		planners: {
 			registry: planners,
+			...(session ? { session } : {}),
 			special: {
 				finetuned:
 					"the fine-tuned student: units in A1 Code (robots with a fine_tuned_units_adapter, alone or with showharness), tools in A1 Model and A2, code in A3; not with motormind or humanclaw",

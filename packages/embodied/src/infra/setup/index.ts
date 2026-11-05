@@ -25,7 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { deployment, deploymentName } from "../config.ts";
-import { registerAsk } from "./ask.ts";
+import { askUser, registerAsk } from "./ask.ts";
 import {
 	type Axes,
 	type Cell,
@@ -55,7 +55,7 @@ import {
 } from "./axes.ts";
 import { settingsFor } from "./caps.ts";
 import { evalUsage, flashFor, type Surface, surfaceFor } from "./catalog.ts";
-import { type Ask, type Reading, type RunPlan, readRun, readSetup, registryAsk } from "./interpret.ts";
+import { type Ask, type Reading, type RunPlan, readRun, readSetup, registryAsk, withAnswers } from "./interpret.ts";
 import { FINETUNED_REF, FLASH_REF, parseRequest, type Request, requestCell } from "./request.ts";
 import {
 	batchCommand,
@@ -686,15 +686,19 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], robot = "
 
 /** What the setup and run readers ask with; a test replaces it (unset: the session's model through pi's registry). */
 export const agentDeps: { ask?: Ask } = {};
+/** What withModel returns when the user cancels the model's questions: nothing is set up or started. */
+export const CANCELLED = Symbol("cancelled");
 /**
- * Read a request with the session's model (./interpret.ts): its value when the reading passed the checks;
- * undefined with no text, no model, an error or a reading that never passed (the caller reads keywords).
+ * Read a request with the session's model (./interpret.ts): its value when the reading passed the checks,
+ * after the user answered the questions the model asks about what the request leaves open (as ask_user's
+ * menus; a choice the checks refuse is left to the usual menus). Undefined with no text, no model, an
+ * error or a reading that never passed (the caller reads keywords); CANCELLED when the user cancels.
  */
 async function withModel<T>(
 	ctx: ExtensionCommandContext,
 	text: string,
 	read: (ask: Ask) => Promise<Reading<T>>,
-): Promise<T | undefined> {
+): Promise<T | typeof CANCELLED | undefined> {
 	if (!text.trim()) return undefined;
 	const name = realModel(ctx.model) ?? "the model";
 	const ask =
@@ -706,6 +710,14 @@ async function withModel<T>(
 	ctx.ui.notify(`reading the request with ${name}`, "info");
 	try {
 		const r = await read(ask);
+		if (r.value && r.json && r.check && r.questions?.length) {
+			const answers = await askUser(ctx, { questions: r.questions.map(({ field: _f, values: _v, ...q }) => q) });
+			if (!answers) return CANCELLED;
+			const filled = withAnswers(r.json, r.questions, answers, r.check);
+			if (filled.refused.length)
+				ctx.ui.notify(`not taken (asked again below): ${filled.refused.join("; ")}`, "warning");
+			return filled.value ?? r.value;
+		}
 		if (r.value) return r.value;
 		ctx.ui.notify(
 			`${name}'s reading failed the checks ${r.rounds} times (${r.errors.slice(0, 3).join("; ")}); reading the request by keywords instead`,
@@ -747,8 +759,13 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 			robots: ROBOTS,
 			planners: [...available, ...hosted],
 			refs: [...refs, ...hosted.map((ref) => ({ ref }))],
+			session: current,
 		}),
 	);
+	if (read === CANCELLED) {
+		ui.notify("Nothing written or installed.", "info");
+		return;
+	}
 	const req: Request<Robot> = read ?? parseRequest(runOptions(args).rest, ROBOTS, [...refs, ...hosted]);
 	if (req.unsupported?.length) ui.notify(`not supported: ${req.unsupported.join("; ")}`, "warning");
 	if (req.unknown.length)
@@ -1049,7 +1066,7 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	const refs = ctx.modelRegistry.getAvailable().map((m) => ({ ref: `${m.provider}/${m.id}`, name: m.name }));
 	const hosted = SELFHOST.map((x) => `selfhost/${x.id}`);
 	const devicesNow = all.length && text ? runDeps.gpus() : [];
-	const plan: RunPlan | undefined = all.length
+	const reading = all.length
 		? await withModel(ctx, text, (ask) =>
 				readRun(ask, text, {
 					experiments: all,
@@ -1061,6 +1078,11 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 				}),
 			)
 		: undefined;
+	if (reading === CANCELLED) {
+		ui.notify("Nothing started.", "info");
+		return;
+	}
+	const plan: RunPlan | undefined = reading;
 	const { rest, opts } = plan
 		? {
 				rest: text,

@@ -7,6 +7,11 @@
  * (./request.ts `Request`, plus the episode or batch of a run). Then the usual menus ask for the rest,
  * and the confirmation shows it all before anything is written, installed or started.
  *
+ * What the request leaves open the model asks the user itself: its answer carries up to four questions in
+ * ./ask.ts's shape (one per open field, options from the catalog, the recommended one first), the code
+ * keeps the options that pass the same checks, ./index.ts shows them as the ask_user menus and checks the
+ * answer again with the user's choices in. A field still open after that is asked by the usual menus.
+ *
  * The keyword reading (./request.ts `parseRequest`) stays: it is used when no model answers (none
  * configured, offline, an answer that never passes) and in the tests that need a deterministic reading.
  */
@@ -14,6 +19,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { parseRoleJson } from "../../modes/motormind/models.ts";
+import { type AskAnswer, type AskInput, askErrors, RECOMMENDED_MARK } from "./ask.ts";
 import { AS, type Cell, cellKey, OS, PAPERS, type Paper, paperFlag, supported } from "./axes.ts";
 import { robotCaps, settingsFor, tierProblems } from "./caps.ts";
 import {
@@ -50,8 +56,101 @@ export function registryAsk(registry: Pick<ModelRegistry, "streamSimple">, model
 
 /** A checked answer: the value, or why it fails. */
 export type Checked<T> = { value: T } | { errors: string[] };
-/** The rounds with the model: the first answer, then up to `rounds - 1` corrections. */
-export type Reading<T> = { value?: T; errors: string[]; rounds: number };
+/** A question the model asks about one open field: `values[i]` is what option i puts in the field. */
+export type FieldQuestion = AskInput["questions"][number] & { field: string; values: unknown[] };
+/**
+ * The rounds with the model: the first answer, then up to `rounds - 1` corrections. With a value, the
+ * answer's JSON, its questions the code can show, and the check that reads the answer again.
+ */
+export type Reading<T> = {
+	value?: T;
+	errors: string[];
+	rounds: number;
+	json?: Record<string, unknown>;
+	questions?: FieldQuestion[];
+	check?: (json: Record<string, unknown>) => Checked<T>;
+};
+
+/** The fields a numeric answer goes in; a typed answer to them is a number. */
+const NUMERIC = new Set(["gpu", "max_turns", "time_limit"]);
+/** The answer with `value` in `field`: a robot id is the robots list, a typed number a number. */
+export function withField(json: Record<string, unknown>, field: string, value: unknown): Record<string, unknown> {
+	const v = field === "robots" ? [value] : NUMERIC.has(field) && typeof value === "string" ? Number(value) : value;
+	return { ...json, [field]: v };
+}
+/** Whether the answer leaves a field open: null, empty, or (robots) more than one. */
+const open = (json: Record<string, unknown>, field: string) => {
+	const v = json[field];
+	return field === "robots" ? !Array.isArray(v) || v.length !== 1 : v == null || v === "";
+};
+
+/**
+ * The model's questions the code can show: about a field of `fields` the answer leaves open, with the
+ * options that each pass `check` put in that field (two at least, at most four questions), shaped as
+ * ./ask.ts wants them. A question that does not fit is dropped: the menus ask that field.
+ */
+export function openQuestions<T>(
+	json: Record<string, unknown>,
+	check: (json: Record<string, unknown>) => Checked<T>,
+	fields: readonly string[],
+): FieldQuestion[] {
+	const out: FieldQuestion[] = [];
+	const raw = Array.isArray(json.questions) ? json.questions : [];
+	for (const q of raw as Record<string, unknown>[]) {
+		const field = str(q?.field);
+		if (!field || !fields.includes(field) || !open(json, field) || out.some((x) => x.field === field)) continue;
+		const options: { label: string; description?: string }[] = [];
+		const values: unknown[] = [];
+		for (const o of (Array.isArray(q.options) ? q.options : []) as Record<string, unknown>[]) {
+			const label = str(o?.label);
+			if (!label || o.value == null || !("value" in check(withField(json, field, o.value)))) continue;
+			options.push({ label, ...(str(o.description) ? { description: str(o.description) } : {}) });
+			values.push(o.value);
+		}
+		// The recommended one first: a model that put it elsewhere has it moved, not the question dropped.
+		const marked = options.findIndex((o) => o.label.includes(RECOMMENDED_MARK));
+		if (marked > 0) {
+			options.unshift(...options.splice(marked, 1));
+			values.unshift(...values.splice(marked, 1));
+		}
+		const question = { header: str(q.header) ?? field, question: str(q.question) ?? `${field}?`, options };
+		if (askErrors({ questions: [question] }).length) continue;
+		out.push({ ...question, field, values });
+		if (out.length === 4) break;
+	}
+	return out;
+}
+
+/**
+ * The answer with the user's choices in, one at a time: a choice the check refuses (with the others
+ * already in) is left out, and the menus ask that field. The checked value, and the fields left out.
+ */
+export function withAnswers<T>(
+	json: Record<string, unknown>,
+	questions: FieldQuestion[],
+	answers: AskAnswer[],
+	check: (json: Record<string, unknown>) => Checked<T>,
+): { value?: T; refused: string[] } {
+	let current = json;
+	let value: T | undefined;
+	const first = check(json);
+	if ("value" in first) value = first.value;
+	const refused: string[] = [];
+	questions.forEach((q, i) => {
+		const a = answers[i];
+		const picked = a?.selected[0];
+		const v =
+			a?.typed ?? (picked === undefined ? undefined : q.values[q.options.findIndex((o) => o.label === picked)]);
+		if (v === undefined) return;
+		const next = withField(current, q.field, v);
+		const c = check(next);
+		if ("value" in c) {
+			current = next;
+			value = c.value;
+		} else refused.push(`${q.field} ${String(v)}: ${c.errors.join("; ")}`);
+	});
+	return { value, refused };
+}
 
 /** Ask, check, and send a failed answer back with the reasons until one passes or the rounds are spent. */
 export async function interpret<T>(
@@ -60,6 +159,7 @@ export async function interpret<T>(
 	user: string,
 	check: (json: Record<string, unknown>) => Checked<T>,
 	rounds = 3,
+	fields: readonly string[] = [],
 ): Promise<Reading<T>> {
 	let message = user;
 	let errors: string[] = [];
@@ -70,7 +170,17 @@ export async function interpret<T>(
 			json && typeof json === "object" && !Array.isArray(json)
 				? check(json as Record<string, unknown>)
 				: { errors: ["the reply holds no JSON object"] };
-		if ("value" in checked) return { value: checked.value, errors: [], rounds: n };
+		if ("value" in checked) {
+			const j = json as Record<string, unknown>;
+			return {
+				value: checked.value,
+				errors: [],
+				rounds: n,
+				json: j,
+				check,
+				questions: openQuestions(j, check, fields),
+			};
+		}
 		errors = checked.errors;
 		message = `${user}\n\nYour previous answer:\n${reply.trim()}\n\nIt failed these checks:\n${errors.map((e) => `- ${e}`).join("\n")}\nAnswer again with one corrected JSON object.`;
 	}
@@ -80,8 +190,14 @@ export async function interpret<T>(
 const RULES = `Rules:
 - Use only ids, cells, setting ids, flags, planners and values that appear in the catalog. Never invent a flag or an id.
 - When the request asks for something the catalog does not offer (a robot, a work that is not ported, a planner, a flag), leave that field null and say in "unsupported" what is missing, one short sentence each.
-- Leave a field null when the request does not settle it; the user is asked for it afterwards.
-- Reply with one JSON object and nothing else.`;
+- Leave a field null when the request does not settle it, and ask the user about it in "questions" when it is the user's decision.
+- Reply with one JSON object and nothing else.
+
+"questions": at most 4, each about one field you left null (or "robots" when it names several), [] when nothing that matters is open:
+ {"field": the field's name, "header": at most 12 characters, "question": one decision ending with "?",
+  "options": [2-4 {"value": exactly what the field would hold, from the catalog and consistent with the rest of your answer, "label": 1-5 words, "description": one short sentence on what it means or why}]}
+ The option you recommend comes first, its label ends with "${RECOMMENDED_MARK}" and its description says why. Recommend from the user's words first; for the planner, then the session's own model (catalog.planners.session); otherwise what suits a first run. Command examples in the catalog (eval usage) only show syntax: never recommend from them.
+ Ask only what has no default: not thinking, max_turns or time_limit unless the request is about them, and not kind once a robot is settled. Do not add an "other" option: the user can always type an answer. Do not ask about anything the request settles, and never ask to confirm: the user confirms the whole plan afterwards.`;
 
 /** The setup reader's instructions: the answer's fields and what each may hold. */
 export const SETUP_SYSTEM = `You read a request to set up a pi-embodied robot experiment and answer with the setup it asks for, using only the catalog you are given.
@@ -98,8 +214,11 @@ Answer:
  "where": "here" | "remote" | null,
  "host": "user@host" or an ssh host for remote services | null,
  "unsupported": [strings],
+ "questions": [see below],
  "summary": one sentence of what you understood}
 ${RULES}`;
+/** The setup fields the model may ask the user about. */
+export const SETUP_QUESTIONS = ["robots", "kind", "cell", "setting", "planner", "thinking", "where"] as const;
 
 /** The run reader's instructions. */
 export const RUN_SYSTEM = `You read a request to run episodes of an installed pi-embodied experiment and answer with the run it asks for, using only the catalog you are given.
@@ -115,8 +234,11 @@ Answer:
  "max_turns": integer | null,
  "time_limit": seconds | null,
  "unsupported": [strings],
+ "questions": [see below],
  "summary": one sentence of what you understood}
 ${RULES}`;
+/** The run fields the model may ask the user about. */
+export const RUN_QUESTIONS = ["experiment", "mode", "task_flags", "gpu", "planner", "thinking", "max_turns"] as const;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
 const strs = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -382,9 +504,16 @@ const userMessage = (catalog: unknown, text: string) => `Catalog:\n${JSON.string
 export async function readSetup<R extends CatalogRobot & { kind: Kind }>(
 	ask: Ask,
 	text: string,
-	x: SetupContext<R> & { refs: { ref: string; name?: string }[] },
+	x: SetupContext<R> & { refs: { ref: string; name?: string }[]; session?: string },
 ): Promise<Reading<Request<R>>> {
-	return interpret(ask, SETUP_SYSTEM, userMessage(setupCatalog(x.robots, x.refs), text), (j) => checkSetup(j, x));
+	return interpret(
+		ask,
+		SETUP_SYSTEM,
+		userMessage(setupCatalog(x.robots, x.refs, x.session), text),
+		(j) => checkSetup(j, x),
+		3,
+		SETUP_QUESTIONS,
+	);
 }
 /** Read a run request with the model. */
 export async function readRun(
@@ -396,7 +525,12 @@ export async function readRun(
 		budget: string;
 	},
 ): Promise<Reading<RunPlan>> {
-	return interpret(ask, RUN_SYSTEM, userMessage(runCatalog(x.experiments, x.refs, x.gpuLabels, x.budget), text), (j) =>
-		checkRun(j, x),
+	return interpret(
+		ask,
+		RUN_SYSTEM,
+		userMessage(runCatalog(x.experiments, x.refs, x.gpuLabels, x.budget), text),
+		(j) => checkRun(j, x),
+		3,
+		RUN_QUESTIONS,
 	);
 }
