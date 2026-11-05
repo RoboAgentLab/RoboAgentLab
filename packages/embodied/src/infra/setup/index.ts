@@ -43,7 +43,6 @@ import {
 	type Paper,
 	type Pick,
 	paperFlag,
-	papersFor,
 	paperTurns,
 	pickEntries,
 	pickerLines,
@@ -53,6 +52,7 @@ import {
 	typed,
 	VISER,
 } from "./axes.ts";
+import { settingsFor } from "./caps.ts";
 import { FINETUNED_REF, FLASH_REF, parseRequest, requestCell } from "./request.ts";
 import {
 	DASHBOARD_PORT,
@@ -750,7 +750,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	// has some, narrow the picker; a work that is not ported is a notice), else the named levels', else the grid.
 	let cell: Cell | undefined;
 	let paper: Paper | undefined;
-	if (req.paper && papersFor(robot, req.paper.cell).includes(req.paper)) {
+	if (req.paper && settingsFor(robot, req.paper.cell).includes(req.paper)) {
 		cell = req.paper.cell;
 		paper = req.paper;
 	} else if (req.paper) {
@@ -766,7 +766,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		const cells = supportedCells(robot.axes).filter(
 			(c) =>
 				req.work?.cells.includes(cellKey(c)) &&
-				(!ports.length || ports.some((p) => p.cell.o === c.o && p.cell.a === c.a)),
+				(!ports.length || settingsFor(robot, c).some((p) => ports.includes(p))),
 		);
 		if (!ports.length)
 			ui.notify(
@@ -788,7 +788,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		if (!cell) return;
 		// The work to reproduce: one of the cell's ported settings; a named work narrows them to its own.
 		if (!paper) {
-			const papers = byTurns(papersFor(robot, cell).filter((p) => !ports.length || ports.includes(p)));
+			const papers = byTurns(settingsFor(robot, cell).filter((p) => !ports.length || ports.includes(p)));
 			if (papers.length) {
 				const picked = await pickWork(ctx, papers, robot.id);
 				if (!picked) return;
@@ -1059,14 +1059,14 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		const robot = exp.robot;
 		let cell: Cell | undefined;
 		let paper: Paper | undefined;
-		if (req.paper && papersFor(robot, req.paper.cell).includes(req.paper)) {
+		if (req.paper && settingsFor(robot, req.paper.cell).includes(req.paper)) {
 			cell = req.paper.cell;
 			paper = req.paper;
 		} else {
 			const n = requestCell(req);
 			cell = n && supported(robot.axes, n) ? n : await pickCell(ctx, robot);
 			if (!cell) return;
-			const papers = papersFor(robot, cell);
+			const papers = settingsFor(robot, cell);
 			if (papers.length) {
 				const picked = await pickWork(ctx, papers, robot.id);
 				if (!picked) return;

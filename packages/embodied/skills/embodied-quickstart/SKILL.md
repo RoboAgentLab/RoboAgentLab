@@ -75,9 +75,9 @@ whether it is ported and the preset:
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
 | rpent | RPent | O1 × A2 | `--preset rpent` (memory + the robot's own VLA skill; the Frankas add `--vla`) | LIBERO, RoboCasa, RoboTwin, Franka (RLinf), dual Franka |
 | openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
-| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth) | simulators with code |
-| capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
-| capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
+| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth, high API) | simulators with high-level code primitives: LIBERO, Robosuite, RoboCasa |
+| capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | S3, S4: any with code; S2: robots with high-level primitives (LIBERO, Robosuite, RoboCasa, the real arms) |
+| capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | M4: any with code; M1–M3: robots with high-level primitives. The robot's manifest decides (`src/infra/setup/caps.ts`); a low/raw-only robot (ManiSkill, RoboTwin, Metaworld, …) refuses the high-API tiers at start |
 | xpolicylab | XPolicyLab | (Infrastructure in the survey) | `--preset xpolicylab --xpolicy ws://host:port` (a policy server; not in the wizard) | RoboTwin, RoboDojo, Piper, dual Franka |
 
 A work not in works.json is answered the same way: read its observation access (what the agent is given

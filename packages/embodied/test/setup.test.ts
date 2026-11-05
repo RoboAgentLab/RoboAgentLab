@@ -53,6 +53,7 @@ import setup, {
 	setupDeps,
 	sshHosts,
 } from "../src/infra/setup/index.ts";
+import { robotCaps, settingsFor, tierProblems } from "../src/infra/setup/caps.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
 
@@ -1048,12 +1049,12 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 });
 
 test("/embodied-setup <request> with a work of the survey: its ported settings narrow the cell and the picker; one that is not ported is a notice", async () => {
-	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; ManiSkill has both: the cell is asked, the picker lists the tiers there.
+	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; Robosuite runs both: the cell is asked, the picker lists the tiers there.
 	let p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { select: ["O2 × A3", "here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
 	});
-	await p.run("CaP-X on maniskill");
+	await p.run("CaP-X on robosuite");
 	assert.deepEqual(
 		p.notes.filter((n) => !/^Nothing written/.test(n)),
 		[],
@@ -1070,6 +1071,18 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	);
 	assert.ok(!picker.some((l) => /capx-S1/.test(l)), "S1 is O3's");
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --tier S2; planner/m);
+	// ManiSkill's primitives are low and raw only: S1 (O3) is refused, so O2 × A3 without asking, with S3, S4 and M4.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
+	});
+	await p.run("CaP-X on maniskill");
+	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
+	assert.deepEqual(
+		p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]),
+		["S3", "S4", "M4"],
+	);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --tier S3; planner/m);
 	// A real arm has no O3: CaP-X on UR5e is O2 × A3 without asking.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
@@ -1750,9 +1763,25 @@ test("the ssh config's hosts are the remote boxes offered; patterns are not host
 	assert.deepEqual(sshHosts("/nonexistent"), []);
 });
 
-/** Whether a robot's extension mounts a module (its spec names it: `units: {`, `flash: hook`, `motormind,`). */
-const mounts = (r: { extension: string }, key: string) =>
-	new RegExp(`^\\t\\t${key}(: |,)`, "m").test(readFileSync(join(PKG, r.extension), "utf8"));
+/** Whether a robot's extension mounts a module, as ../src/infra/setup/caps.ts reads its spec. */
+const mounts = (r: { id: string; extension: string }, key: "units" | "flash" | "motormind" | "memory") =>
+	robotCaps(r)[key];
+
+test("a ported setting is offered only where the robot runs it: CaP-X's high-API tiers need high-tier primitives", () => {
+	for (const r of ROBOTS)
+		for (const o of OS)
+			for (const a of AS)
+				for (const p of settingsFor(r, cell(o, a)))
+					assert.deepEqual(tierProblems(r, paperFlag(p, r.id)), [], `${r.id} ${p.id}`);
+	// ManiSkill's and RoboTwin's manifests have low and raw code primitives only: S3, S4 and M4 run, S1, S2, M1-M3 are refused.
+	for (const id of ["maniskill", "robotwin"]) {
+		assert.deepEqual(robotCaps(robot(id)).codeTiers, ["low", "raw"]);
+		assert.deepEqual(ids(settingsFor(robot(id), cell("O2", "A3"))), ["capx-S3", "capx-S4", "capx-M4"], id);
+		assert.deepEqual(settingsFor(robot(id), cell("O3", "A3")), [], `${id}: S1 needs the high level`);
+		assert.match(tierProblems(robot(id), "--tier S2")[0] ?? "", /needs high-tier code primitives/);
+	}
+	assert.equal(settingsFor(robot("robosuite"), cell("O2", "A3")).length, 7, "robosuite has every level");
+});
 
 test("the wizard offers what the robots mount: units are A1 Code, MotorMind's preset goes where MotorMind mode is, Flash where its hook is", () => {
 	for (const r of ROBOTS) {
@@ -1845,7 +1874,7 @@ test("RPent's preset goes where memory and a VLA skill of the robot's own are: t
 	assert.ok(p.notes.includes("RPent's setting is not on ManiSkill 3; pick a cell"), p.notes.join("|"));
 });
 
-test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narrows CaP-X to M1–M4, single-turn to S1–S4", async () => {
+test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narrows CaP-X to its M tiers, single-turn to its S tiers", async () => {
 	let r = parseRequest("CaP-X on RoboTwin", ROBOTS, []);
 	assert.equal(r.work?.id, "capx");
 	assert.deepEqual(r.unknown, []);
@@ -1870,7 +1899,7 @@ test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narr
 	r = parseRequest("CaP-X multi-turn on RoboTwin", ROBOTS, []);
 	assert.deepEqual([r.work?.id, r.turns, r.unknown], ["capx", "multi", []]);
 	assert.equal(parseRequest("CaP-X single turn", ROBOTS, []).turns, "single");
-	// The flow: CaP-X on RoboTwin asks no warning; multi-turn skips O3 (S1's) and lists M1–M4 only.
+	// The flow: CaP-X on RoboTwin asks no warning; multi-turn is O2 × A3, where RoboTwin's low-level primitives run M4 only.
 	let p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
@@ -1879,14 +1908,14 @@ test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narr
 	assert.deepEqual(p.notes, ["Nothing written or installed."]);
 	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")), "multi-turn tiers are O2 × A3 only");
 	const tiers = p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]);
-	assert.deepEqual(tiers, ["M1", "M2", "M3", "M4"]);
-	assert.match(p.confirms.at(-1) ?? "", /^RoboTwin 2 \(sim\): O2 × A3 .*, CaP-X M1's setting$/m);
-	// Single-turn on ManiSkill: both cells keep an S tier, so the cell is asked; O2 × A3 lists S2–S4.
+	assert.deepEqual(tiers, ["M4"]);
+	assert.match(p.confirms.at(-1) ?? "", /^RoboTwin 2 \(sim\): O2 × A3 .*, CaP-X M4's setting$/m);
+	// Single-turn on Robosuite: both cells keep an S tier, so the cell is asked; O2 × A3 lists S2–S4.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { select: ["O2 × A3", "here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"]] },
 	});
-	await p.run("CaP-X single-turn on maniskill");
+	await p.run("CaP-X single-turn on robosuite");
 	assert.deepEqual(
 		p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]),
 		["S2", "S3", "S4"],
