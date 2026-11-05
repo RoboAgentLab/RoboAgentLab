@@ -28,10 +28,21 @@
  * horizon and no cross-task memory (`capx-<tier>` is `--tier <tier>` under the preset spelling). A preset needs the modules it stands for mounted, is mutually exclusive with `--tier`,
  * and is recorded as `preset` with the same `axes`. `src/scripts/params-match.mjs` and
  * `tier-flags.mjs` import the same tables, so the eval scripts expand a choice exactly as the robot does.
+ *
+ * A preset may bring the source repository's own skills (`Preset.skills`: a directory under the
+ * package's `skills/`): OpenETA's pick / place / stack / push-pull / object-memory guidance is part
+ * of its port, not of every robot's. The package manifest loads only `embodied-quickstart`; the
+ * robot answers pi's `resources_discover` (fired after `session_start`) with the preset's directory
+ * when the run uses the preset, so `/skill:` lists those skills then and not otherwise.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ExtensionAPI, ResourcesDiscoverResult } from "@earendil-works/pi-coding-agent";
 import { trackFlags } from "./params.ts";
+
+/** The package's `skills/` directory (the manifest loads `embodied-quickstart` from it; presets their own). */
+export const SKILLS = fileURLToPath(new URL("../../skills/", import.meta.url)).replace(/\/$/, "");
 
 export type Turns = "single" | "multi";
 export type Feedback = "none" | "text" | "image" | "vdm" | "image+vdm";
@@ -82,6 +93,8 @@ type Preset = {
 	needs: Need[];
 	/** A flag the preset needs given (its value is the run's): --xpolicy ws://... */
 	requires?: { flag: string; hint: string };
+	/** The source repository's skills, a directory under `SKILLS`, loaded only when the preset runs. */
+	skills?: string;
 };
 
 /** The ported repositories' native settings (handoff 2.9.4), by analogy with CaP-X's axes. */
@@ -105,6 +118,8 @@ export const PRESETS: Record<string, Preset> = {
 		axes: { turns: "multi", feedback: "image+vdm", api: "low" },
 		flags: { vdm: true, "anchor-image": true, code: null, units: null },
 		needs: ["vdm"],
+		// OpenETA's agent/skills/*.md, adapted: embodied-pick, -place, -stack, -push-pull, -object-memory.
+		skills: "openeta",
 	},
 	xpolicylab: {
 		axes: { turns: "multi", feedback: "image", api: "policy" },
@@ -309,18 +324,27 @@ export function tiers(pi: ExtensionAPI, caps: Caps) {
 		for (const name of t.names.keys()) if (t.given(name)) m.set(name, t.raw(name));
 		return m;
 	};
+	/** Why the robot must not start with these flags, else undefined. */
+	const configError = (): string | undefined => {
+		const c = choice();
+		if (!c) return undefined;
+		if ("error" in c) return c.error;
+		const cannot = unsupported(c, caps);
+		if (cannot) return cannot;
+		if (c.requires && !norm(t.raw(c.requires.flag)).trim())
+			return `${c.flag} needs --${c.requires.flag} ${c.requires.hint}`;
+		return conflicts(c, explicit()).join("; ") || undefined;
+	};
+	// pi asks for extra skill paths after session_start: a preset's own skills join /skill: for this
+	// session only (a refused start loads none).
+	pi.on("resources_discover", (): ResourcesDiscoverResult | undefined => {
+		const c = choice();
+		if (!c || "error" in c || c.kind !== "preset" || configError()) return undefined;
+		const dir = PRESETS[c.name].skills;
+		return dir ? { skillPaths: [join(SKILLS, dir)] } : undefined;
+	});
 	return {
-		/** Why the robot must not start with these flags, else undefined. */
-		configError: (): string | undefined => {
-			const c = choice();
-			if (!c) return undefined;
-			if ("error" in c) return c.error;
-			const cannot = unsupported(c, caps);
-			if (cannot) return cannot;
-			if (c.requires && !norm(t.raw(c.requires.flag)).trim())
-				return `${c.flag} needs --${c.requires.flag} ${c.requires.hint}`;
-			return conflicts(c, explicit()).join("; ") || undefined;
-		},
+		configError,
 		/** `tier` or `preset` (with `+privileged` when ground truth was stacked on a choice that leaves it free) and the expanded `axes`. */
 		result: (): Record<string, unknown> => {
 			const c = choice();

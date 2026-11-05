@@ -71,7 +71,7 @@ whether it is ported and the preset:
 | motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
 | rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
-| openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
+| openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image; loads OpenETA's task skills, §4) | any |
 | capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth) | simulators with code |
 | capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
 | capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
@@ -265,10 +265,16 @@ native search, so it needs a provider that has one); `--object-memory` (`--objec
 records per scene), and on LIBERO / Franka `--waypoints`, `--align-wrist`, `--grasp-advisor`.
 `--replay-thinking=true` sends every earlier turn's thinking back (default false; it is most of a
 Qwen / vLLM planner's input). `--model human/operator` lets a person answer as the planner (pi's
-dialogs, or the dashboard). The task skills `/skill:embodied-pick`, `embodied-place`,
-`embodied-push-pull`, `embodied-stack` and `embodied-object-memory` go in front of the prompt
-(`pi ... "/skill:embodied-pick Solve the task."`): a robot's system prompt replaces pi's, so the model
-does not see the skill list itself.
+dialogs, or the dashboard).
+
+Skills: this package loads one, `embodied-quickstart` (this file), in every session. OpenETA's task
+skills `embodied-pick`, `embodied-place`, `embodied-stack`, `embodied-push-pull` and
+`embodied-object-memory` (`skills/openeta/`, adapted from OpenETA's `agent/skills/*.md`) are that
+work's guidance to its agent, so they load only under `--preset openeta` (`src/infra/tiers.ts`:
+the robot adds the directory when pi asks for extra skills after `session_start`); without the
+preset `/skill:` lists only `embodied-quickstart`. They go in front of the prompt
+(`pi ... --preset openeta "/skill:embodied-pick Solve the task."`): a robot's system prompt replaces
+pi's, so the model does not see the skill list itself.
 
 ## 5. Evaluate
 
