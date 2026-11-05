@@ -10,6 +10,17 @@ in the repository; the package root in an npm install). An npm install has no `s
 `https://github.com/LV-Robotics-Lab/pi-embodied.git` and use its `services/`. On a remote box run
 every command over `ssh <host>`; pi and the experiment directory live on the box too.
 
+## Asking the user
+
+When a decision is the user's and their words do not settle it (which robot, setting, planner, GPU,
+where the services run), ask with the `ask_user` tool instead of guessing or writing a question in
+prose: up to 4 independent questions at once, each with a header of at most 12 characters and 2-4
+options taken from what this skill and the platform list (never invented names), the option you
+recommend first with `(Recommended)` at the end of its label and a description saying why. A typed
+answer is always offered. Do not ask what the user already said, and do not ask to confirm a plan:
+/embodied-setup and /embodied-run confirm before anything is written, installed or started. Inside an
+episode the tool is not available: the policy runs without a human.
+
 ## 1. Pick
 
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
