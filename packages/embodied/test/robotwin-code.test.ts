@@ -92,12 +92,41 @@ function metadata(): Buffer {
 }
 
 /**
+ * msgpack of LingBot's reply to an observation: `{ action: <rows x 16 float32 zeros> }` in openpi's
+ * numpy extension (a map of bin keys: __ndarray__, data, dtype, shape).
+ */
+function actionReply(rows: number): Buffer {
+	const bin = (b: Buffer) =>
+		Buffer.concat([
+			b.length < 0x100 ? Buffer.from([0xc4, b.length]) : Buffer.from([0xc5, b.length >> 8, b.length & 0xff]),
+			b,
+		]);
+	const key = (k: string) => bin(Buffer.from(k));
+	return Buffer.concat([
+		Buffer.from([0x81, 0xa6]),
+		Buffer.from("action"),
+		Buffer.from([0x84]),
+		key("__ndarray__"),
+		Buffer.from([0xc3]),
+		key("data"),
+		bin(Buffer.alloc(rows * 16 * 4)),
+		key("dtype"),
+		Buffer.from([0xa3]),
+		Buffer.from("<f4"),
+		key("shape"),
+		Buffer.from([0x92, rows, 16]),
+	]);
+}
+
+/**
  * A fake RoboTwin env server (the wire protocol of ../src/rpc.ts) that also answers the LingBot
  * WebSocket handshake with the policy metadata; `code.run` reports a program that solved the task
- * in 12 native actions.
+ * in 12 native actions. As LingBot it answers every observation with a 50-action chunk;
+ * `env.chunk_step` counts the native actions, and RoboTwin's eval_success holds from action `successAt` on.
  */
-async function fakeEnv() {
+async function fakeEnv(o: { successAt?: number } = {}) {
 	const calls: { method: string; args: unknown[]; kwargs: Record<string, unknown> }[] = [];
+	let count = 0;
 	const sockets: Duplex[] = [];
 	const server = createServer((req, res) => {
 		let body = "";
@@ -112,7 +141,19 @@ async function fakeEnv() {
 			else if (method === "env.get_env_meta")
 				result = { task_name: "beat_block_hammer", task_config: "demo_randomized", seed: 100000 };
 			else if (method === "env.reset") result = [{}, { ...info(0, false), instruction: "beat the block" }];
-			else if (method === "env.render_camera")
+			else if (method === "env.get_task_language") result = "beat the block";
+			else if (method === "env.chunk_step") {
+				const n = (args[0] as { shape: number[] }).shape[0];
+				count += n;
+				const zeros = f64(Array(n).fill(0));
+				result = [
+					{ frames: [] },
+					zeros,
+					zeros,
+					zeros,
+					{ ...info(count, count >= (o.successAt ?? Infinity)), executed_actions: n },
+				];
+			} else if (method === "env.render_camera")
 				result = [nd("uint8", [2, 2, 3], Buffer.alloc(12)), nd("float32", [2, 2], Buffer.alloc(16))];
 			else if (method === "env.get_camera_meta")
 				result = {
@@ -166,9 +207,26 @@ async function fakeEnv() {
 		const payload = metadata();
 		socket.write(Buffer.concat([Buffer.from([0x82, payload.length]), payload]));
 		socket.on("error", () => {});
-		// Answer the client's close frame, so its close handshake ends at once.
+		// The client's frames (masked): answer each observation with a chunk, and the close frame at once.
+		let pending = Buffer.alloc(0);
 		socket.on("data", (d: Buffer) => {
-			if ((d[0] & 0x0f) === 0x8) socket.end(Buffer.from([0x88, 0]));
+			pending = Buffer.concat([pending, d]);
+			while (pending.length >= 2) {
+				const op = pending[0] & 0x0f;
+				let len = pending[1] & 0x7f;
+				let at = 2;
+				if (len === 126) [len, at] = [pending.length >= 4 ? pending.readUInt16BE(2) : Infinity, 4];
+				else if (len === 127)
+					[len, at] = [pending.length >= 10 ? Number(pending.readBigUInt64BE(2)) : Infinity, 10];
+				if (pending[1] & 0x80) at += 4;
+				if (pending.length < at + len) return;
+				pending = pending.subarray(at + len);
+				if (op === 0x8) return void socket.end(Buffer.from([0x88, 0]));
+				if (op === 0x2) {
+					const reply = actionReply(50);
+					socket.write(Buffer.concat([Buffer.from([0x82, 126, reply.length >> 8, reply.length & 0xff]), reply]));
+				}
+			}
 		});
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -274,6 +332,68 @@ test("the motion tools are the env server's methods: manifest schemas, params pa
 	assert.match(again.content[0].text, /^Episode is terminal \(eval_success=true/);
 	assert.equal(env.calls.length, before);
 	await s.emit("session_shutdown");
+});
+
+test("--vla-alone lingbot: the first prompt runs LingBot until eval_success or the step budget, asks no model, and records planner vla", async (t) => {
+	const base = mkdtempSync(join(tmpdir(), "robotwin-vla-alone-"));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const memory = join(base, "robotwin");
+	mkdirSync(memory);
+	writeFileSync(join(memory, "MEMORY.md"), "# RoboTwin\n");
+	const run = async (fake: Parameters<typeof fakeEnv>[0], values: Record<string, unknown> = {}) => {
+		const env = await fakeEnv(fake);
+		t.after(env.close);
+		const s = stubPi({
+			"env-url": env.url,
+			lingbot: env.ws,
+			"memory-profile": "local",
+			"memory-dir": memory,
+			"vla-alone": "lingbot",
+			...values,
+		});
+		robotwin(s.pi);
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		const log = console.error;
+		console.error = () => {};
+		let handled: unknown;
+		try {
+			handled = await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		const result = s.entries.find((e) => e.type === "robot_result")?.data;
+		const chunks = env.calls.filter((c) => c.method === "env.chunk_step").map((c) => (c.args[0] as any).shape[0]);
+		return { handled, result, chunks };
+	};
+	const solved = await run({ successAt: 120 });
+	assert.deepEqual(solved.handled, { action: "handled" });
+	assert.deepEqual(solved.chunks, [50, 50, 50], "stops at eval_success");
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.success, true);
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.env_error, false);
+	assert.equal(solved.result.native_actions, 150);
+	const { vla_seeds, ...rest } = solved.result.vla_alone;
+	assert.deepEqual(rest, {
+		skill: "lingbot",
+		tool: "lingbot_act",
+		instruction: "beat the block",
+		// What is left of the env's step limit (its --max-episode-steps).
+		steps_budget: 10000,
+		env_steps: 150,
+		chunks: 3,
+		success: true,
+	});
+	assert.equal(vla_seeds.length, 3);
+	// --vla-alone-steps bounds a run that never succeeds; the last chunk is cut to what is left of it.
+	const spent = await run({}, { "vla-alone-steps": "120" });
+	assert.deepEqual(spent.chunks, [50, 50, 20]);
+	assert.equal(spent.result.success, false);
+	assert.equal(spent.result.vla_alone.env_steps, 120);
 });
 
 test("LingBot is optional: without it lingbot_act stays inactive and the result notes it; --require-skills lingbot refuses", async (t) => {

@@ -279,15 +279,17 @@ function stubPi(values: Record<string, unknown> = {}) {
  * A fake RoboCasa env server (`--env`, also the `--rldx` session server): OpenDrawer target seed 0,
  * robot observations, renders and a `code.run` that stepped 12 times and solved the task (with
  * `undone`, solved it at its step 2 and undid it before it returned: the server's latched success only).
+ * As RLDX-1, `vla.predict` answers 16-action chunks of zeros; `env.step` counts env steps, and the task
+ * is solved from env step `successAt` on (never without it).
  */
-async function fakeEnv(o: { undone?: boolean } = {}) {
+async function fakeEnv(o: { undone?: boolean; successAt?: number } = {}) {
 	const calls: { method: string; kwargs: Record<string, unknown>; args: unknown[] }[] = [];
 	const nd = (dtype: string, shape: number[], data: Buffer) => ({
 		__ndarray__: data.toString("base64"),
 		dtype,
 		shape,
 	});
-	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
+	const f32 = (v: number[], shape = [v.length]) => nd("float32", shape, Buffer.from(Float32Array.from(v).buffer));
 	const f64 = (v: number[], shape = [v.length]) => nd("float64", shape, Buffer.from(Float64Array.from(v).buffer));
 	const raw = (z: number) => ({
 		robot0_eef_pos: f32([0.5, 0, z]),
@@ -300,6 +302,9 @@ async function fakeEnv(o: { undone?: boolean } = {}) {
 	});
 	let solved = false;
 	let runs = 0;
+	let steps = 0;
+	const H = 16;
+	const chunk = (d: number) => f32(new Array(H * d).fill(0), [1, H, d]);
 	const server = createServer((req, res) => {
 		let body = "";
 		req.on("data", (c) => {
@@ -316,7 +321,21 @@ async function fakeEnv(o: { undone?: boolean } = {}) {
 			else if (method === "env.reset") result = raw(1);
 			else if (method === "env.get_task_language") result = "open the drawer";
 			else if (method === "env.get_success_criteria_text") result = "drawer open";
-			else if (method === "env.check_success") result = solved;
+			else if (method === "env.check_success") result = solved || steps >= (o.successAt ?? Infinity);
+			else if (method === "vla.get_modality_config") result = { video_delta_indices: [0], hist_maxlen: 1 };
+			else if (method === "vla.predict")
+				result = {
+					"action.end_effector_position": chunk(3),
+					"action.end_effector_rotation": chunk(3),
+					"action.gripper_close": chunk(1),
+					"action.base_motion": chunk(4),
+					"action.control_mode": chunk(1),
+				};
+			else if (method === "env.reassemble_env_action") result = f32(new Array(12).fill(0));
+			else if (method === "env.step") {
+				steps++;
+				result = [raw(1), 0, false, false];
+			} else if (method === "env.grasp_contact") result = [false, null];
 			else if (method === "env.get_task_progress") result = { open: solved };
 			else if (method === "env.render_camera") {
 				const img = nd("uint8", [size, size, 3], Buffer.alloc(size * size * 3));
@@ -447,6 +466,74 @@ test("the motion tools are the env server's methods: manifest schemas, no env.st
 	await s.emit("agent_end", { messages: [] });
 	const result = s.entries.find((e) => e.type === "robot_result")?.data;
 	assert.equal(result.env_steps, 11);
+});
+
+test("--vla-alone rldx: the first prompt runs RLDX-1 until success or the task's horizon, asks no model, and records planner vla", async (t) => {
+	const run = async (fake: Parameters<typeof fakeEnv>[0], values: Record<string, unknown> = {}) => {
+		const env = await fakeEnv(fake);
+		t.after(env.close);
+		const s = stubPi({ "env-url": env.url, rldx: env.url, services: SERVICES, "vla-alone": "rldx", ...values });
+		robocasa(s.pi);
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		const log = console.error;
+		console.error = () => {};
+		let handled: unknown;
+		try {
+			handled = await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		const result = s.entries.find((e) => e.type === "robot_result")?.data;
+		return { handled, result, predicts: env.calls.filter((c) => c.method === "vla.predict").length };
+	};
+	const solved = await run({ successAt: 20 });
+	assert.deepEqual(solved.handled, { action: "handled" });
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.success, true, "the env's success, read at the run's end");
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.env_error, false);
+	// 8 of each 16-action chunk run (RLDX_ACTION_STEPS_PER_CHUNK); success is checked after each chunk.
+	const { vla_seeds, ...rest } = solved.result.vla_alone;
+	assert.deepEqual(rest, {
+		skill: "rldx",
+		tool: "rldx_skill",
+		instruction: "open the drawer",
+		steps_budget: table.tasks.find((x) => x.name === "OpenDrawer")!.horizon,
+		env_steps: 24,
+		calls: 1,
+		chunks: 3,
+		status: "success",
+		success: true,
+	});
+	assert.equal(vla_seeds.length, 3);
+	assert.equal(solved.result.env_steps, 24);
+	// --vla-alone-steps bounds a run that never succeeds, inside a chunk.
+	const spent = await run({}, { "vla-alone-steps": "10" });
+	assert.equal(spent.result.success, false);
+	assert.equal(spent.result.vla_alone.env_steps, 10);
+	assert.equal(spent.predicts, 2);
+	assert.equal(spent.result.env_steps, 10);
+	// RLDX-1 off: the robot does not start (an invalid cell, not a VLA-alone failure).
+	const offEnv = await fakeEnv();
+	t.after(offEnv.close);
+	const off = stubPi({ "env-url": offEnv.url, rldx: "off", services: SERVICES, "vla-alone": "rldx" });
+	robocasa(off.pi);
+	const errors: string[] = [];
+	const log = console.error;
+	console.error = (m: string) => errors.push(m);
+	try {
+		await off.emit("session_start");
+	} finally {
+		console.error = log;
+		process.exitCode = undefined;
+	}
+	assert.deepEqual(off.active(), []);
+	assert.match(errors.join("\n"), /--vla-alone rldx: the rldx server is switched off/);
+	await off.emit("session_shutdown");
 });
 
 test("RLDX-1 is optional: without it the rldx tools stay inactive and the result notes it; --require-skills rldx refuses", async (t) => {
