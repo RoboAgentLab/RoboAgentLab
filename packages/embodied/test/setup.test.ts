@@ -26,7 +26,11 @@ import {
 	WORKS,
 	worksIn,
 } from "../src/infra/setup/axes.ts";
+import { robotCaps, settingsFor, tierProblems } from "../src/infra/setup/caps.ts";
+import { evalUsage, knownFlags, runCatalog, setupCatalog } from "../src/infra/setup/catalog.ts";
 import setup, {
+	agentDeps,
+	BATCH_HOW,
 	BUDGET,
 	BUDGETS,
 	COMMAND,
@@ -53,7 +57,7 @@ import setup, {
 	setupDeps,
 	sshHosts,
 } from "../src/infra/setup/index.ts";
-import { robotCaps, settingsFor, tierProblems } from "../src/infra/setup/caps.ts";
+import { type Ask, checkRun, checkSetup, interpret } from "../src/infra/setup/interpret.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
 
@@ -2052,4 +2056,385 @@ test("planners: a registry model by its display name, the student on every surfa
 		...HOSTED,
 		FINETUNED_AS.tools,
 	]);
+});
+
+/** A model answering from a script: each call takes the next reply (an Error is thrown); the prompts it got are kept. */
+function scripted(replies: (unknown | Error)[]) {
+	const prompts: { system: string; user: string }[] = [];
+	const ask: Ask = async (system, user) => {
+		prompts.push({ system, user });
+		const r = replies.shift();
+		if (r instanceof Error) throw r;
+		return typeof r === "string" ? r : `Here it is:\n\`\`\`json\n${JSON.stringify(r ?? {})}\n\`\`\``;
+	};
+	return { ask, prompts };
+}
+async function withAsk(ask: Ask, fn: () => Promise<void>) {
+	agentDeps.ask = ask;
+	try {
+		await fn();
+	} finally {
+		agentDeps.ask = undefined;
+	}
+}
+const errorsOf = <T>(c: { value: T } | { errors: string[] }) => ("errors" in c ? c.errors : []);
+
+test("the readers' catalog is generated from the code: cells, runnable settings, what each robot mounts, its flags and eval.sh", () => {
+	const cat = setupCatalog(ROBOTS, [{ ref: "openai/gpt-6", name: "GPT-6" }]);
+	const file = new URL("./fixtures/setup-catalog.json", import.meta.url);
+	const text = `${JSON.stringify(cat, null, "\t")}\n`;
+	if (process.env.UPDATE_SNAPSHOTS) writeFileSync(file, text);
+	assert.equal(
+		text,
+		readFileSync(file, "utf8"),
+		"the catalog changed with the code: check the diff, then UPDATE_SNAPSHOTS=1 node --test test/setup.test.ts",
+	);
+	assert.deepEqual(
+		cat.robots.map((r) => r.id),
+		ROBOTS.map((r) => r.id),
+	);
+	const ms = cat.robots.find((r) => r.id === "maniskill")!;
+	assert.deepEqual(ms.vla_alone, {
+		mounted: true,
+		setup_flags: "--arm widowx250s --vla-adapter openvla --vla-alone openvla",
+		example_task: "--task PutCarrotOnPlateInScene-v1 --seed 0",
+	});
+	assert.deepEqual(ms.cells.find((c) => c.cell === "O2/A3")?.settings, ["capx-S3", "capx-S4", "capx-M4"]);
+	assert.deepEqual(ms.mounts.vla_adapters, ["openvla"]);
+	assert.equal(cat.robots.find((r) => r.id === "humanclaw")?.vla_alone.mounted, false);
+	assert.deepEqual(cat.robots.find((r) => r.id === "robotwin")?.mounts.vla_skills, ["lingbot_act"]);
+	// The batch script's usage and the variables its header names; the flags a robot takes, not another robot's.
+	assert.match(evalUsage(robot("libero-pro"))?.usage[0] ?? "", /^eval\.sh <out-dir> <suite> <tasks> <seeds>/);
+	assert.equal(evalUsage(robot("libero-pro"))?.script, "packages/embodied/src/robots/libero/eval.sh");
+	assert.ok(evalUsage(robot("robocasa"))?.env.includes("TASKS"));
+	assert.equal(evalUsage(robot("franka")), undefined, "a real arm has no batch script");
+	assert.ok(knownFlags(robot("libero-pro")).has("libero-type"));
+	assert.ok(!knownFlags(robot("maniskill")).has("libero-type"));
+	for (const f of ["preset", "tier", "units", "model", "thinking", "max-turns"])
+		assert.ok(knownFlags(robot("maniskill")).has(f), f);
+	// The run catalog: the experiments here, ready or not, their recorded setting and planner, the GPUs, the budget.
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	installed(cwd, "embodied-robotwin", "robotwin", { paper: "capx-M4", cell: cell("O2", "A3"), flags: "--tier M4" });
+	const rc = runCatalog(
+		scanExperiments(cwd, ROBOTS),
+		[{ ref: "openai/gpt-6" }],
+		[{ index: 0, label: "GPU 0" }],
+		BUDGET,
+	);
+	assert.deepEqual(rc.experiments[0].setting, {
+		cell: "O2/A3",
+		vla_alone: false,
+		preset_or_tier: "capx-M4",
+		flags: "--tier M4",
+	});
+	assert.equal(rc.experiments[0].ready, true);
+	assert.equal(rc.experiments[0].planner, "openai/gpt-6");
+	assert.equal(rc.default_budget, BUDGET);
+});
+
+test("a setup reading is checked before anything is asked: unknown ids, settings a robot refuses, cells it lacks, planners it cannot use", () => {
+	const x = { robots: ROBOTS, planners: ["openai/gpt-6", "anthropic/claude-fable-5-1"] };
+	const first = (j: Record<string, unknown>) => errorsOf(checkSetup(j, x))[0] ?? "";
+	assert.match(first({ robots: ["aloha"] }), /^robots: aloha is not a robot id of the catalog$/);
+	assert.match(
+		first({ robots: ["maniskill"], setting: "rpent" }),
+		/^setting rpent on maniskill: --preset rpent calls a VLA skill/,
+	);
+	assert.match(
+		first({ robots: ["genesis"], setting: "motormind" }),
+		/^setting motormind on genesis: --preset motormind runs MotorMind mode \(--mm\), which genesis does not mount$/,
+	);
+	// A setting the robot would run but whose cell it does not have: HumanCLAW has no O2.
+	assert.match(
+		first({ robots: ["humanclaw"], setting: "openeta" }),
+		/^setting: openeta is not offered on humanclaw \(its robots: any with the cell\)$/,
+	);
+	// The tier's API level is missing on the robot: refused as the robot refuses it at start.
+	assert.match(
+		first({ robots: ["robotwin"], setting: "capx-M2" }),
+		/capx-M2 on robotwin: .*needs high-tier code primitives/,
+	);
+	assert.match(first({ robots: ["libero"], setting: "nope" }), /nope is not a setting id/);
+	assert.match(first({ robots: ["piper"], vla_alone: true }), /piper does not run a VLA alone/);
+	assert.match(first({ robots: ["ur5e"], cell: "O3/A3" }), /^cell: ur5e has no O3\/A3$/);
+	assert.match(first({ robots: ["libero-pro"], setting: "capx-S1", cell: "O2/A3" }), /not capx-S1's cell \(O3\/A3\)/);
+	assert.match(first({ robots: ["metaworld"], cell: "O1/A2", planner: "flash/replay" }), /cannot replay a plan/);
+	assert.match(
+		first({ robots: ["libero-pro"], setting: "motormind", planner: "finetuned" }),
+		/student does not plan motormind/,
+	);
+	assert.match(first({ planner: "openai/gpt-9" }), /openai\/gpt-9 is not a planner of the catalog/);
+	assert.match(first({ thinking: "ultra" }), /^thinking: ultra is not one of/);
+	assert.match(first({ host: "me@gpu; rm -rf /" }), /is not an ssh host/);
+	// A reading that passes becomes the wizard's request.
+	const ok = checkSetup(
+		{
+			robots: ["robotwin"],
+			setting: "capx-M4",
+			planner: "anthropic/claude-fable-5-1",
+			thinking: "high",
+			where: "remote",
+			host: "me@gpu",
+			unsupported: ["3 seeds per task is a run, not a setup"],
+		},
+		x,
+	);
+	assert.ok("value" in ok, errorsOf(ok).join("; "));
+	if (!("value" in ok)) return;
+	const r = ok.value;
+	assert.deepEqual(
+		[r.robots?.map((b) => b.id), r.kind, r.paper?.id, r.model, r.thinking, r.where, r.host, r.unsupported],
+		[
+			["robotwin"],
+			"sim",
+			"capx-M4",
+			"anthropic/claude-fable-5-1",
+			"high",
+			"remote",
+			"me@gpu",
+			["3 seeds per task is a run, not a setup"],
+		],
+	);
+	// A family of robots narrows the menu; the VLA alone needs no cell.
+	const fam = checkSetup({ robots: ["franka", "franka-polymetis", "dual-franka"] }, x);
+	assert.deepEqual("value" in fam ? fam.value.robots?.length : 0, 3);
+	const alone = checkSetup({ robots: ["maniskill"], vla_alone: true }, x);
+	assert.equal("value" in alone && alone.value.vlaAlone, true);
+});
+
+test("a run reading is checked: the experiment, flags the robot takes, the batch script's arguments, the GPU, the tier still runnable", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	const lib = installed(cwd, "embodied-libero-pro", "libero-pro", {
+		paper: "rpent",
+		cell: cell("O1", "A2"),
+		flags: "--preset rpent",
+		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
+	});
+	const tw = installed(cwd, "embodied-robotwin", "robotwin", {
+		paper: "capx-M4",
+		cell: cell("O2", "A3"),
+		flags: "--tier M4",
+	});
+	const x = { experiments: scanExperiments(cwd, ROBOTS), planners: ["openai/gpt-6"], gpus: [0, 1] };
+	const first = (j: Record<string, unknown>) => errorsOf(checkRun(j, x))[0] ?? "";
+	assert.match(first({ experiment: "/nowhere" }), /^experiment: \/nowhere is not an experiment of the catalog/);
+	assert.match(first({ task_flags: "--task 1" }), /task_flags needs the experiment: name one/);
+	assert.match(
+		first({ experiment: lib, task_flags: "--suite libero_10 --arm panda" }),
+		/--arm is not a flag libero-pro takes/,
+	);
+	assert.match(first({ experiment: lib, task_flags: "--seed 1; rm -rf /" }), /cannot carry safely/);
+	assert.match(first({ experiment: tw, task_flags: "--tier M2" }), /needs high-tier code primitives/);
+	assert.match(first({ experiment: lib, gpu: 7 }), /^gpu: 7 is not one of 0, 1$/);
+	assert.match(first({ experiment: lib, mode: "batch" }), /mode "batch" needs a batch/);
+	const batch = (b: Record<string, unknown>) => first({ experiment: lib, mode: "batch", batch: b });
+	assert.match(batch({ args: ["out/x", "libero_10", "0-9", "1-3"] }), /must be the output directory runs\/<name>/);
+	assert.match(batch({ args: ["runs/../x"] }), /must be the output directory/);
+	assert.match(batch({ args: ["runs/x", "$(id)"] }), /is not a plain argument/);
+	assert.match(batch({ args: ["runs/x"], env: { FOO: "1" } }), /FOO is not a variable .*libero\/eval\.sh reads/);
+	assert.match(batch({ args: ["runs/x"], flags: "--made-up" }), /--made-up is not a flag libero-pro takes/);
+	assert.match(first({ experiment: lib, planner: "openai/gpt-9" }), /not a planner/);
+	const ok = checkRun(
+		{
+			experiment: lib,
+			mode: "batch",
+			batch: { args: ["runs/rpent-pro", "libero_10", "0-9", "1-3"], env: {}, flags: "--thinking low" },
+			planner: "openai/gpt-6",
+			gpu: 1,
+			max_turns: 30,
+		},
+		x,
+	);
+	assert.ok("value" in ok, errorsOf(ok).join("; "));
+	if ("value" in ok)
+		assert.deepEqual([ok.value.dir, ok.value.how, ok.value.gpu, ok.value.maxTurns], [lib, "batch", 1, 30]);
+});
+
+test("interpret: a failed answer goes back with the reasons; a reply without JSON is one; the rounds are capped", async () => {
+	const check = (j: Record<string, unknown>) =>
+		j.n === 2 ? { value: j.n } : { errors: [`n is ${String(j.n)}, not 2`] };
+	let m = scripted([{ n: 1 }, { n: 2 }]);
+	let r = await interpret(m.ask, "SYS", "REQ", check);
+	assert.deepEqual([r.value, r.rounds], [2, 2]);
+	assert.match(m.prompts[1].user, /^REQ\n\nYour previous answer:\n[\s\S]*It failed these checks:\n- n is 1, not 2\n/);
+	m = scripted(["no json here", { n: 3 }, { n: 4 }, { n: 2 }]);
+	r = await interpret(m.ask, "SYS", "REQ", check);
+	assert.deepEqual([r.value, r.rounds, r.errors], [undefined, 3, ["n is 4, not 2"]]);
+	assert.match(m.prompts[1].user, /- the reply holds no JSON object/);
+	assert.equal(m.prompts.length, 3, "a first answer and two corrections");
+});
+
+test("/embodied-setup <request> with a model: its reading against the catalog settles the setup; a failed check is sent back; Chinese works", async () => {
+	const m = scripted([
+		{ robots: ["maniskill"], setting: "rpent", planner: "openai/gpt-6", where: "here" },
+		{
+			robots: ["robotwin"],
+			setting: "rpent",
+			planner: "openai/gpt-6",
+			thinking: "high",
+			where: "here",
+			unsupported: [],
+		},
+	]);
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	const p = fakePi({ cwd, answers: { select: [""], confirm: [false, true] } });
+	await withAsk(m.ask, () => p.run("在 RoboTwin 上复现 RPent，规划器用 gpt-6，思考深度高，本机"));
+	assert.equal(m.prompts.length, 2);
+	assert.match(m.prompts[0].system, /never the A1M cell/);
+	assert.match(m.prompts[0].user, /^Catalog:\n\{"grid"/);
+	assert.match(m.prompts[0].user, /\n\nRequest:\n在 RoboTwin 上复现 RPent/);
+	assert.match(m.prompts[1].user, /- setting rpent on maniskill: --preset rpent calls a VLA skill/);
+	assert.ok(p.notes.includes("reading the request with anthropic/claude-opus-5"));
+	assert.ok(!p.asked.includes(PLANNER) && !p.asked.includes("Where do the services run?"));
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(
+		summary,
+		/^from your request: robot RoboTwin 2; RPent's setting \(O1 × A2, --preset rpent\); planner openai\/gpt-6; thinking high; services here$/m,
+	);
+	assert.match(summary, /^flags: --preset rpent; planner openai\/gpt-6 \(thinking high\)$/m);
+	const settings = JSON.parse(readFileSync(join(cwd, "embodied-robotwin/.pi/settings.json"), "utf8"));
+	assert.deepEqual([settings.defaultModel, settings.defaultThinkingLevel], ["gpt-6", "high"]);
+});
+
+test("/embodied-setup <request>: what the model says is not supported is shown; a reading that never passes, or no answer, falls back to keywords", async () => {
+	// Unsupported: a notice and a line in the confirmation; the rest is asked.
+	let m = scripted([{ robots: ["libero-pro"], unsupported: ["Aloha is not a robot here"] }]);
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"], ["\r"]] },
+	});
+	await withAsk(m.ask, () => p.run("libero-pro, and Aloha too"));
+	assert.ok(p.notes.includes("not supported: Aloha is not a robot here"));
+	assert.match(p.confirms.at(-1) ?? "", /^not supported: Aloha is not a robot here$/m);
+	// Three failed readings: the keywords read the same text.
+	m = scripted([{ robots: ["aloha"] }, { robots: ["aloha"] }, { robots: ["aloha"] }]);
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
+	});
+	await withAsk(m.ask, () => p.run("reproduce RPent on LIBERO-PRO"));
+	assert.ok(
+		p.notes.some((n) =>
+			/^anthropic\/claude-opus-5's reading failed the checks 3 times \(robots: aloha is not a robot id of the catalog\); reading the request by keywords instead$/.test(
+				n,
+			),
+		),
+		p.notes.join("|"),
+	);
+	assert.match(p.confirms.at(-1) ?? "", /^from your request: robot LIBERO-PRO; RPent's setting/m);
+	// The model unreachable: the same.
+	m = scripted([new Error("connect ECONNREFUSED")]);
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
+	});
+	await withAsk(m.ask, () => p.run("reproduce RPent on LIBERO-PRO"));
+	assert.ok(
+		p.notes.some((n) =>
+			/could not read the request \(connect ECONNREFUSED\); reading it by keywords instead$/.test(n),
+		),
+	);
+	assert.match(p.confirms.at(-1) ?? "", /RPent's setting/);
+	// No text: nothing is sent to the model.
+	m = scripted([]);
+	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	await withAsk(m.ask, () => p.run(""));
+	assert.equal(m.prompts.length, 0);
+});
+
+test("/embodied-run <request> with a model: a batch over tasks and seeds with the robot's eval.sh; an unknown experiment is sent back; a planner override", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	const lib = installed(cwd, "embodied-libero-pro", "libero-pro", {
+		paper: "rpent",
+		cell: cell("O1", "A2"),
+		flags: "--preset rpent",
+		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
+	});
+	installed(cwd, "embodied-robotwin", "robotwin", { paper: "capx-M4", cell: cell("O2", "A3"), flags: "--tier M4" });
+	runDeps.gpus = () => [
+		{ index: 0, freeMiB: 40000, totalMiB: 46000 },
+		{ index: 1, freeMiB: 30000, totalMiB: 46000 },
+	];
+	runDeps.freePort = async () => 8765;
+	runDeps.env = {};
+	// The batch: libero_10 tasks 0-9, seeds 1-3, on GPU 1, with Claude Fable instead of the recorded planner.
+	let m = scripted([
+		{
+			experiment: lib,
+			mode: "batch",
+			batch: { args: ["runs/rpent-pro", "libero_10", "0-9", "1-3"], env: {}, flags: "" },
+			planner: "anthropic/claude-fable-5-1",
+			gpu: 1,
+			max_turns: 30,
+		},
+	]);
+	let p = fakePi({
+		cwd,
+		available: [
+			{ provider: "openai", id: "gpt-6" },
+			{ provider: "anthropic", id: "claude-fable-5-1", name: "Claude Fable 5.1" } as never,
+		],
+		answers: { select: [BATCH_HOW.print], confirm: [true] },
+	});
+	await withAsk(
+		m.ask,
+		() =>
+			p.commands
+				.get(RUN)
+				?.handler("RPent on LIBERO-PRO, libero_10 tasks 0-9, 3 seeds each, Claude Fable 5.1, GPU 1", p.ctx) ??
+			Promise.resolve(),
+	);
+	assert.match(m.prompts[0].system, /eval\.usage/);
+	assert.match(m.prompts[0].user, /"script":"packages\/embodied\/src\/robots\/libero\/eval\.sh"/);
+	assert.match(m.prompts[0].user, /"gpus":\[\{"index":0/);
+	assert.ok(!p.asked.includes("Experiment") && !p.asked.includes("GPU") && !p.asked.includes("Task flags"));
+	const command = `cd ${cwd} && source ${cwd}/services/.venv-libero-pro/pi-embodied.env && CUDA_VISIBLE_DEVICES=1 MUJOCO_EGL_DEVICE_ID=1 packages/embodied/src/robots/libero/eval.sh runs/rpent-pro libero_10 0-9 1-3 --preset rpent --model anthropic/claude-fable-5-1 --max-turns 30 --time-limit 900`;
+	assert.match(p.confirms.at(-1) ?? "", new RegExp(`^${command.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$`, "m"));
+	assert.deepEqual(p.offered["How to run the batch?"], [rec(BATCH_HOW.headless), BATCH_HOW.print]);
+	assert.equal(p.notes.at(-1), command);
+	// Headless: the agent runs the batch and reports its summary.
+	m = scripted([
+		{
+			experiment: lib,
+			mode: "batch",
+			batch: { args: ["runs/rpent-pro", "libero_10", "0-9", "1-3"], env: {}, flags: "" },
+			gpu: 0,
+		},
+	]);
+	p = fakePi({ cwd, answers: { select: ["", BATCH_HOW.headless], confirm: [true] } });
+	await withAsk(m.ask, () => p.commands.get(RUN)?.handler("rpent batch", p.ctx) ?? Promise.resolve());
+	assert.match(
+		p.sent[0]?.text ?? "",
+		/^\/skill:embodied-quickstart Run this batch now, in the background, and report its summary: `cd .*eval\.sh runs\/rpent-pro libero_10 0-9 1-3 --preset rpent --model openai\/gpt-6 --max-turns 40 --time-limit 900`$/m,
+	);
+	// An unknown experiment goes back; the corrected one episode, printed, with the planner replaced.
+	m = scripted([
+		{ experiment: "/elsewhere", mode: "print" },
+		{
+			experiment: lib,
+			mode: "print",
+			task_flags: "--libero-type pro --suite libero_10 --task 3 --seed 2",
+			planner: "anthropic/claude-fable-5-1",
+			gpu: 0,
+		},
+	]);
+	p = fakePi({
+		cwd,
+		available: [{ provider: "anthropic", id: "claude-fable-5-1", name: "Claude Fable 5.1" } as never],
+		answers: { select: ["", ""], confirm: [true] },
+	});
+	await withAsk(
+		m.ask,
+		() =>
+			p.commands
+				.get(RUN)
+				?.handler("task 3 seed 2 on the LIBERO-PRO one with Claude Fable 5.1, just print it", p.ctx) ??
+			Promise.resolve(),
+	);
+	assert.match(m.prompts[1].user, /- experiment: \/elsewhere is not an experiment of the catalog/);
+	assert.ok(!p.asked.includes("How to run?"));
+	assert.match(
+		p.notes.at(-1) ?? "",
+		/pi --libero-type pro --suite libero_10 --task 3 --seed 2 --preset rpent --model anthropic\/claude-fable-5-1 --max-turns 40/,
+	);
 });

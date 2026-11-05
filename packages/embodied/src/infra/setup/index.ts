@@ -53,8 +53,11 @@ import {
 	VISER,
 } from "./axes.ts";
 import { settingsFor } from "./caps.ts";
-import { FINETUNED_REF, FLASH_REF, parseRequest, requestCell } from "./request.ts";
+import { evalUsage, flashFor, type Surface, surfaceFor } from "./catalog.ts";
+import { type Ask, type Reading, type RunPlan, readRun, readSetup, registryAsk } from "./interpret.ts";
+import { FINETUNED_REF, FLASH_REF, parseRequest, type Request, requestCell } from "./request.ts";
 import {
+	batchCommand,
 	DASHBOARD_PORT,
 	type Experiment,
 	episodeFlags,
@@ -68,6 +71,7 @@ import {
 	panelFlags,
 	panelUrls,
 	RECORD,
+	type RunOptions,
 	runCommand,
 	runOptions,
 	type SetupRecord,
@@ -116,8 +120,6 @@ export const PAPER = "Work to reproduce (optional)";
 export const NO_PAPER = "none: the cell's plain flags";
 /** The planner option that runs the robot's fine-tuned adapter instead of a model of the registry (A1 Code only). */
 export const FINETUNED = "fine-tuned: a small VLM + LoRA picks each unit (served by vLLM)";
-/** The action surface the fine-tuned student speaks (../../modes/finetuned `--ft-surface`): A1 Code's units, A1 Model's and A2's tools, A3's code. */
-export type Surface = "units" | "tools" | "code";
 export const FINETUNED_AS: Record<Surface, string> = {
 	units: FINETUNED,
 	tools: "fine-tuned (tools surface): a small VLM + LoRA picks each tool call; no released adapter, you serve one",
@@ -125,8 +127,6 @@ export const FINETUNED_AS: Record<Surface, string> = {
 };
 /** The no-model planner: Flash replays a recorded plan (../../capabilities/flash), on a robot with a Flash hook. */
 export const FLASH = `${FLASH_REF}: no model; replays a recorded plan (a solved episode's, or --flash-plan <file>)`;
-/** The settings whose own planner loop the student and Flash do not stand in for: MotorMind's roles, HumanCLAW's paper mode. */
-const OWN_LOOP = new Set(["motormind2026", "humanclaw"]);
 
 export type Kind = "sim" | "real";
 export const KINDS: Record<Kind, string> = {
@@ -384,6 +384,8 @@ export type Choice = {
 	weights: boolean;
 	/** The planner of the registry, or none when `finetuned`. */
 	model?: string;
+	/** The planner's thinking level (the experiment's defaultThinkingLevel), when the request named one. */
+	thinking?: string;
 	/** The robot's fine-tuned adapter is the planner, speaking `surface` (units: the released adapters). */
 	finetuned: boolean;
 	surface?: Surface;
@@ -467,6 +469,7 @@ export function experimentSettings(c: Choice, source: string, root: string, exis
 		out.defaultProvider = c.model.slice(0, i);
 		out.defaultModel = c.model.slice(i + 1);
 	}
+	if (c.thinking) out.defaultThinkingLevel = c.thinking;
 	return out;
 }
 
@@ -547,15 +550,6 @@ function plannerLines(c: Choice): string[] {
 		];
 	return [`- planner: ${plannerName(c)}`];
 }
-
-/** The fine-tuned student's surface for a setting, when it can plan it: none for a setting with its own loop. */
-export function surfaceFor(robot: Robot, cell: Cell, paper?: Paper): Surface | undefined {
-	if (robot.id === "humanclaw" || (paper && OWN_LOOP.has(paper.work))) return undefined;
-	if (cell.a === "A1C") return robot.finetuned && (!paper || paper.id === "showharness") ? "units" : undefined;
-	return cell.a === "A3" ? "code" : "tools";
-}
-/** Whether Flash can replay a plan for a setting: the robot has a Flash hook and the setting no loop of its own. */
-export const flashFor = (robot: Robot, paper?: Paper) => Boolean(robot.flash) && !(paper && OWN_LOOP.has(paper.work));
 
 /** The grid: a custom component in the TUI, a list of the supported cells elsewhere. */
 async function pickCell(ctx: ExtensionCommandContext, robot: Robot): Promise<Cell | undefined> {
@@ -689,6 +683,42 @@ async function pickWork(ctx: ExtensionCommandContext, papers: Paper[], robot = "
 	return e ? { paper: e.paper } : undefined;
 }
 
+/** What the setup and run readers ask with; a test replaces it (unset: the session's model through pi's registry). */
+export const agentDeps: { ask?: Ask } = {};
+/**
+ * Read a request with the session's model (./interpret.ts): its value when the reading passed the checks;
+ * undefined with no text, no model, an error or a reading that never passed (the caller reads keywords).
+ */
+async function withModel<T>(
+	ctx: ExtensionCommandContext,
+	text: string,
+	read: (ask: Ask) => Promise<Reading<T>>,
+): Promise<T | undefined> {
+	if (!text.trim()) return undefined;
+	const name = realModel(ctx.model) ?? "the model";
+	const ask =
+		agentDeps.ask ??
+		(ctx.model && realModel(ctx.model) && typeof ctx.modelRegistry.streamSimple === "function"
+			? registryAsk(ctx.modelRegistry, ctx.model)
+			: undefined);
+	if (!ask) return undefined;
+	ctx.ui.notify(`reading the request with ${name}`, "info");
+	try {
+		const r = await read(ask);
+		if (r.value) return r.value;
+		ctx.ui.notify(
+			`${name}'s reading failed the checks ${r.rounds} times (${r.errors.slice(0, 3).join("; ")}); reading the request by keywords instead`,
+			"warning",
+		);
+	} catch (e) {
+		ctx.ui.notify(
+			`${name} could not read the request (${e instanceof Error ? e.message : String(e)}); reading it by keywords instead`,
+			"warning",
+		);
+	}
+	return undefined;
+}
+
 async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): Promise<void> {
 	if (robotActive(pi)) {
 		ctx.ui.notify("A robot is already loaded here; run /embodied-setup from a directory without one.", "warning");
@@ -707,9 +737,19 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		ui.notify(NO_MODEL, "error");
 		return;
 	}
-	// A request settles what it names; the rest is asked. A name nothing matches may be something not supported yet.
+	// A request settles what it names; the rest is asked. The session's model reads it against the catalog of
+	// what the robots run (./interpret.ts); without one, or when its reading fails the checks, the keywords do.
 	// What only an episode uses (task 3, gpu 5, headless) is /embodied-run's: the same text works there.
-	const req = parseRequest(runOptions(args).rest, ROBOTS, [...refs, ...SELFHOST.map((x) => `selfhost/${x.id}`)]);
+	const hosted = SELFHOST.map((x) => `selfhost/${x.id}`);
+	const read = await withModel(ctx, args, (ask) =>
+		readSetup(ask, args, {
+			robots: ROBOTS,
+			planners: [...available, ...hosted],
+			refs: [...refs, ...hosted.map((ref) => ({ ref }))],
+		}),
+	);
+	const req: Request<Robot> = read ?? parseRequest(runOptions(args).rest, ROBOTS, [...refs, ...hosted]);
+	if (req.unsupported?.length) ui.notify(`not supported: ${req.unsupported.join("; ")}`, "warning");
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name (maybe not supported yet). The rest is asked.`,
@@ -837,8 +877,8 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	// robot's released units adapter, alone or with Show-Harness's preset; A1 Model and A2: tools; A3:
 	// code), or Flash's replay of a recorded plan. The VLA alone has none.
 	const registry = [...new Set([...(current ? [current] : []), ...available])].filter((m) => !selfhostOf(m));
-	const hosted = SELFHOST.map(selfhostLabel);
-	const planners = [...registry, ...hosted];
+	const hostedLabels = SELFHOST.map(selfhostLabel);
+	const planners = [...registry, ...hostedLabels];
 	const surface = cell ? surfaceFor(robot, cell, paper) : undefined;
 	if (surface) planners.push(FINETUNED_AS[surface]);
 	if (cell && flashFor(robot, paper)) planners.push(FLASH);
@@ -866,7 +906,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 				)
 			)?.id;
 	if (picked === undefined || (!vlaAlone && !picked)) return;
-	const hostedSpec = vlaAlone ? undefined : (SELFHOST[hosted.indexOf(picked)] ?? selfhostOf(picked));
+	const hostedSpec = vlaAlone ? undefined : (SELFHOST[hostedLabels.indexOf(picked)] ?? selfhostOf(picked));
 	const planner = hostedSpec ? `selfhost/${hostedSpec.id}` : picked;
 	const ftSurface = (Object.keys(FINETUNED_AS) as Surface[]).find((k) => FINETUNED_AS[k] === planner);
 	const finetuned = ftSurface !== undefined;
@@ -900,6 +940,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		surface: ftSurface,
 		dir,
 		selfhost,
+		thinking: req.thinking,
 	};
 
 	const file = join(dir, ".pi", "settings.json");
@@ -919,8 +960,9 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	const summary = [
 		...(req.settled.length ? [`from your request: ${req.settled.join("; ")}`] : []),
 		...(req.unknown.length ? [`not recognized (maybe not supported yet): ${req.unknown.join(", ")}`] : []),
+		...(req.unsupported?.length ? [`not supported: ${req.unsupported.join("; ")}`] : []),
 		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
-		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${plannerName(choice)}`,
+		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${plannerName(choice)}${choice.thinking ? ` (thinking ${choice.thinking})` : ""}`,
 		...(selfhost
 			? [
 					selfhost.deploy
@@ -999,13 +1041,39 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		return;
 	}
 	const ui = ctx.ui;
-	// The request: what it says about the episode (task, GPU, turns, how) is split off; the rest names what is installed.
+	// The request: the session's model reads it against the experiments here (./interpret.ts); else the keywords
+	// do, and what they say about the episode (task, GPU, turns, how) is split off, the rest naming what is installed.
 	const text = args.trim();
-	const { rest, opts } = runOptions(text);
-	const req = parseRequest(rest, ROBOTS, [
-		...ctx.modelRegistry.getAvailable().map((m) => ({ ref: `${m.provider}/${m.id}`, name: m.name })),
-		...SELFHOST.map((x) => `selfhost/${x.id}`),
-	]);
+	const all = scanExperiments(ctx.cwd, ROBOTS);
+	const refs = ctx.modelRegistry.getAvailable().map((m) => ({ ref: `${m.provider}/${m.id}`, name: m.name }));
+	const hosted = SELFHOST.map((x) => `selfhost/${x.id}`);
+	const devicesNow = all.length && text ? runDeps.gpus() : [];
+	const plan: RunPlan | undefined = all.length
+		? await withModel(ctx, text, (ask) =>
+				readRun(ask, text, {
+					experiments: all,
+					planners: [...refs.map((m) => m.ref), ...hosted],
+					refs: [...refs, ...hosted.map((ref) => ({ ref }))],
+					gpus: devicesNow.map((d) => d.index),
+					gpuLabels: devicesNow.map((d) => ({ index: d.index, label: gpuLabel(d) })),
+					budget: BUDGET,
+				}),
+			)
+		: undefined;
+	const { rest, opts } = plan
+		? {
+				rest: text,
+				opts: {
+					gpu: plan.gpu,
+					turns: plan.maxTurns,
+					how: plan.how === "batch" ? undefined : plan.how,
+				} satisfies RunOptions,
+			}
+		: runOptions(text);
+	const req: Request<Robot> = plan
+		? { settled: plan.settled, unknown: [], model: plan.model, unsupported: plan.unsupported }
+		: parseRequest(rest, ROBOTS, [...refs, ...hosted]);
+	if (req.unsupported?.length) ui.notify(`not supported: ${req.unsupported.join("; ")}`, "warning");
 	if (req.unknown.length)
 		ui.notify(
 			`not recognized: ${req.unknown.join(", ")}; no robot, ported setting, survey work, level or planner by that name`,
@@ -1016,7 +1084,6 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 			`/${RUN} starts episodes on this machine${req.host ? `; for ${req.host}, run it there` : ""}`,
 			"warning",
 		);
-	const all = scanExperiments(ctx.cwd, ROBOTS);
 	if (!all.length) {
 		const why = `no experiment here: no .pi/settings.json loading a robot in ${ctx.cwd} or its subdirectories`;
 		if (rest) await offerSetup(pi, ctx, why, text);
@@ -1024,7 +1091,11 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		return;
 	}
 	// The experiments the request describes; when it names robot or setting and none is installed, setup is next.
-	const pool = namesInstall(req) ? matchExperiments(all, req) : all;
+	const pool = plan?.dir
+		? all.filter((e) => e.dir === plan.dir)
+		: namesInstall(req)
+			? matchExperiments(all, req)
+			: all;
 	if (!pool.length) {
 		await offerSetup(
 			pi,
@@ -1080,10 +1151,13 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	// A planner the request names replaces the experiment's for this episode.
 	if (req.model && req.model !== (exp.planner ?? exp.record?.planner))
 		setting = `${setting} --model ${req.model}`.trim();
+	if (plan?.thinking) setting = `${setting} --thinking ${plan.thinking}`.trim();
 	// The task: the request's task, seed and suite on the recorded flags; else asked.
 	const recordedTask = exp.record?.task ?? exp.robot.task;
 	let taskFlags: string;
-	if (opts.task !== undefined || opts.seed !== undefined || opts.suite !== undefined)
+	if (plan?.taskFlags) taskFlags = plan.taskFlags;
+	else if (plan?.batch) taskFlags = "";
+	else if (opts.task !== undefined || opts.seed !== undefined || opts.suite !== undefined)
 		taskFlags = withRunOptions(recordedTask, opts);
 	else {
 		const task = await chooseValue(ctx, "Task flags", [
@@ -1105,10 +1179,14 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		gpu = devices[choices.indexOf(g)]?.index;
 	} else if (devices.length === 1) gpu = devices[0].index;
 	const budget =
-		opts.turns !== undefined
-			? BUDGET.replace(/--max-turns \d+/, `--max-turns ${opts.turns}`)
+		opts.turns !== undefined || plan?.timeLimit !== undefined
+			? BUDGET.replace(/--max-turns \d+/, `--max-turns ${opts.turns ?? 40}`).replace(
+					/--time-limit \d+/,
+					`--time-limit ${plan?.timeLimit ?? 900}`,
+				)
 			: await chooseValue(ctx, "Episode budget", BUDGETS);
 	if (budget === undefined) return;
+	if (plan?.batch) return runBatch(pi, ctx, exp, plan.batch, setting, budget, gpu, plan.settled);
 	// Panels: the work's own (the ported setting's, when the robot serves them), else the robot's, with the dashboard; or the dashboard alone.
 	const paperOf = exp.record?.paper ? PAPERS.find((p) => p.id === exp.record?.paper) : undefined;
 	const chosen = settingPaper ?? paperOf;
@@ -1192,6 +1270,63 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 	ui.notify(
 		status === 0 ? `episode session ended (${exp.dir})` : `pi exited with ${status ?? "a signal"}: ${command}`,
 		status === 0 ? "info" : "warning",
+	);
+}
+
+export const BATCH_HOW = {
+	headless: "headless: the agent runs the batch now, in the background, and reports its summary",
+	print: "print: show the command, I run it myself",
+} as const;
+/**
+ * A batch the model read: the robot's eval.sh over the tasks and seeds, with the experiment's setting, its
+ * planner (eval.sh starts pi itself, so the experiment's settings do not apply) and the budget; confirmed,
+ * then run by the agent in the background or printed.
+ */
+async function runBatch(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	exp: Experiment<Robot>,
+	batch: NonNullable<RunPlan["batch"]>,
+	setting: string,
+	budget: string,
+	gpu: number | undefined,
+	settled: string[],
+): Promise<void> {
+	const ui = ctx.ui;
+	const ev = evalUsage(exp.robot);
+	if (!ev) {
+		ui.notify(`${exp.robot.label} has no eval.sh to run a batch with`, "error");
+		return;
+	}
+	const planner = exp.planner ?? exp.record?.planner;
+	const model = /--model\b/.test(setting) || !planner?.includes("/") ? "" : `--model ${planner}`;
+	const command = batchCommand(exp, ev.script, batch, [setting, model, budget].filter(Boolean).join(" "), gpu);
+	const summary = [
+		`from your request: ${settled.join("; ")}`,
+		`${exp.robot.label} (${exp.dir}): a batch with ${ev.script}`,
+		gpu === undefined ? "GPU: any" : `GPU ${gpu}`,
+		command,
+	].join("\n");
+	if (!(await ui.confirm("Start the batch?", summary))) {
+		ui.notify("Nothing started.", "info");
+		return;
+	}
+	const how = (await ui.select("How to run the batch?", [rec(BATCH_HOW.headless), BATCH_HOW.print]))?.replace(
+		RECOMMENDED,
+		"",
+	);
+	if (!how) return;
+	if (how === BATCH_HOW.print) {
+		ui.notify(command, "info");
+		return;
+	}
+	pi.sendUserMessage(
+		[
+			`/skill:embodied-quickstart Run this batch now, in the background, and report its summary: \`${command}\``,
+			`- ${ev.script} prints a summary of the cells at the end (rerunning retries only the invalid episodes); report it with the out dir`,
+			"- do not install or change anything; if it fails to start, show me the error and stop",
+		].join("\n"),
+		{ expandPromptTemplates: true, ...(ctx.isIdle() ? {} : { deliverAs: "followUp" as const }) },
 	);
 }
 

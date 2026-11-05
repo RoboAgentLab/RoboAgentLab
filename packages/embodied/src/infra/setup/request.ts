@@ -41,8 +41,12 @@ export type Request<R extends RobotLike = RobotLike> = {
 	host?: string;
 	/** A planner the text names: a registry model (provider/id), FINETUNED_REF or FLASH_REF. */
 	model?: string;
+	/** The planner's thinking level (pi's --thinking), when the text names one. */
+	thinking?: string;
 	/** Names in the text that are no robot, setting, work, level or planner: possibly something not supported yet. */
 	unknown: string[];
+	/** What the request asks for that the robots do not offer, in words (the model's reading, ./interpret.ts). */
+	unsupported?: string[];
 };
 
 /** Letters and digits only, lower case: "LIBERO-PRO", "libero pro" and "libero-pro" are one key. */
