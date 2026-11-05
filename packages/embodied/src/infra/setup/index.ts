@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { deployment, deploymentName } from "../config.ts";
+import { registerAsk } from "./ask.ts";
 import {
 	type Axes,
 	type Cell,
@@ -1331,6 +1332,8 @@ async function runBatch(
 }
 
 export default function embodiedSetup(pi: ExtensionAPI) {
+	// The agent asks what a request leaves open as choices; an episode's planner does not get it.
+	registerAsk(pi, () => robotActive(pi));
 	pi.registerCommand(RUN, {
 		description:
 			"Start an episode of an installed experiment. A request after it is read as /embodied-setup reads it (robot, work, cell, planner) to find the experiment, plus task / seed / suite / gpu / turns / headless / print; not installed: /embodied-setup is offered with the same request",

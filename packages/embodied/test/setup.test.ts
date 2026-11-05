@@ -146,6 +146,9 @@ function fakePi(
 			...(o.robot ? [{ name: "robot-task", source: "extension" }] : []),
 		],
 		appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+		registerTool: () => {},
+		getActiveTools: () => [],
+		setActiveTools: () => {},
 		sendUserMessage: (text: string, options: unknown) => sent.push({ text, options }),
 	} as unknown as ExtensionAPI;
 	const ctx = {
