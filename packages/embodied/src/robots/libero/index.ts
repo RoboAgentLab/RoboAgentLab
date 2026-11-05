@@ -6,7 +6,8 @@
  * Starts one LIBERO env server per session and attaches to running Pi0.5 VLA and
  * SAM3 servers (see serve.sh). Tools are the LIBERO primitives. Every motion
  * tool returns the new state with agentview and wrist images; success is LIBERO's
- * own `terminated` flag, recorded in the session's `robot_result` entry.
+ * own `terminated` flag, recorded in the session's `robot_result` entry. `--vla-alone pi0` (or a
+ * mounted `--vla-adapter` name) runs that VLA alone instead of the planner (../../planner/vla-alone.ts).
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +29,7 @@ import { imageOf, type Segment } from "../../modes/motormind/index.ts";
 import { finishMove, type Move, type UnitsSpec } from "../../modes/units/index.ts";
 import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import { graspAdvisorTool } from "../../primitives/advisor.ts";
 import {
@@ -60,6 +62,7 @@ import {
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
 import {
 	adaptersFor,
+	baseSuite,
 	mountAdapters,
 	PICK_PARAMETERS,
 	type PickParams,
@@ -298,6 +301,20 @@ export function latchSuccess(previous: number | undefined, terminated: boolean |
  * are `<suite>_plus_t<task>_s<seed>` and never read or write a standard/pro cell's audit, recipe or
  * inbox. Standard and pro share cells: their task sets are identical.
  */
+/**
+ * The VLA-alone budget (`--vla-alone`, 0 = this): the env steps openpi's LIBERO eval gives an
+ * episode of the suite (examples/libero/main.py max_steps, after its settle wait), by base suite, so
+ * a LIBERO-Pro or LIBERO-plus perturbation gets its base suite's. 0 for a suite it does not know.
+ */
+export const VLA_ALONE_STEPS: Record<string, number> = {
+	libero_spatial: 220,
+	libero_object: 280,
+	libero_goal: 300,
+	libero_10: 520,
+	libero_90: 400,
+};
+export const vlaAloneSteps = (suite: string) => VLA_ALONE_STEPS[baseSuite(suite)] ?? 0;
+
 export const memoryTag = (suite: string, task: string, seed: string, liberoType: string) =>
 	`${suite.replace(/^libero_/, "")}${liberoType === "plus" ? "_plus" : ""}_t${task}_s${seed}`;
 /**
@@ -690,6 +707,8 @@ export default function libero(pi: ExtensionAPI) {
 			truncated,
 			env_steps: envStep,
 			vla: vlaUsed,
+			// A VLA-alone run (--vla-alone).
+			...va.result(),
 			libero_prompt: variant(),
 			...(settleTicks() > 0 ? { settle_ticks: settled } : {}),
 		}),
@@ -828,6 +847,13 @@ export default function libero(pi: ExtensionAPI) {
 	const { video, op } = robot;
 	const mem = robot.mem!;
 	const fly = robot.fly!;
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		mounted: vlaAdapterNames,
+		skills: ["pi0"],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
 
 	/** Every robot RPC carries the running tool's abort signal, so an abort stops motion between calls. */
 	const call = <T = unknown>(
@@ -892,11 +918,11 @@ export default function libero(pi: ExtensionAPI) {
 
 	/**
 	 * One VLA forward pass (Pi0.5 by default, or a mounted adapter) with `prompt` as the instruction,
-	 * executed as one action chunk; returns its seed. The first call of a tool records which VLA answered,
-	 * and refuses an adapter whose checkpoint is another suite's fine-tune (it stays unrecorded, so
-	 * every call refuses until the right server is up).
+	 * executed as one action chunk, at most `limit` actions of it; returns its seed. The first call of a
+	 * tool records which VLA answered, and refuses an adapter whose checkpoint is another suite's
+	 * fine-tune (it stays unrecorded, so every call refuses until the right server is up).
 	 */
-	async function vlaChunk(prompt: string, client = vla, toolName = "pi0") {
+	async function vlaChunk(prompt: string, client = vla, toolName = "pi0", limit = Infinity) {
 		if (!(toolName in vlaUsed)) {
 			const info = await vlaInfo(client).catch(() => undefined);
 			const why = info && suiteMismatch(info, robot.task.suite);
@@ -914,8 +940,17 @@ export default function libero(pi: ExtensionAPI) {
 		const seed = seeds.next();
 		const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
 		const actions = await call<NdArray>(client, "vla.predict", {}, 120_000, [wire, options]);
-		const chunk = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
-		const vlaId = fly.proposal(prompt, chunk);
+		const proposed = new NdArray(actions.dtype, actions.shape.slice(1), actions.data);
+		const vlaId = fly.proposal(prompt, proposed);
+		const rows = Math.min(proposed.shape[0], limit);
+		const chunk =
+			rows === proposed.shape[0]
+				? proposed
+				: new NdArray(
+						proposed.dtype,
+						[rows, ...proposed.shape.slice(1)],
+						proposed.data.subarray(0, (rows * proposed.data.length) / proposed.shape[0]),
+					);
 		op.check();
 		const [frames, rew, term, trunc, info] = await call<ChunkReturn>(
 			env,
@@ -1437,6 +1472,38 @@ export default function libero(pi: ExtensionAPI) {
 		}
 		return { name: "pi0_doubled", instruction: prompt, success: terminated, chunks_used: chunks, vla_seeds };
 	});
+
+	/**
+	 * `--vla-alone pi0` (Pi0.5) or `--vla-alone <adapter>`: its chunks on the task instruction until LIBERO
+	 * terminates or truncates the episode or `steps` env steps are spent (0: the suite's standard budget,
+	 * `vlaAloneSteps`).
+	 */
+	async function runVlaAlone(name: string, steps: number) {
+		const toolName = name === "pi0" ? "pi0" : adaptersFor("libero").find((a) => a.flag === name)!.tool;
+		const client = name === "pi0" ? vla : adapters.get(toolName)!;
+		const budget = steps || vlaAloneSteps(robot.task.suite);
+		if (!budget)
+			throw new Error(`--vla-alone: ${robot.task.suite} has no standard episode length; pass --vla-alone-steps`);
+		const before = envStep;
+		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
+		while (envStep - before < budget && !terminated && !truncated) {
+			const at = envStep;
+			vla_seeds.push((await vlaChunk(language, client, toolName, budget - (envStep - before))) ?? null);
+			chunks++;
+			// An empty chunk steps nothing: the policy has stopped.
+			if (envStep === at) break;
+		}
+		return {
+			tool: toolName,
+			instruction: language,
+			steps_budget: budget,
+			env_steps: envStep - before,
+			chunks,
+			success: terminated,
+			vla_seeds,
+		};
+	}
 
 	tool("release", "", Type.Object({}), async (params: Json) => {
 		const r = await serverMotion("env.release", params);
@@ -1972,6 +2039,8 @@ export default function libero(pi: ExtensionAPI) {
 		adapters.clear();
 		for (const [toolName, m] of mountAdapters(pi, vlaAdapterNames(), "libero")) adapters.set(toolName, m.client);
 		for (const k of Object.keys(vlaUsed)) delete vlaUsed[k];
+		const why = va.configError(skills);
+		if (why) throw new Error(why);
 		sam3 = new RpcClient(service(pi, "sam3"));
 		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) {

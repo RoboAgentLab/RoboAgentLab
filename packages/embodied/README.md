@@ -68,9 +68,9 @@ so a session, its `robot_result` row and the eval scripts never notice which pla
 
 | Robot | Extension | Success signal | Shared modules |
 | --- | --- | --- | --- |
-| LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash, MotorMind |
-| RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, MotorMind; MotorMind drives the arm, the base held |
-| RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab, MotorMind; MotorMind drives one arm (`--robotwin-mm-arm`) |
+| LIBERO / LIBERO-PRO / LIBERO-plus | `src/robots/libero` | LIBERO `terminated` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, operator, Flash, MotorMind; the `--vla-alone pi0` baseline (Pi0.5, or a mounted `--vla-adapter`) |
+| RoboCasa | `src/robots/robocasa` | `env._check_success()` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, MotorMind; MotorMind drives the arm, the base held; the `--vla-alone rldx` baseline (RLDX-1) |
+| RoboTwin | `src/robots/robotwin` | `eval_success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab, MotorMind; MotorMind drives one arm (`--robotwin-mm-arm`); the `--vla-alone lingbot` baseline (LingBot-VLA) |
 | ManiSkill | `src/robots/maniskill` | ManiSkill `success` | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, MotorMind; `--vla-adapter openvla` (OpenVLA on the bridge WidowX) and its `--vla-alone` baseline; MotorMind drives `--arm panda` and `xarm6_robotiq` on the stock scenes |
 | RoboLab | `src/robots/robolab` | RoboLab's task predicate | memory, explore, video, units, VDM, code, `--privileged`, Flash |
 | RoboDojo (two ARX X5) | `src/robots/robodojo` | RoboDojo's `is_episode_end` (`score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`, flywheel, Flash, XPolicyLab |

@@ -15,7 +15,10 @@
 # A --privileged run (simulator ground truth) is recorded as such and never shares an out dir with one without.
 # The fallback planner (--fallback-model, --fallback-after, --fallback-retry-primary; src/planner/fallback.ts) is part of the
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
-# So is the system prompt (--libero-prompt rpent|compact, default rpent; results from before the flag ran compact).
+# So is the system prompt (--libero-prompt rpent|compact, default rpent; results from before the flag ran compact),
+# and --vla-alone (Pi0.5, `pi0`, or a mounted --vla-adapter run instead of the planner, the VLA-alone baseline;
+# recorded as vla_alone_adapter):
+#   eval.sh runs/lp-pi0 libero_spatial 0-9 0-2 --libero-type pro --vla-alone pi0
 set -uo pipefail
 out=$1 suite=$2 tasks=$3 seeds=$4
 shift 4
@@ -30,8 +33,11 @@ source "$here/../../scripts/eval-options.sh"
 eval_options_defaults
 unit_tol=0.004
 libero_prompt=rpent
+vla_alone=""
 eval_robot_option() {
 	case $1 in
+	--vla-alone) vla_alone=${2:-} ;;
+	--vla-alone=*) vla_alone=${1#*=} ;;
 	--libero-prompt) libero_prompt=${2:-} ;;
 	--libero-prompt=*) libero_prompt=${1#*=} ;;
 	--unit-tol) unit_tol=${2:-} ;;
@@ -39,6 +45,8 @@ eval_robot_option() {
 	esac
 }
 eval_parse_options "$@"
+# Read by record / valid / the summary (the VLA-alone VLA is part of the configuration).
+export VLA_ALONE=$vla_alone
 
 # Without --vdm or --vdm-video no VDM call runs, so its model is not part of the configuration;
 # --vdm-video is recorded as its frame count.
@@ -69,9 +77,9 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
-// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
-// message: the result line the robot prints on stderr is the result.
-if (!results.length && codeOracle && codeMode !== "false")
+// An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
+// file without an assistant message: the result line the robot prints on stderr is the result.
+if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))
 	try {
 		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
 			if (line.startsWith("[libero] {")) results.push(JSON.parse(line.slice("[libero] ".length)));
@@ -86,7 +94,7 @@ const result = { ...(last ?? {}), status, exit_code: Number(code), model: model 
 	privileged: privileged === "true", unit_tol: Number(unitTol),
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
-	libero_prompt: liberoPrompt, ft_flags: process.env.FT_FLAGS || null,
+	libero_prompt: liberoPrompt, ft_flags: process.env.FT_FLAGS || null, vla_alone_adapter: process.env.VLA_ALONE || null,
 	// MotorMind mode (--preset motormind / --mm): its variant list and the hashes of its prompts key the configuration too.
 	mm: last?.params?.mm === "true", mm_variant: last?.motormind?.variant ? sha(last.motormind.variant) : null, mm_prompts: last?.motormind?.prompts ? sha(last.motormind.prompts) : null };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
@@ -124,7 +132,9 @@ const same = r.model === (model || null) && r.thinking === (thinking || null) &&
 	&& (r.fallback_model ?? null) === (fallbackModel || null) && (r.fallback_after ?? null) === (fallbackModel ? Number(fallbackAfter) : null)
 	&& (r.fallback_retry_primary ?? null) === (fallbackModel ? Number(fallbackRetry) : null)
 	// Results written before --libero-prompt existed ran the compact prompt.
-	&& (r.libero_prompt ?? "compact") === liberoPrompt;
+	&& (r.libero_prompt ?? "compact") === liberoPrompt
+	// Results written before --vla-alone existed here ran the planner.
+	&& (r.vla_alone_adapter ?? null) === (process.env.VLA_ALONE || null);
 // MotorMind mode: the variant list and prompt hashes of a result must match the other results of this out dir (the
 // flags themselves are compared by params-match.mjs below).
 const dir = path.replace(/\/[^/]+\/result\.json$/, "");
@@ -145,7 +155,7 @@ for task in $(expand "$tasks"); do
 		valid "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, --unit-tol, code mode, vdm, fallback, --libero-prompt, --ft-* flags, MotorMind variant or prompts, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, --time-limit, units mode, --unit-tol, code mode, vdm, fallback, --libero-prompt, --ft-* flags, --vla-alone, MotorMind variant or prompts, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens; use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $suite task $task seed $seed"
@@ -167,7 +177,7 @@ const rows = cells.map((c) => {
 	}
 });
 const configs = new Set(rows.filter((r) => r.status === "success" || r.status === "failure")
-	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}${r.mm ? `/mm=${r.mm_variant}:${r.mm_prompts}` : ""}`));
+	.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}/unit_tol=${r.unit_tol ?? 0.004}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}/prompt=${r.libero_prompt ?? "compact"}${r.ft_flags ? `/ft=${r.ft_flags}` : ""}${r.mm ? `/mm=${r.mm_variant}:${r.mm_prompts}` : ""}${r.vla_alone_adapter ? `/vla_alone=${r.vla_alone_adapter}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);
