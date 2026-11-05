@@ -25,7 +25,9 @@ type RobotLike = { id: string; label: string; kind: "sim" | "real"; extension: s
 /** What /embodied-setup records in the experiment directory (`.pi/embodied-setup.json`). */
 export type SetupRecord = {
 	robot: string;
-	cell: Cell;
+	/** The grid's cell; absent for the VLA-alone baseline (`vlaAlone`), which has no agent to place. */
+	cell?: Cell;
+	vlaAlone?: boolean;
 	/** The ported setting's id, when one was chosen. */
 	paper?: string;
 	/** The setting's flags (the cell's, or the ported setting's preset / tier, and the fine-tuned planner's). */
@@ -122,7 +124,7 @@ export function scanExperiments<R extends RobotLike>(cwd: string, robots: R[]): 
 /** One line per experiment for a menu: its directory, robot, setting and readiness. */
 export function experimentLabel(e: Experiment): string {
 	const setting = e.record
-		? `${cellName(e.record.cell)}${e.record.paper ? `, ${e.record.paper}` : ""}`
+		? `${e.record.cell ? cellName(e.record.cell) : "the VLA alone"}${e.record.paper ? `, ${e.record.paper}` : ""}`
 		: "setting not recorded";
 	return `${basename(e.dir)}: ${e.robot.label}, ${setting}${e.env ? "" : " (not installed)"}`;
 }
@@ -301,7 +303,7 @@ export function withRunOptions(task: string, o: RunOptions): string {
 }
 
 /** Whether a request names anything installed: a robot, a setting, a work or a level. */
-export const namesInstall = (r: Request): boolean => Boolean(r.robots || r.paper || r.work || r.o || r.a);
+export const namesInstall = (r: Request): boolean => Boolean(r.robots || r.paper || r.work || r.o || r.a || r.vlaAlone);
 
 /**
  * The experiments a request describes: the robot it names, and the setting (a ported setting, a work's
@@ -326,10 +328,11 @@ export function matchExperiments<R extends RobotLike>(all: Experiment<R>[], r: R
 				if (r.paper && rec.paper !== r.paper.id) return undefined;
 				if (!r.paper && r.work) {
 					const ported = PAPERS.find((p) => p.id === rec.paper)?.work === r.work.id;
-					if (!ported && !r.work.cells.includes(cellKey(rec.cell))) return undefined;
+					if (!ported && !(rec.cell && r.work.cells.includes(cellKey(rec.cell)))) return undefined;
 				}
-				if (r.o && rec.cell.o !== r.o) return undefined;
-				if (r.a && rec.cell.a !== r.a) return undefined;
+				if (r.o && rec.cell?.o !== r.o) return undefined;
+				if (r.a && rec.cell?.a !== r.a) return undefined;
+				if (r.vlaAlone && !rec.vlaAlone) return undefined;
 			}
 			return robot === e.robot ? e : { ...e, robot };
 		})
@@ -338,4 +341,6 @@ export function matchExperiments<R extends RobotLike>(all: Experiment<R>[], r: R
 
 /** The /embodied-setup request that installs an experiment like this one: its robot and setting. */
 export const setupRequest = (e: Experiment): string =>
-	[e.robot.id, e.record ? (e.record.paper ?? cellName(e.record.cell)) : ""].filter(Boolean).join(" ");
+	[e.robot.id, e.record ? (e.record.paper ?? (e.record.cell ? cellName(e.record.cell) : "VLA only, no agent")) : ""]
+		.filter(Boolean)
+		.join(" ");

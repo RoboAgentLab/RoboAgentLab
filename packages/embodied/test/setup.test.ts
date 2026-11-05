@@ -15,6 +15,7 @@ import {
 	gridMove,
 	OS,
 	PAPERS,
+	paperFlag,
 	papersFor,
 	pickEntries,
 	pickerLines,
@@ -30,6 +31,8 @@ import setup, {
 	BUDGETS,
 	COMMAND,
 	FINETUNED,
+	FINETUNED_AS,
+	FLASH,
 	GRID,
 	KINDS,
 	NO_MODEL,
@@ -50,6 +53,7 @@ import setup, {
 	setupDeps,
 	sshHosts,
 } from "../src/infra/setup/index.ts";
+import { robotCaps, settingsFor, tierProblems } from "../src/infra/setup/caps.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
 
@@ -354,8 +358,8 @@ test("the placeholder model is never offered as the planner", async () => {
 		},
 	});
 	await p.run();
-	// A1 Code without a preset also offers the robot's fine-tuned adapter as the planner.
-	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6", ...HOSTED, FINETUNED]);
+	// A1 Code without a preset also offers the robot's fine-tuned adapter, and LIBERO's Flash hook a replay.
+	assert.deepEqual(p.offered["Planner model"], ["openai/gpt-6", ...HOSTED, FINETUNED, FLASH]);
 	assert.match(p.confirms.at(-1) ?? "", /planner openai\/gpt-6/);
 	assert.ok(BUDGET.includes("--max-turns 40") && BUDGET.includes("--time-limit 900"));
 });
@@ -367,11 +371,11 @@ test("A2 asks about weights; a declined confirmation writes and sends nothing", 
 		answers: {
 			select: ["sim", "RoboCasa", "here", "anthropic/claude-opus-5", ""],
 			confirm: [true, false],
-			keys: [["\r"], ["\r"]],
+			keys: [["l", "\r"]],
 		},
 	});
 	await p.run();
-	// RoboCasa has no A1 Code: the cursor starts on O1 × A1 Model (its VLA, which the weights serve).
+	// Right of A1 Code is RoboCasa's O1 × A1 Model (its VLA, which the weights serve).
 	assert.match(p.confirms.at(-1) ?? "", /^RoboCasa365 \(sim\): O1 × A1 Model /m);
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --require-skills rldx; planner/m);
 	assert.ok(p.asked.includes("Model weights"));
@@ -625,7 +629,7 @@ test("the grid: every robot has O1 × A2, only simulators have O3, only robots w
 		assert.equal(supported(r.axes, cell("O3", col)), r.kind === "sim", `${r.id}: ground truth is a simulator's`);
 		assert.equal(
 			supported(r.axes, cell("O1", "A1M")),
-			/^(libero|robocasa|robotwin|humanclaw|franka|dual-franka)/.test(r.id),
+			/^(libero|robocasa|robotwin|humanclaw|franka|dual-franka)$|^libero-/.test(r.id),
 			`${r.id}: A1 Model needs a learned executor`,
 		);
 		for (const o of OS) for (const a of AS) assert.equal(cellFlags(r.axes, cell(o, a)).includes("undefined"), false);
@@ -635,10 +639,10 @@ test("the grid: every robot has O1 × A2, only simulators have O3, only robots w
 	assert.equal(cellFlags(robot("libero").axes, cell("O3", "A1C")), "--units=true --privileged");
 	assert.equal(cellFlags(robot("libero").axes, cell("O1", "A2")), "");
 	assert.equal(cellFlags(robot("franka").axes, cell("O2", "A1M")), "--vla --segment");
-	// RoboCasa: no A1 Code. Left of A1 Model is nothing, right is A2, down is O2 × A1 Model.
+	// RoboCasa: units and its VLA skill. Left of A1 Model is A1 Code, right is A2, down is O2 × A1 Model.
 	const rc = robot("robocasa").axes;
-	assert.deepEqual(supportedCells(rc)[0], cell("O1", "A1M"));
-	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "left"), cell("O1", "A1M"));
+	assert.deepEqual(supportedCells(rc)[0], cell("O1", "A1C"));
+	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "left"), cell("O1", "A1C"));
 	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "right"), cell("O1", "A2"));
 	assert.deepEqual(gridMove(rc, cell("O1", "A1M"), "down"), cell("O2", "A1M"));
 	// HumanCLAW: A1 Model only, O1 and O3. Down from O1 skips O2; right goes nowhere.
@@ -665,8 +669,13 @@ test("the grid renders 3 × 4 with A1's two sub-columns under one head, the curs
 	);
 	const rows = lines.filter((l) => /^O[123] (Sensory|Perception|Privileged)/.test(l));
 	assert.equal(rows.length, 3);
-	assert.match(rows[0], /^O1 Sensory Inputs\s+–\s+\[ \]\s+\[ \]\s+\[ \]\s*$/);
-	assert.match(rows[1], /^O2 Perception Tools\s+–\s+\[ \]\s+\[●\]\s+\[ \]\s*$/);
+	assert.match(rows[0], /^O1 Sensory Inputs\s+\[ \]\s+\[ \]\s+\[ \]\s+\[ \]\s*$/);
+	assert.match(rows[1], /^O2 Perception Tools\s+\[ \]\s+\[ \]\s+\[●\]\s+\[ \]\s*$/);
+	// A real arm without a VLA: A1 Model is dashed.
+	assert.match(
+		gridLines("T", robot("ur5e").axes, cell("O1", "A2")).find((l) => l.startsWith("O1 ")) ?? "",
+		/^O1 Sensory Inputs\s+\[ \]\s+–\s+\[●\]\s+\[ \]\s*$/,
+	);
 	assert.match(
 		lines.find((l) => l.startsWith("O2 × A2")) ?? "",
 		/^O2 × A2: §3\.2 Perception Tools × §3\.5 Tool Orchestration$/,
@@ -702,17 +711,29 @@ test("the grid takes the keys: arrows and vi keys move, enter picks, escape canc
 	await p.run();
 	assert.deepEqual(p.asked, ["Simulation or real robot?", "Robot or benchmark", `${GRID} for LIBERO`]);
 	assert.deepEqual(p.sent, []);
-	// O3 × A3 with a registry planner: the privileged code setting; no fine-tuned planner offered outside A1 Code.
+	// O3 × A3 with a registry planner: the privileged code setting; the student is offered on the code surface.
 	p = run(["j", "j", "l", "l", "l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --code=true --privileged; planner/m);
-	assert.deepEqual(p.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
-	// O1 × A1 Model on LIBERO: the VLA skill is required; the fine-tuned planner is A1 Code's only.
+	assert.deepEqual(p.offered["Planner model"], [
+		rec("anthropic/claude-opus-5"),
+		"openai/gpt-6",
+		...HOSTED,
+		FINETUNED_AS.code,
+		FLASH,
+	]);
+	// O1 × A1 Model on LIBERO: the VLA skill is required; the student speaks the tools surface there.
 	p = run(["l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --require-skills pi0; planner/m);
 	assert.ok(p.asked.includes("Model weights"), "A1 Model's VLA comes with the weights");
-	assert.deepEqual(p.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
+	assert.deepEqual(p.offered["Planner model"], [
+		rec("anthropic/claude-opus-5"),
+		"openai/gpt-6",
+		...HOSTED,
+		FINETUNED_AS.tools,
+		FLASH,
+	]);
 });
 
 test("outside the TUI the grid and the picker are selects", async () => {
@@ -768,7 +789,11 @@ test("the work catalog: the survey's policy works per cell, every ported setting
 	}
 	assert.deepEqual(ids(papersFor(robot("libero-pro"), cell("O1", "A1C"))), ["showharness"]);
 	assert.deepEqual(ids(papersFor(robot("libero"), cell("O2", "A1C"))), ["motormind"]);
-	assert.deepEqual(ids(papersFor(robot("maniskill"), cell("O2", "A1C"))), [], "MotorMind is LIBERO's");
+	assert.deepEqual(
+		ids(papersFor(robot("maniskill"), cell("O2", "A1C"))),
+		["motormind"],
+		"MotorMind runs on ManiSkill",
+	);
 	assert.deepEqual(ids(papersFor(robot("humanclaw"), cell("O1", "A1M"))), ["humanclaw"]);
 	assert.deepEqual(ids(papersFor(robot("libero"), cell("O1", "A2"))), ["rpent"]);
 	assert.deepEqual(ids(papersFor(robot("libero"), cell("O2", "A2"))), ["openeta"]);
@@ -784,7 +809,7 @@ test("the work catalog: the survey's policy works per cell, every ported setting
 	]);
 	assert.deepEqual(papersFor(robot("maniskill"), cell("O1", "A3")), [], "CaP-X's API supplies perception: O2");
 	assert.deepEqual(papersFor(robot("ur5e"), cell("O3", "A3")), [], "a real arm has no O3");
-	assert.deepEqual(papersFor(robot("robocasa"), cell("O1", "A1C")), [], "RoboCasa has no A1 Code, so no Show-Harness");
+	assert.deepEqual(ids(papersFor(robot("robocasa"), cell("O1", "A1C"))), ["showharness"], "RoboCasa has units");
 	assert.ok(worksIn(cell("O1", "A2")).some((w) => w.name === "Reflective Planning"));
 	assert.ok(
 		worksIn(cell("O1", "A2")).some((w) => w.id === "harnessvla"),
@@ -852,8 +877,8 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 	);
 	assert.match(text, /pi --libero-type standard --suite libero_10 --task 0 --seed 0 --tier S1 --max-turns 40/);
 	assert.doesNotMatch(text, /--code=true|--privileged/);
-	// A preset in A1 Code is the paper's planner setting: no fine-tuned adapter is offered with it. The filter
-	// also matches the name; a filter nothing matches is erased with backspace; vi keys are typed text here.
+	// Show-Harness's preset is the units the released adapter was trained on: the student is offered with it. The
+	// filter also matches the name; a filter nothing matches is erased with backspace; vi keys are typed text here.
 	const q = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
@@ -872,7 +897,13 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 		after.at(-1)?.some((l) => /^→ showharness: Show-Harness/.test(l)),
 		"show-h matches the name",
 	);
-	assert.deepEqual(q.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
+	assert.deepEqual(q.offered["Planner model"], [
+		rec("anthropic/claude-opus-5"),
+		"openai/gpt-6",
+		...HOSTED,
+		FINETUNED,
+		FLASH,
+	]);
 	assert.match(q.confirms.at(-1) ?? "", /^flags: --preset showharness; planner/m);
 	// A cell with no ported setting (O1 × A3 on ManiSkill) skips the picker.
 	const r = fakePi({
@@ -1021,12 +1052,12 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 });
 
 test("/embodied-setup <request> with a work of the survey: its ported settings narrow the cell and the picker; one that is not ported is a notice", async () => {
-	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; ManiSkill has both: the cell is asked, the picker lists the tiers there.
+	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; Robosuite runs both: the cell is asked, the picker lists the tiers there.
 	let p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { select: ["O2 × A3", "here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
 	});
-	await p.run("CaP-X on maniskill");
+	await p.run("CaP-X on robosuite");
 	assert.deepEqual(
 		p.notes.filter((n) => !/^Nothing written/.test(n)),
 		[],
@@ -1043,6 +1074,18 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	);
 	assert.ok(!picker.some((l) => /capx-S1/.test(l)), "S1 is O3's");
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --tier S2; planner/m);
+	// ManiSkill's primitives are low and raw only: S1 (O3) is refused, so O2 × A3 without asking, with S3, S4 and M4.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
+	});
+	await p.run("CaP-X on maniskill");
+	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
+	assert.deepEqual(
+		p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]),
+		["S3", "S4", "M4"],
+	);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --tier S3; planner/m);
 	// A real arm has no O3: CaP-X on UR5e is O2 × A3 without asking.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
@@ -1066,18 +1109,18 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
 	assert.equal(p.grids.length, 2, "the grid: its first render and the one after escape; no picker");
 	assert.deepEqual(p.sent, []);
-	// A setting the robot cannot run (MotorMind's, LIBERO's only, on ManiSkill): a warning, then the grid.
+	// A setting the robot cannot run (MotorMind's on Genesis, which mounts no MotorMind mode): a warning, then the grid.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"], ["\r"]] },
 	});
-	await p.run("motormind on maniskill");
+	await p.run("motormind on genesis");
 	assert.ok(
-		p.notes.some((n) => /^MotorMind's setting is not on ManiSkill 3; pick a cell$/.test(n)),
+		p.notes.some((n) => /^MotorMind's setting is not on Genesis; pick a cell$/.test(n)),
 		p.notes.join("|"),
 	);
 	assert.equal(p.grids.length, 4, "the grid and the picker of O1 × A1 Code (Show-Harness), each rendered twice");
-	assert.match(p.confirms.at(-1) ?? "", /^ManiSkill 3 \(sim\): O1 × A1 Code /m);
+	assert.match(p.confirms.at(-1) ?? "", /^Genesis \(sim\): O1 × A1 Code /m);
 	// Names nothing matches are called out as possibly not supported, in a notice and in the confirmation.
 	const r = parseRequest("reproduce VoxPoser-2 on Aloha with units, here", ROBOTS, ["openai/gpt-6"]);
 	assert.deepEqual(r.unknown, ["VoxPoser-2", "Aloha"]);
@@ -1721,4 +1764,295 @@ test("the ssh config's hosts are the remote boxes offered; patterns are not host
 	writeFileSync(file, "Host *\n  User x\nHost l40s-0003 autodl-bjb2\n  HostName a\nhost gpu-?\nHost !bad\n");
 	assert.deepEqual(sshHosts(file), ["l40s-0003", "autodl-bjb2"]);
 	assert.deepEqual(sshHosts("/nonexistent"), []);
+});
+
+/** Whether a robot's extension mounts a module, as ../src/infra/setup/caps.ts reads its spec. */
+const mounts = (r: { id: string; extension: string }, key: "units" | "flash" | "motormind" | "memory") =>
+	robotCaps(r)[key];
+
+test("a ported setting is offered only where the robot runs it: CaP-X's high-API tiers need high-tier primitives", () => {
+	for (const r of ROBOTS)
+		for (const o of OS)
+			for (const a of AS)
+				for (const p of settingsFor(r, cell(o, a)))
+					assert.deepEqual(tierProblems(r, paperFlag(p, r.id)), [], `${r.id} ${p.id}`);
+	// ManiSkill's and RoboTwin's manifests have low and raw code primitives only: S3, S4 and M4 run, S1, S2, M1-M3 are refused.
+	for (const id of ["maniskill", "robotwin"]) {
+		assert.deepEqual(robotCaps(robot(id)).codeTiers, ["low", "raw"]);
+		assert.deepEqual(ids(settingsFor(robot(id), cell("O2", "A3"))), ["capx-S3", "capx-S4", "capx-M4"], id);
+		assert.deepEqual(settingsFor(robot(id), cell("O3", "A3")), [], `${id}: S1 needs the high level`);
+		assert.match(tierProblems(robot(id), "--tier S2")[0] ?? "", /needs high-tier code primitives/);
+	}
+	assert.equal(settingsFor(robot("robosuite"), cell("O2", "A3")).length, 7, "robosuite has every level");
+});
+
+test("the wizard offers what the robots mount: units are A1 Code, MotorMind's preset goes where MotorMind mode is, Flash where its hook is", () => {
+	for (const r of ROBOTS) {
+		// HumanCLAW's units are run by its motion model: the survey files it under A1 Model only.
+		if (r.id !== "humanclaw")
+			assert.equal(supported(r.axes, cell("O1", "A1C")), mounts(r, "units"), `${r.id}: units`);
+		assert.equal(Boolean(r.flash), mounts(r, "flash"), `${r.id}: Flash`);
+		const mm = PAPERS.find((p) => p.id === "motormind")!;
+		assert.equal(papersFor(r, mm.cell).includes(mm), mounts(r, "motormind"), `${r.id}: MotorMind`);
+	}
+	for (const p of PAPERS) for (const id of p.robots ?? []) assert.ok(robot(id), `${p.id}: ${id} is a robot`);
+	// RoboCasa and RoboTwin run Show-Harness's units and MotorMind's preset now.
+	for (const id of ["robocasa", "robotwin"]) {
+		assert.equal(cellFlags(robot(id).axes, cell("O1", "A1C")), "--units=true");
+		assert.deepEqual(ids(papersFor(robot(id), cell("O1", "A1C"))), ["showharness"], id);
+		assert.deepEqual(ids(papersFor(robot(id), cell("O2", "A1C"))), ["motormind"], id);
+	}
+	// The Polymetis Franka has no VLA action space: no A1 Model, no RPent.
+	assert.equal(supported(robot("franka-polymetis").axes, cell("O1", "A1M")), false);
+	assert.deepEqual(ids(papersFor(robot("franka-polymetis"), cell("O1", "A2"))), []);
+});
+
+test("/embodied-setup MotorMind on RoboCasa, RoboTwin, ManiSkill: the preset, no warning, no grid", async () => {
+	for (const [text, label] of [
+		["MotorMind on RoboCasa", "RoboCasa365"],
+		["reproduce MotorMind on RoboTwin", "RoboTwin 2"],
+		["motormind on maniskill", "ManiSkill 3"],
+	]) {
+		const p = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
+		});
+		await p.run(text);
+		assert.deepEqual(p.notes, ["Nothing written or installed."], text);
+		assert.equal(p.grids.length, 0, text);
+		const summary = p.confirms.at(-1) ?? "";
+		assert.match(
+			summary,
+			new RegExp(`^${label.replace(/[()]/g, "\\$&")} \\(sim\\): O2 × A1 Code .*, MotorMind's setting$`, "m"),
+		);
+		assert.match(summary, /^flags: --preset motormind; planner openai\/gpt-6$/m);
+	}
+});
+
+test("RPent's preset goes where memory and a VLA skill of the robot's own are: the Frankas add --vla, ManiSkill's adapter is no such skill", async () => {
+	const rp = PAPERS.find((p) => p.id === "rpent")!;
+	const on = ROBOTS.filter((r) => papersFor(r, rp.cell).includes(rp)).map((r) => r.id);
+	assert.deepEqual(on, ["libero", "libero-pro", "libero-plus", "robocasa", "robotwin", "franka", "dual-franka"]);
+	// Each mounts memory, and its manifest declares a skill tiers.ts counts as RPent's VLA.
+	const { VLA_SKILLS } = await import("../src/infra/tiers.ts");
+	const { loadManifest } = await import("../src/primitives/manifest.ts");
+	const manifestOf = (r: { extension: string }) =>
+		/manifest: "(\w+)"/.exec(readFileSync(join(PKG, r.extension), "utf8"))?.[1] ?? "";
+	for (const r of ROBOTS.filter((x) => on.includes(x.id))) {
+		assert.ok(mounts(r, "memory"), `${r.id}: memory`);
+		assert.ok(
+			loadManifest(manifestOf(r)).primitives.some((e) => VLA_SKILLS.has(e.name)),
+			`${r.id}: a VLA skill in ${manifestOf(r)}.json`,
+		);
+	}
+	// ManiSkill: memory, but its only VLA is the opt-in OpenVLA adapter (openvla_act), which is no skill of its own.
+	assert.ok(mounts(robot("maniskill"), "memory"));
+	assert.equal(
+		loadManifest("maniskill").primitives.some((e) => VLA_SKILLS.has(e.name)),
+		false,
+	);
+	assert.equal(paperFlag(rp, "franka"), "--preset rpent --vla");
+	assert.equal(paperFlag(rp, "robotwin"), "--preset rpent");
+	assert.ok(pickEntries([rp], NO_PAPER, "dual-franka").some((e) => e.text.endsWith("(--preset rpent --vla)")));
+	// RPent on RoboTwin and on the RLinf Franka from a request.
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false, false] },
+	});
+	await p.run("RPent on RoboTwin");
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset rpent; planner openai\/gpt-6$/m);
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["Franka (RLinf)", "here", "openai/gpt-6", ""], confirm: [false] },
+	});
+	await p.run("reproduce RPent on franka");
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset rpent --vla; planner openai\/gpt-6$/m);
+	assert.match(p.confirms.at(-1) ?? "", /--operator=true --preset rpent --vla --max-turns 40/);
+	// ManiSkill: a warning, then the grid.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b"]] },
+	});
+	await p.run("RPent on ManiSkill");
+	assert.ok(p.notes.includes("RPent's setting is not on ManiSkill 3; pick a cell"), p.notes.join("|"));
+});
+
+test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narrows CaP-X to its M tiers, single-turn to its S tiers", async () => {
+	let r = parseRequest("CaP-X on RoboTwin", ROBOTS, []);
+	assert.equal(r.work?.id, "capx");
+	assert.deepEqual(r.unknown, []);
+	for (const [text, robotId] of [
+		["CaP-X on ManiSkill", "maniskill"],
+		["CaP-X on RoboCasa365", "robocasa"],
+		["capx libero-pro", "libero-pro"],
+	]) {
+		r = parseRequest(text, ROBOTS, []);
+		assert.equal(r.work?.id, "capx", text);
+		assert.deepEqual(
+			r.robots?.map((x) => x.id),
+			[robotId],
+			text,
+		);
+	}
+	// A robot named alone is the robot, not the paper that introduced it.
+	assert.equal(parseRequest("RoboTwin", ROBOTS, []).work, undefined);
+	assert.equal(parseRequest("LIBERO-PRO units", ROBOTS, []).a, "A1C");
+	// The paper of a benchmark that is no robot here still counts.
+	assert.ok(parseRequest("Code as Policies", ROBOTS, []).work);
+	r = parseRequest("CaP-X multi-turn on RoboTwin", ROBOTS, []);
+	assert.deepEqual([r.work?.id, r.turns, r.unknown], ["capx", "multi", []]);
+	assert.equal(parseRequest("CaP-X single turn", ROBOTS, []).turns, "single");
+	// The flow: CaP-X on RoboTwin asks no warning; multi-turn is O2 × A3, where RoboTwin's low-level primitives run M4 only.
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
+	});
+	await p.run("CaP-X multi-turn on RoboTwin");
+	assert.deepEqual(p.notes, ["Nothing written or installed."]);
+	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")), "multi-turn tiers are O2 × A3 only");
+	const tiers = p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]);
+	assert.deepEqual(tiers, ["M4"]);
+	assert.match(p.confirms.at(-1) ?? "", /^RoboTwin 2 \(sim\): O2 × A3 .*, CaP-X M4's setting$/m);
+	// Single-turn on Robosuite: both cells keep an S tier, so the cell is asked; O2 × A3 lists S2–S4.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["O2 × A3", "here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"]] },
+	});
+	await p.run("CaP-X single-turn on robosuite");
+	assert.deepEqual(
+		p.grids[0].filter((l) => /capx-/.test(l)).map((l) => /capx-(\w+)/.exec(l)?.[1]),
+		["S2", "S3", "S4"],
+	);
+});
+
+test("VLA only, no agent: the VLA-alone baseline on ManiSkill, outside the grid; elsewhere unsupported, never A1 Model", async () => {
+	for (const text of [
+		"VLA only, no agent",
+		"OpenVLA alone on maniskill",
+		"vla-only baseline",
+		"the VLA without an agent",
+	]) {
+		const r = parseRequest(text, ROBOTS, []);
+		assert.equal(r.vlaAlone, true, text);
+		assert.equal(r.a, undefined, `${text}: not A1 Model`);
+		assert.deepEqual(r.unknown, [], text);
+	}
+	assert.equal(parseRequest("the agent drives the VLA", ROBOTS, []).a, "A1M");
+	// ManiSkill, unnamed: the only robot that runs --vla-alone is taken; no grid, no planner.
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	let p = fakePi({ cwd, answers: { select: ["here", ""], confirm: [true] } });
+	await p.run("VLA only, no agent");
+	assert.deepEqual(p.asked, ["Where do the services run?", "Experiment directory", "Set up pi-embodied?"]);
+	const summary = p.confirms.at(-1) ?? "";
+	assert.match(summary, /^ManiSkill 3 \(sim\): the VLA alone, no agent /m);
+	assert.match(
+		summary,
+		/^flags: --arm widowx250s --vla-adapter openvla --vla-alone openvla; planner none \(the VLA alone\)$/m,
+	);
+	assert.match(summary, /^needs: NVIDIA GPU \(Vulkan\); the OpenVLA server at services\.openvla/m);
+	assert.match(
+		summary,
+		/pi --task PutCarrotOnPlateInScene-v1 --seed 0 --arm widowx250s --vla-adapter openvla --vla-alone openvla/,
+	);
+	const text = p.sent[0]?.text ?? "";
+	assert.match(text, /^- planner: none; the VLA runs alone \(`--vla-alone`\) and no model is asked/m);
+	const settings = JSON.parse(readFileSync(join(cwd, "embodied-maniskill/.pi/settings.json"), "utf8"));
+	assert.equal(settings.defaultModel, undefined);
+	const record = JSON.parse(readFileSync(join(cwd, "embodied-maniskill", RECORD), "utf8"));
+	assert.deepEqual([record.cell, record.vlaAlone, record.planner], [undefined, true, "vla"]);
+	assert.equal(record.task, "--task PutCarrotOnPlateInScene-v1 --seed 0");
+	assert.match(experimentLabel(readExperiment(join(cwd, "embodied-maniskill"), ROBOTS)!), /the VLA alone/);
+	// A robot that runs no VLA alone: refused, nothing asked or written.
+	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	await p.run("VLA only, no agent, on LIBERO-PRO");
+	assert.match(
+		p.notes[0] ?? "",
+		/^the VLA alone \(no agent\) is not supported on LIBERO-PRO: only ManiSkill 3 runs a VLA alone/,
+	);
+	assert.deepEqual([p.asked, p.sent], [[], []]);
+});
+
+test("planners: a registry model by its display name, the student on every surface the setting has, Flash's replay where the robot has a hook", async () => {
+	const fable = { ref: "anthropic/claude-fable-5-1", name: "Claude Fable 5.1" };
+	const models = [fable, { ref: "anthropic/claude-fable-5", name: "Claude Fable 5" }, "openai/gpt-6-astra"];
+	let r = parseRequest("Show-Harness on LIBERO-PRO with Claude Fable 5.1", ROBOTS, models);
+	assert.deepEqual([r.model, r.unknown], ["anthropic/claude-fable-5-1", []]);
+	assert.equal(parseRequest("claude fable 5 on robotwin", ROBOTS, models).model, "anthropic/claude-fable-5");
+	assert.equal(parseRequest("gpt-6-astra", ROBOTS, models).model, "openai/gpt-6-astra");
+	r = parseRequest("libero-pro tools, fine-tuned student", ROBOTS, models);
+	assert.deepEqual([r.model, r.a, r.unknown], ["finetuned", "A2", []]);
+	assert.equal(parseRequest("flash replay on libero-pro", ROBOTS, models).model, "flash/replay");
+	// The display name reaches the wizard from the registry.
+	let p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		available: [{ provider: "anthropic", id: "claude-fable-5-1", name: "Claude Fable 5.1" } as never],
+		answers: { select: ["here", ""], confirm: [false] },
+	});
+	await p.run("Show-Harness on LIBERO-PRO with Claude Fable 5.1");
+	assert.ok(!p.asked.includes(PLANNER));
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset showharness; planner anthropic\/claude-fable-5-1$/m);
+	// The student on LIBERO-PRO's A2 and A3: an adapter the user serves on that surface.
+	for (const [text, surface, flags] of [
+		["libero-pro O1 A2 with the fine-tuned student", "tools", ""],
+		["libero-pro O2 A3 fine-tuned student", "code", "--code=true --detections "],
+	] as const) {
+		p = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", ""], confirm: [false, true], keys: [["\r"]] },
+		});
+		await p.run(text);
+		assert.ok(!p.asked.includes(PLANNER), text);
+		assert.match(
+			p.confirms.at(-1) ?? "",
+			new RegExp(
+				`^flags: ${flags}--model finetuned/local --ft-model <served adapter> --ft-surface ${surface}; planner fine-tuned \\(${surface} surface\\)`,
+				"m",
+			),
+		);
+		const sent = p.sent[0]?.text ?? "";
+		assert.match(sent, new RegExp(`^- adapter: none is released for the ${surface} surface`, "m"));
+		assert.doesNotMatch(sent, /FT_ADAPTER=/);
+	}
+	// The student with Show-Harness's preset: the released units adapter.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", ""], confirm: [false] },
+	});
+	await p.run("Show-Harness on maniskill, fine-tuned student");
+	assert.match(
+		p.confirms.at(-1) ?? "",
+		/^flags: --preset showharness --model finetuned\/qwen3_5_2b_showharness_sim; planner fine-tuned: /m,
+	);
+	// Not with MotorMind's preset, which plans with its own roles: a notice, then the menu without it.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
+	});
+	await p.run("MotorMind on LIBERO-PRO with the fine-tuned student");
+	assert.ok(p.notes.includes("the fine-tuned student is not offered for this setting on LIBERO-PRO; pick a planner"));
+	assert.deepEqual(p.offered[PLANNER], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
+	// Flash on LIBERO-PRO's A2: --model flash/replay, no default model; the handoff says a plan must exist.
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	p = fakePi({
+		cwd,
+		answers: { select: ["here", "flash/replay", ""], confirm: [false, true], keys: [["\r"]] },
+	});
+	await p.run("libero-pro O1 A2");
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --model flash\/replay; planner flash\/replay$/m);
+	assert.match(p.sent[0]?.text ?? "", /^- plan: flash\/replay needs a recorded plan before an episode/m);
+	const settings = JSON.parse(readFileSync(join(cwd, "embodied-libero-pro/.pi/settings.json"), "utf8"));
+	assert.deepEqual([settings.defaultProvider, settings.defaultModel], [undefined, undefined]);
+	// No Flash hook on Metaworld: neither offered nor taken from a request.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
+	});
+	await p.run("metaworld O1 A2 flash replay");
+	assert.ok(p.notes.includes("flash/replay is not offered for this setting on Metaworld; pick a planner"));
+	assert.deepEqual(p.offered[PLANNER], [
+		rec("anthropic/claude-opus-5"),
+		"openai/gpt-6",
+		...HOSTED,
+		FINETUNED_AS.tools,
+	]);
 });

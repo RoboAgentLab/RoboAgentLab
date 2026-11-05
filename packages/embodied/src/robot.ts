@@ -27,7 +27,7 @@ import { type ModelServicesSpec, modelServices } from "./infra/model-services.ts
 import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
 import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
-import { tiers } from "./infra/tiers.ts";
+import { tiers, VLA_SKILLS } from "./infra/tiers.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
 import { type MotorMindSpec, motormind } from "./modes/motormind/index.ts";
 import { motormindProvider } from "./modes/motormind/provider.ts";
@@ -345,7 +345,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		groundTruth: spec.groundTruth !== undefined,
 		memory: spec.memory !== undefined,
 		xpolicy: spec.xpolicy !== undefined,
-		vla: manifest?.primitives.some((e) => e.name === "pi0_pick") ?? false,
+		vla: manifest?.primitives.some((e) => VLA_SKILLS.has(e.name)) ?? false,
 		codeTiers: () =>
 			["high", "low", "raw"].filter((t) =>
 				manifest?.primitives.some((e) => e.side !== "ts" && e.doc.code && e.tier === t),
