@@ -27,6 +27,7 @@ import {
 } from "../src/infra/setup/axes.ts";
 import setup, {
 	BUDGET,
+	BUDGETS,
 	COMMAND,
 	FINETUNED,
 	GRID,
@@ -35,6 +36,7 @@ import setup, {
 	NO_PAPER,
 	NOTICE,
 	NOTICE_ENTRY,
+	OTHER,
 	PANELS,
 	PAPER,
 	PKG,
@@ -42,11 +44,17 @@ import setup, {
 	ROBOTS,
 	RUN,
 	RUN_HOW,
+	rec,
 	runDeps,
 	SETUP_NOW,
+	setupDeps,
+	sshHosts,
 } from "../src/infra/setup/index.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
+
+// The machine's ssh config is not the test's: no hosts, the host is typed.
+setupDeps.sshHosts = () => [];
 
 /** The self-hosted planners every planner menu ends with (before the fine-tuned adapter). */
 const HOSTED = SELFHOST.map(selfhostLabel);
@@ -242,7 +250,7 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["sim", "LIBERO-PRO", "here", "openai/gpt-6"],
+			select: ["sim", "LIBERO-PRO", "here", "openai/gpt-6", "other"],
 			input: [dir],
 			confirm: [true],
 			keys: [["\r"], ["\r"]],
@@ -256,7 +264,8 @@ test("/embodied-setup writes the experiment settings and hands the install to th
 		PAPER,
 		"Where do the services run?",
 		"Planner model",
-		`Experiment directory (empty: ${join(cwd, "embodied-libero-pro")})`,
+		"Experiment directory",
+		"Experiment directory",
 		"Set up pi-embodied?",
 	]);
 	const settings = JSON.parse(readFileSync(join(dir, ".pi/settings.json"), "utf8"));
@@ -318,8 +327,7 @@ test("without a configured model /embodied-setup says how to add one and offers 
 		model: { provider: "unknown", id: "unknown" },
 		available: [],
 		answers: {
-			select: ["sim", "LIBERO", "here", "unknown/unknown"],
-			input: [""],
+			select: ["sim", "LIBERO", "here", "unknown/unknown", ""],
 			confirm: [true],
 			keys: [["\r"], ["\r"]],
 		},
@@ -337,8 +345,7 @@ test("the placeholder model is never offered as the planner", async () => {
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		model: { provider: "unknown", id: "unknown" },
 		answers: {
-			select: ["sim", "LIBERO", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "LIBERO", "here", "openai/gpt-6", ""],
 			confirm: [false],
 			keys: [["\r"], ["\r"]],
 		},
@@ -355,8 +362,7 @@ test("A2 asks about weights; a declined confirmation writes and sends nothing", 
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["sim", "RoboCasa", "here", "anthropic/claude-opus-5"],
-			input: [""],
+			select: ["sim", "RoboCasa", "here", "anthropic/claude-opus-5", ""],
 			confirm: [true, false],
 			keys: [["\r"], ["\r"]],
 		},
@@ -376,8 +382,8 @@ test("a remote box writes nothing locally and gives the agent the settings for t
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["sim", "ManiSkill", "a remote", "fine-tuned"],
-			input: ["me@gpu", "/data/pi-embodied", ""],
+			select: ["sim", "ManiSkill", "a remote", "other", "fine-tuned", ""],
+			input: ["me@gpu", "/data/pi-embodied"],
 			confirm: [true],
 			keys: [["\r"], ["\r"]],
 		},
@@ -568,8 +574,7 @@ test("the robot menu is two-level (sim or real, then names only); what a robot n
 	const p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["real", "UR5e", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["real", "UR5e", "here", "openai/gpt-6", ""],
 			confirm: [false],
 			keys: [["\r"], ["\r"]],
 		},
@@ -678,8 +683,7 @@ test("the grid takes the keys: arrows and vi keys move, enter picks, escape canc
 		fakePi({
 			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 			answers: {
-				select: ["sim", "LIBERO", "here", "openai/gpt-6"],
-				input: [""],
+				select: ["sim", "LIBERO", "here", "openai/gpt-6", ""],
 				confirm: [false],
 				keys: [keys, ["\r"]],
 			},
@@ -699,13 +703,13 @@ test("the grid takes the keys: arrows and vi keys move, enter picks, escape canc
 	p = run(["j", "j", "l", "l", "l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --code=true --privileged; planner/m);
-	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
+	assert.deepEqual(p.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
 	// O1 × A1 Model on LIBERO: the VLA skill is required; the fine-tuned planner is A1 Code's only.
 	p = run(["l", "\r"]);
 	await p.run();
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --require-skills pi0; planner/m);
 	assert.ok(p.asked.includes("Model weights"), "A1 Model's VLA comes with the weights");
-	assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
+	assert.deepEqual(p.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
 });
 
 test("outside the TUI the grid and the picker are selects", async () => {
@@ -713,8 +717,7 @@ test("outside the TUI the grid and the picker are selects", async () => {
 		mode: "rpc",
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "HumanCLAW", "O3 × A1 Model", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "HumanCLAW", "O3 × A1 Model", "here", "openai/gpt-6", ""],
 			confirm: [false],
 		},
 	});
@@ -730,8 +733,7 @@ test("outside the TUI the grid and the picker are selects", async () => {
 		mode: "rpc",
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "LIBERO", "O1 × A1 Code", "showharness", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "LIBERO", "O1 × A1 Code", "showharness", "here", "openai/gpt-6", ""],
 			confirm: [false],
 		},
 	});
@@ -827,8 +829,7 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 	const p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "LIBERO", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "LIBERO", "here", "openai/gpt-6", ""],
 			confirm: [true],
 			keys: [
 				["j", "j", "l", "l", "l", "\r"],
@@ -853,8 +854,7 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 	const q = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "LIBERO", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "LIBERO", "here", "openai/gpt-6", ""],
 			confirm: [false],
 			keys: [["\r"], ["z", "z", "z", "z", "\x7f", "\x7f", "\x7f", "\x7f", "s", "h", "o", "w", "-", "h", "\r"]],
 		},
@@ -869,14 +869,13 @@ test("a ported work replaces the cell's flags with its preset or tier; a cell wi
 		after.at(-1)?.some((l) => /^→ showharness: Show-Harness/.test(l)),
 		"show-h matches the name",
 	);
-	assert.deepEqual(q.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
+	assert.deepEqual(q.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
 	assert.match(q.confirms.at(-1) ?? "", /^flags: --preset showharness; planner/m);
 	// A cell with no ported setting (O1 × A3 on ManiSkill) skips the picker.
 	const r = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["sim", "ManiSkill", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["sim", "ManiSkill", "here", "openai/gpt-6", ""],
 			confirm: [false],
 			keys: [["l", "l", "l", "\r"]],
 		},
@@ -893,8 +892,7 @@ test("O2 tells the agent about the SAM3 server; the fine-tuned planner adds its 
 	const p = fakePi({
 		cwd,
 		answers: {
-			select: ["sim", "ManiSkill", "here", "fine-tuned"],
-			input: [""],
+			select: ["sim", "ManiSkill", "here", "fine-tuned", ""],
 			confirm: [true],
 			keys: [["j", "\r"], ["\r"]],
 		},
@@ -960,7 +958,7 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	// Robot and setting named: only the services, the planner and the directory are asked.
 	let p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false] },
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false] },
 	});
 	await p.run("在 LIBERO-pro 里复现 RPent 的实验");
 	assert.deepEqual(p.asked.slice(0, 2), ["Where do the services run?", "Planner model"]);
@@ -972,13 +970,12 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	// Everything named: only the directory and the confirmation remain.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { input: [""], confirm: [false] },
+		answers: { select: [""], confirm: [false] },
 	});
 	await p.run("reproduce Show-Harness on metaworld here with openai/gpt-6");
-	assert.deepEqual(
-		p.asked.map((a) => a.replace(/\(empty: .*\)/, "(empty: ...)")),
-		["Experiment directory (empty: ...)", "Set up pi-embodied?"],
-	);
+	assert.deepEqual(p.asked, ["Experiment directory", "Set up pi-embodied?"]);
+	// The directory's menu: the default, recommended, or another one typed.
+	assert.deepEqual(p.offered["Experiment directory"], [rec(join(p.ctx.cwd, "embodied-metaworld")), OTHER]);
 	assert.match(p.confirms.at(-1) ?? "", /^flags: --preset showharness; planner openai\/gpt-6$/m);
 	// The episode is /embodied-run with the same request.
 	assert.match(
@@ -989,8 +986,7 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 		answers: {
-			select: ["Dual Franka", "here", "openai/gpt-6"],
-			input: [""],
+			select: ["Dual Franka", "here", "openai/gpt-6", ""],
 			confirm: [false],
 			keys: [["\r"], ["\r"]],
 		},
@@ -1002,7 +998,7 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	// Levels named: the grid is skipped.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"]] },
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"]] },
 	});
 	await p.run("libero units privileged");
 	assert.equal(p.grids.length, 0, "no grid; and O3 × A1 Code has no ported setting, so no picker");
@@ -1013,7 +1009,7 @@ test("/embodied-setup <request>: what the request settles is not asked; an ambig
 	// A remote host named: only the checkout on the box is asked for.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["openai/gpt-6"], input: ["/data/pi-embodied", ""], confirm: [false] },
+		answers: { select: ["other", "openai/gpt-6", ""], input: ["/data/pi-embodied"], confirm: [false] },
 	});
 	await p.run("rpent on libero, ssh me@gpu");
 	assert.ok(!p.asked.includes("ssh host"));
@@ -1025,7 +1021,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	// CaP-X (ported as its tiers) sits in O2 × A3 and O3 × A3; ManiSkill has both: the cell is asked, the picker lists the tiers there.
 	let p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["O2 × A3", "here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\x1b[B", "\r"]] },
+		answers: { select: ["O2 × A3", "here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b[B", "\r"]] },
 	});
 	await p.run("CaP-X on maniskill");
 	assert.deepEqual(
@@ -1047,7 +1043,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	// A real arm has no O3: CaP-X on UR5e is O2 × A3 without asking.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"]] },
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"]] },
 	});
 	await p.run("CaP-X on ur5e");
 	assert.ok(!p.asked.some((a) => a.startsWith("Cell for")));
@@ -1055,7 +1051,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	// Code as Policies is in the survey but not ported: a notice names its cells, then the grid.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\x1b"]] },
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\x1b"]] },
 	});
 	await p.run("Code as Policies on LIBERO");
 	assert.ok(
@@ -1070,7 +1066,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	// A setting the robot cannot run (MotorMind's, LIBERO's only, on ManiSkill): a warning, then the grid.
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"], ["\r"]] },
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"], ["\r"]] },
 	});
 	await p.run("motormind on maniskill");
 	assert.ok(
@@ -1086,7 +1082,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 	assert.deepEqual(parseRequest("在 LIBERO-pro 里复现 RPent 的实验", ROBOTS, []).unknown, []);
 	p = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["sim", "LIBERO", "openai/gpt-6"], input: [""], confirm: [false], keys: [["\r"], ["\r"]] },
+		answers: { select: ["sim", "LIBERO", "openai/gpt-6", ""], confirm: [false], keys: [["\r"], ["\r"]] },
 	});
 	await p.run("reproduce VoxPoser-2 on Aloha, here");
 	assert.ok(
@@ -1104,7 +1100,7 @@ test("/embodied-setup <request> with a work of the survey: its ported settings n
 test("/embodied-setup records the setting in the experiment directory for /embodied-run", async () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
 	// O1 × A2 on LIBERO asks about the weights (its VLA) before the confirmation.
-	const p = fakePi({ cwd, answers: { select: ["here", "openai/gpt-6"], input: [""], confirm: [true, true] } });
+	const p = fakePi({ cwd, answers: { select: ["here", "openai/gpt-6", ""], confirm: [true, true] } });
 	await p.run("在 LIBERO-pro 里复现 RPent 的实验");
 	const record = JSON.parse(readFileSync(join(cwd, "embodied-libero-pro", RECORD), "utf8"));
 	assert.deepEqual(record, {
@@ -1238,12 +1234,12 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	runDeps.gpus = () => [];
 	runDeps.freePort = async () => 8765;
 	runDeps.env = {};
-	let p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	let p = fakePi({ cwd, answers: { select: ["", "", RUN_HOW.print], confirm: [true] } });
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	assert.ok(!p.asked.includes("Experiment"));
-	assert.ok(p.asked.some((a) => a.startsWith("Task flags (empty: --task x --seed 0)")));
-	assert.ok(p.asked.some((a) => a.startsWith("Episode budget (empty: --max-turns 40")));
-	assert.deepEqual(p.offered["How to run?"], [RUN_HOW.here, RUN_HOW.headless, RUN_HOW.print]);
+	assert.deepEqual(p.offered["Task flags"], [rec("the recorded task: --task x --seed 0"), OTHER]);
+	assert.deepEqual(p.offered["Episode budget"], [...BUDGETS.map((b, i) => (i ? b.label : rec(b.label))), OTHER]);
+	assert.deepEqual(p.offered["How to run?"], [rec(RUN_HOW.here), RUN_HOW.headless, RUN_HOW.print]);
 	assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O1 × A1 Code; planner openai\/gpt-6$/m);
 	assert.match(p.confirms.at(-1) ?? "", /^task: --task x --seed 0$/m);
 	assert.ok(!p.asked.includes("GPU"));
@@ -1257,7 +1253,11 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	// Headless: the agent gets the pi -a -p command and what to report; the task flags typed replace the recorded ones.
 	p = fakePi({
 		cwd,
-		answers: { select: [RUN_HOW.headless], input: ["--task push-v3 --seed 3", "--max-turns 10"], confirm: [true] },
+		answers: {
+			select: ["other", "other", RUN_HOW.headless],
+			input: ["--task push-v3 --seed 3", "--max-turns 10"],
+			confirm: [true],
+		},
 	});
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	const text = p.sent[0]?.text ?? "";
@@ -1268,9 +1268,9 @@ test("/embodied-run: the installed experiment, its recorded setting, the task, t
 	);
 	assert.match(text, /robot_result/);
 	// Outside the TUI "here" is not offered.
-	p = fakePi({ cwd, mode: "rpc", answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+	p = fakePi({ cwd, mode: "rpc", answers: { select: ["", "", RUN_HOW.print], confirm: [false] } });
 	await p.commands.get(RUN)?.handler("", p.ctx);
-	assert.deepEqual(p.offered["How to run?"], [RUN_HOW.headless, RUN_HOW.print]);
+	assert.deepEqual(p.offered["How to run?"], [rec(RUN_HOW.headless), RUN_HOW.print]);
 	assert.match(p.notes.at(-1) ?? "", /^Nothing started/);
 	// No experiment here: told to set up first.
 	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-none-")) });
@@ -1296,8 +1296,7 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 	let p = fakePi({
 		cwd,
 		answers: {
-			select: ["GPU 5", "the dashboard only", RUN_HOW.print],
-			input: ["", ""],
+			select: ["", "GPU 5", "", "the dashboard only", RUN_HOW.print],
 			confirm: [true],
 			keys: [["\r"], ["\x1b[B", "\r"]],
 		},
@@ -1306,7 +1305,7 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 	assert.ok(!p.asked.includes("Experiment"));
 	assert.equal(p.grids.length, 5, "the grid (two renders) and the picker (three)");
 	assert.deepEqual(p.offered.GPU, [
-		"GPU 5: 16275 MiB free of 46068",
+		rec("GPU 5: 16275 MiB free of 46068"),
 		"GPU 0: 4713 MiB free of 46068",
 		"any: no CUDA_VISIBLE_DEVICES",
 	]);
@@ -1335,7 +1334,7 @@ test("/embodied-run: several experiments are a menu, a request's robot picks one
 		p.notes.at(-1) ?? "",
 		/^nothing installed here is robot Metaworld; O3 × A3; installed: .*\nto install it: \/embodied-setup metaworld privileged code$/,
 	);
-	assert.deepEqual(p.offered["Not installed"], [`${SETUP_NOW}: /embodied-setup metaworld privileged code`, "no"]);
+	assert.deepEqual(p.offered["Not installed"], [rec(`${SETUP_NOW}: /embodied-setup metaworld privileged code`), "no"]);
 	assert.equal(p.grids.length, 0);
 	assert.deepEqual(p.sent, []);
 	runDeps.gpus = () => [];
@@ -1396,7 +1395,7 @@ test("/embodied-run <request>: setup's request finds the installed experiment, t
 			{ provider: "openai", id: "gpt-6" },
 			{ provider: "anthropic", id: "claude-opus-5" },
 		],
-		answers: { select: ["GPU 5", "the dashboard only"], input: [""], confirm: [true] },
+		answers: { select: ["GPU 5", "", "the dashboard only"], confirm: [true] },
 	});
 	await p.commands.get(RUN)?.handler("rpent libero anthropic/claude-opus-5 task 2 headless", p.ctx);
 	assert.match(p.confirms.at(-1) ?? "", /^LIBERO: O1 × A2, rpent; planner anthropic\/claude-opus-5$/m);
@@ -1413,7 +1412,7 @@ test("/embodied-run <request>: setup's request finds the installed experiment, t
 	);
 	assert.deepEqual(p.sent, []);
 	// Taken: /embodied-setup runs on that request (the episode's words are left for /embodied-run).
-	p = fakePi({ cwd, answers: { select: [SETUP_NOW, "here", "openai/gpt-6"], input: [""], confirm: [false] } });
+	p = fakePi({ cwd, answers: { select: [SETUP_NOW, "here", "openai/gpt-6", ""], confirm: [false] } });
 	await p.commands.get(RUN)?.handler("capx-S1 on libero task 3", p.ctx);
 	assert.ok(p.asked.includes("Set up pi-embodied?"));
 	assert.match(p.confirms.at(-1) ?? "", /^LIBERO \(sim\): O3 × A3/m);
@@ -1435,10 +1434,12 @@ test("/embodied-run panels: a work's own panel comes first when the robot serves
 	runDeps.freePort = async (start) => (start ?? DASHBOARD_PORT) + 1;
 	runDeps.env = { SSH_CONNECTION: "10.0.0.2 50000 172.28.181.197 22" };
 	// CaP-X's setting on LIBERO: its Viser view is offered first, with the dashboard.
-	let p = fakePi({ cwd, answers: { select: ["CaP-X S1's own", RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	let p = fakePi({ cwd, answers: { select: ["", "", "CaP-X S1's own", RUN_HOW.print], confirm: [true] } });
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	assert.deepEqual(p.offered[PANELS], [
-		"CaP-X S1's own: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+		rec(
+			"CaP-X S1's own: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+		),
 		"the dashboard only",
 	]);
 	const summary = p.confirms.at(-1) ?? "";
@@ -1455,7 +1456,7 @@ test("/embodied-run panels: a work's own panel comes first when the robot serves
 		/--tier S1 --max-turns 40 --time-limit 900 --dashboard=true --dashboard-port 8766 --viser --viser-port 8080 "Solve the task\."\nssh -N -L 8766/,
 	);
 	// The dashboard only: no --viser.
-	p = fakePi({ cwd, answers: { select: ["the dashboard only", RUN_HOW.print], input: ["", ""], confirm: [true] } });
+	p = fakePi({ cwd, answers: { select: ["", "", "the dashboard only", RUN_HOW.print], confirm: [true] } });
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	assert.match(p.notes.at(-1) ?? "", /--dashboard-port 8766 "Solve the task\."\nssh/);
 	assert.doesNotMatch(p.notes.at(-1) ?? "", /--viser/);
@@ -1463,12 +1464,14 @@ test("/embodied-run panels: a work's own panel comes first when the robot serves
 	const lib = installed(cwd, "libero-units", "libero", { paper: "showharness", flags: "--preset showharness" });
 	p = fakePi({
 		cwd,
-		answers: { select: ["libero-units", "the robot's", RUN_HOW.print], input: ["", ""], confirm: [true] },
+		answers: { select: ["libero-units", "", "", "the robot's", RUN_HOW.print], confirm: [true] },
 	});
 	await p.commands.get(RUN)?.handler("", p.ctx);
 	assert.equal(
 		p.offered[PANELS]?.[0],
-		"the robot's: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+		rec(
+			"the robot's: Viser 3D view (CaP-X's viser_debug: point clouds, camera frustums, EEF, grasp candidates), with the dashboard",
+		),
 	);
 	assert.match(
 		p.notes.at(-1) ?? "",
@@ -1552,10 +1555,10 @@ test("/embodied-setup offers the self-hosted planners; choosing one hands the st
 		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
 		const p = fakePi({
 			cwd,
-			answers: { select: ["here", "selfhost/qwen3.8-27b:"], input: [""], confirm: [true] },
+			answers: { select: ["here", "selfhost/qwen3.8-27b:", ""], confirm: [true] },
 		});
 		await p.run("reproduce Show-Harness on metaworld");
-		assert.deepEqual(p.offered["Planner model"], ["anthropic/claude-opus-5", "openai/gpt-6", ...HOSTED]);
+		assert.deepEqual(p.offered["Planner model"], [rec("anthropic/claude-opus-5"), "openai/gpt-6", ...HOSTED]);
 		const summary = p.confirms.at(-1) ?? "";
 		assert.match(summary, /^flags: --preset showharness; planner selfhost\/qwen3\.8-27b$/m);
 		assert.match(
@@ -1571,7 +1574,7 @@ test("/embodied-setup offers the self-hosted planners; choosing one hands the st
 		// Strata has no deployment entry: the agent sets it up, asking which box; the confirmation says so.
 		const q = fakePi({
 			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-			answers: { select: ["here", "selfhost/qwen3.8-flash-next"], input: [""], confirm: [true] },
+			answers: { select: ["here", "selfhost/qwen3.8-flash-next", ""], confirm: [true] },
 		});
 		await q.run("reproduce Show-Harness on metaworld");
 		assert.match(
@@ -1589,7 +1592,7 @@ test("/embodied-setup offers the self-hosted planners; choosing one hands the st
 				{ provider: "openai", id: "gpt-6" },
 				{ provider: "selfhost", id: "qwen3.8-27b" },
 			],
-			answers: { select: ["here"], input: [""], confirm: [false] },
+			answers: { select: ["here", ""], confirm: [false] },
 		});
 		await r.run("reproduce Show-Harness on metaworld with selfhost/qwen3.8-27b");
 		assert.ok(!r.asked.includes("Planner model"));
@@ -1637,7 +1640,7 @@ test("/embodied-run checks a self-hosted planner before the episode and names it
 		runDeps.freePort = async () => 8765;
 		runDeps.env = {};
 		runDeps.selfhostUp = async () => false;
-		let p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+		let p = fakePi({ cwd, answers: { select: ["", "", RUN_HOW.print], confirm: [false] } });
 		await p.commands.get(RUN)?.handler("", p.ctx);
 		assert.match(p.confirms.at(-1) ?? "", /^Metaworld: O1 × A1 Code; planner selfhost\/qwen3\.8-27b$/m);
 		assert.match(
@@ -1645,7 +1648,7 @@ test("/embodied-run checks a self-hosted planner before the episode and names it
 			/^planner server: NInfer does NOT answer at http:\/\/127\.0\.0\.1:18000\/v1; start it first on the Mac: selfhost-planner ninfer start$/m,
 		);
 		runDeps.selfhostUp = async () => true;
-		p = fakePi({ cwd, answers: { select: [RUN_HOW.print], input: ["", ""], confirm: [false] } });
+		p = fakePi({ cwd, answers: { select: ["", "", RUN_HOW.print], confirm: [false] } });
 		await p.commands.get(RUN)?.handler("", p.ctx);
 		assert.match(p.confirms.at(-1) ?? "", /^planner server: NInfer answers at http:\/\/127\.0\.0\.1:18000\/v1$/m);
 	} finally {
@@ -1661,10 +1664,15 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 			{ provider: "openai", id: "gpt-6-astra" },
 			{ provider: "anthropic", id: "claude-opus-5" },
 		],
-		answers: { select: ["here", "astra"], input: [""], confirm: [false] },
+		answers: { select: ["here", "astra", ""], confirm: [false] },
 	});
 	await p.run("reproduce Show-Harness on metaworld");
-	assert.deepEqual(p.offered[PLANNER], ["anthropic/claude-opus-5", "openai/gpt-6", "openai/gpt-6-astra", ...HOSTED]);
+	assert.deepEqual(p.offered[PLANNER], [
+		rec("anthropic/claude-opus-5"),
+		"openai/gpt-6",
+		"openai/gpt-6-astra",
+		...HOSTED,
+	]);
 	assert.match(
 		p.confirms.at(-1) ?? "",
 		/^flags: --preset showharness; planner openai\/gpt-6-astra$/m,
@@ -1673,7 +1681,7 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 	// Typing an engine's name finds the self-hosted planner.
 	const q = fakePi({
 		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-		answers: { select: ["here", "strata"], input: [""], confirm: [false] },
+		answers: { select: ["here", "strata", ""], confirm: [false] },
 	});
 	await q.run("reproduce Show-Harness on metaworld");
 	assert.match(q.confirms.at(-1) ?? "", /planner selfhost\/qwen3\.8-flash-next-unsloth-q8_0$/m);
@@ -1682,7 +1690,7 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 	try {
 		const b = fakePi({
 			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
-			answers: { select: ["here", "bf16"], input: [""], confirm: [false] },
+			answers: { select: ["here", "bf16", ""], confirm: [false] },
 		});
 		await b.run("reproduce Show-Harness on metaworld");
 		assert.match(b.confirms.at(-1) ?? "", /planner selfhost\/qwen3\.8-27b-bf16$/m);
@@ -1703,4 +1711,11 @@ test("the planner list is searchable: typing narrows it, enter takes the first m
 	const lines = pickerLines(PLANNER, entries, "qwen", 0);
 	assert.match(lines[1], /^ {2}type to filter: qwen_\s+3 of 5$/);
 	assert.ok(lines.includes(`→ ${HOSTED[0]}`));
+});
+
+test("the ssh config's hosts are the remote boxes offered; patterns are not hosts", () => {
+	const file = join(mkdtempSync(join(tmpdir(), "pi-embodied-ssh-")), "config");
+	writeFileSync(file, "Host *\n  User x\nHost l40s-0003 autodl-bjb2\n  HostName a\nhost gpu-?\nHost !bad\n");
+	assert.deepEqual(sshHosts(file), ["l40s-0003", "autodl-bjb2"]);
+	assert.deepEqual(sshHosts("/nonexistent"), []);
 });
