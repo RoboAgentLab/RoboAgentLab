@@ -1969,6 +1969,7 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 		"RoboCasa365",
 		"RoboTwin 2",
 		"RoboDojo",
+		"BEHAVIOR-1K",
 	]);
 	assert.deepEqual(p.asked, [
 		"Robot or benchmark",
@@ -2049,7 +2050,7 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 	await p.run("VLA only, no agent, on Robosuite");
 	assert.match(
 		p.notes[0] ?? "",
-		/^the VLA alone \(no agent\) is not supported on Robosuite: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, Metaworld, RoboCasa365, RoboTwin 2, RoboDojo run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
+		/^the VLA alone \(no agent\) is not supported on Robosuite: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, Metaworld, RoboCasa365, RoboTwin 2, RoboDojo, BEHAVIOR-1K run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
 	);
 	assert.deepEqual([p.asked, p.sent], [[], []]);
 });

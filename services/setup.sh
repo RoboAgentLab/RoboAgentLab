@@ -28,6 +28,7 @@
 #                   Habitat-Sim, paper_fullval_v1 weights, HSSD val41 (gated; robots/humanclaw/install.sh)
 #   behavior        Isaac Sim 6.1 venv + patched OmniGibson 3.9 + its cuRobo from a BEHAVIOR-1K checkout
 #                   (robots/behavior/install_isaac61.sh; B1K_STACK=isaac51 for OmniGibson's own Isaac Sim 5.1 stack, install.sh)
+#                   --weights: Pi0.5 BEHAVIOR-1K (the VLA alone; its server runs from a venv with RLinf, see the robot's serve.sh)
 #   franka          [franka,sam3] py3.11 (real arm; RLinf controller stack and Ray on the box)
 #   franka-polymetis [franka-polymetis] py3.10 (real arm on a Polymetis NUC)
 #   dual-franka     [franka,sam3] py3.11 (two real arms)
@@ -278,6 +279,12 @@ behavior)
 	run bash "$SERVICES/pi_embodied_services/robots/behavior/$b1k" "$venv" "$root"
 	export_env OMNIGIBSON_DATA_PATH "${OMNIGIBSON_DATA_PATH:-$root/datasets}"
 	export_env OMNI_KIT_ACCEPT_EULA YES
+	# The VLA alone (--vla-alone pi0): RLinf's Pi0.5 BEHAVIOR-1K checkpoint. Its server needs RLinf and openpi,
+	# which this venv does not carry: packages/embodied/src/robots/behavior/serve.sh takes another venv's python.
+	if $weights; then
+		hf_get RLinf/RLinf-Pi05-BEHAVIOR-1K-PT50-CS32 860dc24b6449b4e26596af9ba864aaffb778b59a "$wdir/RLinf-Pi05-BEHAVIOR-1K-PT50-CS32"
+		export_env PI05_BEHAVIOR_CHECKPOINT_PATH "$wdir/RLinf-Pi05-BEHAVIOR-1K-PT50-CS32"
+	fi
 	;;
 finetuned)
 	command -v python3 >/dev/null || die "python3 not found"

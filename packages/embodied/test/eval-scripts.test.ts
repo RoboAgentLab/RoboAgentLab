@@ -91,7 +91,9 @@ for (const [robot, positional, cell, env] of CELLS) {
 
 // The VLA-alone baseline (src/planner/vla-alone.ts): each robot's VLA, and RoboCasa365's manifest protocol too.
 const VLA_ALONE: [string, string[], string, Record<string, string> | undefined, string][] = [
-	...CELLS.filter(([r]) => ["maniskill", "libero", "robotwin", "robocasa", "robodojo", "metaworld"].includes(r)).map(
+	...CELLS.filter(([r]) =>
+		["maniskill", "libero", "robotwin", "robocasa", "robodojo", "metaworld", "behavior"].includes(r),
+	).map(
 		([r, p, c, e]) =>
 			[
 				r,
@@ -106,6 +108,7 @@ const VLA_ALONE: [string, string[], string, Record<string, string> | undefined, 
 						robocasa: "rldx",
 						robodojo: "xpolicy",
 						metaworld: "pi0",
+						behavior: "pi0",
 					} as const
 				)[r as "libero"],
 			] as [string, string[], string, Record<string, string> | undefined, string],

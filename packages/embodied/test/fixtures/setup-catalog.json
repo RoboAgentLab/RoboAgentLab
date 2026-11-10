@@ -1277,7 +1277,9 @@
 				"vla_adapters": []
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": "--vla-alone pi0",
+				"example_task": "--task turning_on_radio --seed 0"
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task turning_on_radio --seed 0",
@@ -1287,7 +1289,8 @@
 					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (seeds are the tasks' pre-sampled instance ids)",
 					"eval.sh runs/b1k turning_on_radio,picking_up_trash 0-4 --model <provider/model> --thinking low   (GPU: cuda_device of the deployment config, or PI_EMBODIED_CUDA_DEVICE=1)",
 					"eval.sh runs/b1k-gt turning_on_radio 0-2 --privileged --model <provider/model> --thinking low",
-					"eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --model <provider/model>"
+					"eval.sh runs/b1k-code turning_on_radio 0-2 --code=true --model <provider/model>",
+					"eval.sh runs/b1k-pi05 turning_on_radio,picking_up_trash 0-4 --vla-alone pi0"
 				],
 				"env": [
 					"PI_EMBODIED_CUDA_DEVICE"
