@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { encodePng } from "../src/infra/png.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
 import { generateFlashPlan } from "../src/robots/libero/flash-generate.ts";
-import libero, { GUIDES, packDepth, renderRpent, unpackDepth } from "../src/robots/libero/index.ts";
+import libero, { GUIDES, packDepth, renderRpent, unpackDepth, vlaAloneSteps } from "../src/robots/libero/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
@@ -25,6 +25,8 @@ function stubPi(values: Record<string, unknown>, cwd: string) {
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
 	let active: string[] = [];
+	/** What the robot told the user (ctx.ui.notify). */
+	const notices: string[] = [];
 	const api: Record<string, unknown> = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
@@ -43,7 +45,7 @@ function stubPi(values: Record<string, unknown>, cwd: string) {
 	const ctx = {
 		hasUI: true,
 		cwd,
-		ui: { notify: () => {} },
+		ui: { notify: (m: string) => notices.push(m) },
 		shutdown: () => {},
 		abort: () => {},
 		sessionManager: {
@@ -60,7 +62,7 @@ function stubPi(values: Record<string, unknown>, cwd: string) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	return { pi, flags, tools, entries, notices, emit, run, active: () => active };
 }
 
 const nd = (dtype: string, shape: number[], data: Buffer) => ({ __ndarray__: data.toString("base64"), dtype, shape });
@@ -82,8 +84,10 @@ async function listen(server: Server) {
 /**
  * A fake LIBERO env server: the eef moves by action * 0.05 per step, and every camera sees a flat
  * surface whose depth grows 0.1 m per env step, so a past state's world map differs from the current one.
+ * It also stands in for the Pi0.5 server: `vla.predict` answers a chunk of `chunk` zero actions, and
+ * `env.chunk_step` reports LIBERO's success at env step `successAt` (never without it).
  */
-async function fakeEnv() {
+async function fakeEnv(o: { chunk?: number; successAt?: number } = {}) {
 	const s = { steps: 0, eef: [0, 0, 1] };
 	const calls: string[] = [];
 	const kwargsOf: Record<string, Record<string, unknown>> = {};
@@ -142,6 +146,15 @@ async function fakeEnv() {
 				s.eef = s.eef.map((v, i) => v + act[i] * 0.05);
 				s.steps++;
 				result = [obs(), 0, false, false, {}];
+			} else if (method === "vla.predict") {
+				const n = o.chunk ?? 5;
+				result = f32(new Array(n * 7).fill(0), [1, n, 7]);
+			} else if (method === "env.chunk_step") {
+				const [n] = (args[0] as { shape: number[] }).shape;
+				const term: number[] = [];
+				for (let i = 0; i < n; i++) term.push(++s.steps >= (o.successAt ?? Infinity) ? 1 : 0);
+				const zeros = new Array(n).fill(0);
+				result = [Array.from({ length: n }, obs), f32(zeros), f32(term), f32(zeros), {}];
 			} else if (method === "env.move_to") {
 				// The server's servo: one env step per 2.5 cm, each returned for pi's video and recorder.
 				const target = kwargs.xyz as number[];
@@ -192,8 +205,12 @@ async function fakeSam3() {
 }
 
 /** A LIBERO session on the fake servers with a local memory corpus; `values` add flags. */
-async function session(t: { after: (fn: () => void) => void }, values: Record<string, unknown> = {}) {
-	const [env, sam3] = [await fakeEnv(), await fakeSam3()];
+async function session(
+	t: { after: (fn: () => void) => void },
+	values: Record<string, unknown> = {},
+	fake: Parameters<typeof fakeEnv>[0] = {},
+) {
+	const [env, sam3] = [await fakeEnv(fake), await fakeSam3()];
 	t.after(env.close);
 	t.after(sam3.close);
 	const root = mkdtempSync(join(tmpdir(), "libero-prompt-"));
@@ -212,6 +229,8 @@ async function session(t: { after: (fn: () => void) => void }, values: Record<st
 			"memory-dir": memoryDir,
 			"output-dir": out,
 			...values,
+			// `vla: "env"`: the fake env server answers Pi0.5's vla.predict too.
+			...(values.vla === "env" ? { vla: env.url } : {}),
 		},
 		root,
 	);
@@ -519,6 +538,80 @@ test("the motion tools run the env server's methods with the manifest's paramete
 	assert.ok(moved.step > before);
 	assert.equal(moved.result.steps_used, moved.step - before);
 	assert.deepEqual(moved.result.final_eef_pos, [0.05, 0, 1]);
+});
+
+test("--vla-alone pi0: the first prompt runs Pi0.5 until LIBERO's success or the suite's budget, asks no model, and records planner vla", async (t) => {
+	const run = async (fake: Parameters<typeof fakeEnv>[0], values: Record<string, unknown> = {}) => {
+		const s = await session(
+			t,
+			{ vla: "env", "vla-alone": "pi0", suite: "libero_spatial_swap", task: "0", ...values },
+			fake,
+		);
+		const log = console.error;
+		console.error = () => {};
+		let handled: unknown;
+		try {
+			handled = await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		const result = s.entries.find((e) => e.type === "robot_result")?.data;
+		return { handled, result, chunks: s.env.calls.filter((c) => c === "env.chunk_step").length };
+	};
+	const solved = await run({ successAt: 12 });
+	assert.deepEqual(solved.handled, { action: "handled" });
+	assert.equal(solved.chunks, 3, "stops at success");
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.terminated, true);
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.env_error, false);
+	const { vla_seeds, ...rest } = solved.result.vla_alone;
+	assert.deepEqual(rest, {
+		skill: "pi0",
+		tool: "pi0",
+		instruction: "put the black bowl on the stove",
+		// A LIBERO-Pro perturbation keeps its base suite's budget (libero_spatial: 220).
+		steps_budget: 220,
+		env_steps: 15,
+		chunks: 3,
+		success: true,
+	});
+	assert.equal(vla_seeds.length, 3);
+	assert.ok("pi0" in solved.result.vla, "the VLA that answered is recorded");
+	// The budget bounds a run that never succeeds; the last chunk is cut to what is left of it.
+	const spent = await run({ chunk: 4 }, { "vla-alone-steps": "10" });
+	assert.equal(spent.result.terminated, false);
+	assert.equal(spent.result.vla_alone.env_steps, 10);
+	assert.equal(spent.chunks, 3);
+	// A suite without a standard budget needs --vla-alone-steps: the run is an env_error, not a failure.
+	const unknown = await run({}, { suite: "my_suite" });
+	assert.equal(unknown.result.env_error, true);
+	assert.match(unknown.result.vla_alone.error, /my_suite has no standard episode length; pass --vla-alone-steps/);
+});
+
+test("--vla-alone refuses to start without its VLA: Pi0.5 off, or a name that is neither the skill nor a mounted adapter", async (t) => {
+	const off = await session(t, { vla: "off", "vla-alone": "pi0" });
+	const other = await session(t, { "vla-alone": "openvla" });
+	process.exitCode = undefined;
+	assert.deepEqual(off.active(), [], "the robot did not start");
+	assert.match(off.notices.join("\n"), /--vla-alone pi0: the pi0 server is switched off/);
+	assert.deepEqual(other.active(), []);
+	assert.match(
+		other.notices.join("\n"),
+		/--vla-alone openvla runs a mounted adapter or this robot's VLA skill \(pi0\): add it to --vla-adapter/,
+	);
+	assert.deepEqual(
+		[
+			vlaAloneSteps("libero_10_task"),
+			vlaAloneSteps("libero_goal"),
+			vlaAloneSteps("libero_object_lan"),
+			vlaAloneSteps("x"),
+		],
+		[520, 300, 280, 0],
+	);
 });
 
 test("Pi0.5 is optional: without it the pi0 tools stay inactive and the result notes it; --require-skills pi0 refuses", async (t) => {

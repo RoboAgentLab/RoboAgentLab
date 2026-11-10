@@ -121,7 +121,9 @@
 				]
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": null,
+				"example_task": null
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type standard --suite libero_10 --task 0 --seed 0",
@@ -129,7 +131,8 @@
 				"script": "packages/embodied/src/robots/libero/eval.sh",
 				"usage": [
 					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
-					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low",
+					"eval.sh runs/lp-pi0 libero_spatial 0-9 0-2 --libero-type pro --vla-alone pi0"
 				],
 				"env": []
 			}
@@ -242,7 +245,9 @@
 				]
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": null,
+				"example_task": null
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type pro --suite libero_10 --task 0 --seed 0",
@@ -250,7 +255,8 @@
 				"script": "packages/embodied/src/robots/libero/eval.sh",
 				"usage": [
 					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
-					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low",
+					"eval.sh runs/lp-pi0 libero_spatial 0-9 0-2 --libero-type pro --vla-alone pi0"
 				],
 				"env": []
 			}
@@ -363,7 +369,9 @@
 				]
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": null,
+				"example_task": null
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type plus --suite libero_10 --task 0 --seed 0",
@@ -371,7 +379,8 @@
 				"script": "packages/embodied/src/robots/libero/eval.sh",
 				"usage": [
 					"eval.sh <out-dir> <suite> <tasks> <seeds> [pi args...]",
-					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low"
+					"eval.sh runs/l10 libero_10_task 0-9 1-10 --model <provider/model> --thinking low",
+					"eval.sh runs/lp-pi0 libero_spatial 0-9 0-2 --libero-type pro --vla-alone pi0"
 				],
 				"env": []
 			}
@@ -864,7 +873,9 @@
 				"vla_adapters": []
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": null,
+				"example_task": null
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task OpenDrawer --split target --seed 0",
@@ -876,7 +887,8 @@
 					"TASKS=OpenDrawer,CloseFridge and SEEDS=1,2 narrow the matrix.",
 					"TASKS=OpenDrawer,PrepareCoffee and SCENES=0-4 (ranges or lists of manifest indices).",
 					"eval.sh runs/rc365 target --model openai/gpt-5.5 --thinking low",
-					"eval.sh runs/t50-code all --model openai/gpt-5.5 --code=true --code-api=low"
+					"eval.sh runs/t50-code all --model openai/gpt-5.5 --code=true --code-api=low",
+					"TASKS=OpenDrawer SCENES=0-4 eval.sh runs/rc365-rldx target --vla-alone rldx"
 				],
 				"env": [
 					"PI_EMBODIED_DIRS_MEMORY",
@@ -983,7 +995,9 @@
 				"vla_adapters": []
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": null,
+				"example_task": null
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task beat_block_hammer --task-config demo_randomized --seed 0",
@@ -993,7 +1007,8 @@
 					"eval.sh <out-dir> <tasks|all> [pi args...]",
 					"eval.sh runs/rt all --model openai/gpt-5.5 --thinking xhigh",
 					"eval.sh runs/rt beat_block_hammer,adjust_bottle --model ...",
-					"eval.sh runs/rt-code beat_block_hammer --code=true --code-api=low --model <provider/model>"
+					"eval.sh runs/rt-code beat_block_hammer --code=true --code-api=low --model <provider/model>",
+					"eval.sh runs/rt-lingbot beat_block_hammer --vla-alone lingbot"
 				],
 				"env": []
 			}

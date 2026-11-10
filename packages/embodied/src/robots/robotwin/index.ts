@@ -13,7 +13,8 @@
  * the head and both wrist images; success is RoboTwin's own `eval_success`,
  * recorded in the session's `robot_result` entry. With `--xpolicy <ws url>`, `xpolicy_act` runs an
  * XPolicyLab policy (../xpolicy.ts, env_cfg aloha_agilex) instead: LingBot then connects only on the
- * first `lingbot_act`. MotorMind mode (`--mm=true`, ../../modes/motormind) drives one arm
+ * first `lingbot_act`. `--vla-alone lingbot` runs LingBot alone instead of the planner
+ * (../../planner/vla-alone.ts). MotorMind mode (`--mm=true`, ../../modes/motormind) drives one arm
  * (`--robotwin-mm-arm`) on the server's `env.mm_observe` / `env.mm_run_step` (services utils/motormind.py).
  */
 
@@ -34,6 +35,7 @@ import { norm as flagValue } from "../../infra/tiers.ts";
 import type { Move } from "../../modes/units/index.ts";
 import type { ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import {
 	detectionActive,
@@ -638,6 +640,8 @@ export default function robotwin(pi: ExtensionAPI) {
 			policy_actions: policyActions,
 			native_actions: nativeActions,
 			states: snapshots.length,
+			// A VLA-alone run (--vla-alone lingbot).
+			...va.result(),
 		}),
 		status: () => ({ language, step: snapshots.length - 1, solved: success() }),
 		// MotorMind mode (../../modes/motormind): the env server's mm RPCs. Every reply carries the robot
@@ -671,6 +675,14 @@ export default function robotwin(pi: ExtensionAPI) {
 		},
 	});
 	const fly = robot.fly!;
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		// RoboTwin mounts no third-party adapter.
+		mounted: () => [],
+		skills: ["lingbot"],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
 	/** A Flywheel episode from the reset scene (--collect-flywheel-data): raw/robotwin/<config>/<task>/seed_NNN. */
 	async function startFlywheel() {
 		if (pi.getFlag("collect-flywheel-data") !== true) return;
@@ -1096,6 +1108,62 @@ export default function robotwin(pi: ExtensionAPI) {
 		"read",
 	);
 
+	/**
+	 * One LingBot chunk on the native task instruction, at most `limit` of its USE_LENGTH actions:
+	 * the head and wrist images and the eef16 state go to the policy, its chunk runs on the env server
+	 * (env.chunk_step, ee actions); every native action's head frame goes to the video and, while the
+	 * Flywheel records, its transition to the recorder. Returns the actions executed and the prompt.
+	 */
+	async function lingbotChunk(policy: LingBot, limit = USE_LENGTH) {
+		if (robot.signal?.aborted) throw new Error("interrupted");
+		const prompt = await env.call<string>("env.get_task_language", {}, READ_MS);
+		const views: NdArray[] = [];
+		for (const v of VIEWS)
+			views.push(await env.call<NdArray>("env.render_camera", { camera_name: v, depth: false }, READ_MS));
+		const seed = seeds.next();
+		const out = await policy.infer({
+			...(seed === undefined ? {} : { seed }),
+			"observation.images.cam_high": views[0],
+			"observation.images.cam_left_wrist": views[1],
+			"observation.images.cam_right_wrist": views[2],
+			"observation.state": NdArray.f32([...pose("left"), grip("left"), ...pose("right"), grip("right")]),
+			task: prompt,
+		});
+		const actions = out.action;
+		if (!(actions instanceof NdArray) || actions.shape.length !== 2 || actions.shape[1] !== 16)
+			throw new Error(
+				`LingBot returned ${actions instanceof NdArray ? actions.shape : typeof actions}; expected [chunk, 16]`,
+			);
+		const rows = Math.min(USE_LENGTH, limit, actions.shape[0]);
+		const bytes = actions.data.length / actions.shape[0];
+		const chunk = new NdArray(actions.dtype, [rows, 16], actions.data.subarray(0, rows * bytes));
+		const recording = fly.recording;
+		const vlaId = fly.proposal(prompt, chunk);
+		// Record the head frame after every native action for the episode video (and, for the
+		// Flywheel, what the policy reads after it).
+		const ret = await env.call<StepReturn>(
+			"env.chunk_step",
+			{ action_type: "ee", return_all_frames: true, return_policy_frames: recording },
+			MUTATE_MS,
+			[chunk],
+			robot.signal,
+		);
+		info = ret[4];
+		const returned = ret[0] as Frames | null;
+		for (const frame of returned?.frames ?? []) robot.video.frame(u8(frame));
+		if (recording) {
+			const a = chunk.toArray();
+			const [r, te, tr] = [ret[1], ret[2], ret[3]].map((v) => (v as NdArray).toArray());
+			(returned?.policy_frames ?? []).forEach((f, i) => {
+				fly.transition(a.slice(i * 16, (i + 1) * 16), flyObs(f), r[i], Boolean(te[i]), Boolean(tr[i]), vlaId, i);
+			});
+		}
+		const count = ret[4].executed_actions ?? 0;
+		policyActions += count;
+		nativeActions += count;
+		return { executed: count, prompt, seed: seed ?? null };
+	}
+
 	tool(
 		"lingbot_act",
 		"Run LingBot-VLA eef16 action chunks (50 native actions each) on the native task instruction. The optional prompt is recorded but never sent to the policy.",
@@ -1113,62 +1181,10 @@ export default function robotwin(pi: ExtensionAPI) {
 			let nativePrompt: string | null = null;
 			const vla_seeds: (number | null)[] = [];
 			for (let i = 0; i < chunks && !success() && !exhausted(); i++) {
-				if (robot.signal?.aborted) throw new Error("interrupted");
-				nativePrompt = await env.call<string>("env.get_task_language", {}, READ_MS);
-				const views: NdArray[] = [];
-				for (const v of VIEWS)
-					views.push(await env.call<NdArray>("env.render_camera", { camera_name: v, depth: false }, READ_MS));
-				const seed = seeds.next();
-				vla_seeds.push(seed ?? null);
-				const out = await policy.infer({
-					...(seed === undefined ? {} : { seed }),
-					"observation.images.cam_high": views[0],
-					"observation.images.cam_left_wrist": views[1],
-					"observation.images.cam_right_wrist": views[2],
-					"observation.state": NdArray.f32([...pose("left"), grip("left"), ...pose("right"), grip("right")]),
-					task: nativePrompt,
-				});
-				const actions = out.action;
-				if (!(actions instanceof NdArray) || actions.shape.length !== 2 || actions.shape[1] !== 16)
-					throw new Error(
-						`LingBot returned ${actions instanceof NdArray ? actions.shape : typeof actions}; expected [chunk, 16]`,
-					);
-				const rows = Math.min(USE_LENGTH, actions.shape[0]);
-				const bytes = actions.data.length / actions.shape[0];
-				const chunk = new NdArray(actions.dtype, [rows, 16], actions.data.subarray(0, rows * bytes));
-				const recording = fly.recording;
-				const vlaId = fly.proposal(nativePrompt, chunk);
-				// Record the head frame after every native action for the episode video (and, for the
-				// Flywheel, what the policy reads after it).
-				const ret = await env.call<StepReturn>(
-					"env.chunk_step",
-					{ action_type: "ee", return_all_frames: true, return_policy_frames: recording },
-					MUTATE_MS,
-					[chunk],
-					robot.signal,
-				);
-				info = ret[4];
-				const returned = ret[0] as Frames | null;
-				for (const frame of returned?.frames ?? []) robot.video.frame(u8(frame));
-				if (recording) {
-					const a = chunk.toArray();
-					const [r, te, tr] = [ret[1], ret[2], ret[3]].map((v) => (v as NdArray).toArray());
-					(returned?.policy_frames ?? []).forEach((f, i) => {
-						fly.transition(
-							a.slice(i * 16, (i + 1) * 16),
-							flyObs(f),
-							r[i],
-							Boolean(te[i]),
-							Boolean(tr[i]),
-							vlaId,
-							i,
-						);
-					});
-				}
-				const count = ret[4].executed_actions ?? 0;
-				executed += count;
-				policyActions += count;
-				nativeActions += count;
+				const r = await lingbotChunk(policy);
+				executed += r.executed;
+				nativePrompt = r.prompt;
+				vla_seeds.push(r.seed);
 			}
 			return {
 				...completion(chunks * USE_LENGTH, executed),
@@ -1180,6 +1196,39 @@ export default function robotwin(pi: ExtensionAPI) {
 			};
 		},
 	);
+
+	/**
+	 * `--vla-alone lingbot`: LingBot's chunks on the native task instruction until RoboTwin's eval_success,
+	 * the env's step limit, or `steps` native actions (0: what is left of the step limit, the env server's
+	 * --max-episode-steps).
+	 */
+	async function runVlaAlone(_name: string, steps: number) {
+		const lim = status().step_lim;
+		const budget = steps || (lim === null ? 0 : lim - status().take_action_cnt);
+		if (!(budget > 0)) throw new Error("--vla-alone: the env has no step limit left; pass --vla-alone-steps");
+		const policy = await vla();
+		let executed = 0;
+		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
+		while (executed < budget && !success() && !exhausted()) {
+			const r = await lingbotChunk(policy, budget - executed);
+			executed += r.executed;
+			chunks++;
+			vla_seeds.push(r.seed);
+			// A chunk that executed nothing steps nothing more.
+			if (r.executed === 0) break;
+		}
+		const run = {
+			tool: "lingbot_act",
+			instruction: language,
+			steps_budget: budget,
+			env_steps: executed,
+			chunks,
+			success: success(),
+		};
+		await capture({ action: "vla_alone" }, run);
+		return { ...run, vla_seeds };
+	}
 
 	// The motion tools are the server's methods with the manifest's parameters (manifests/robotwin.json).
 	for (const name of ["move_to", "rotate_wrist", "set_gripper", "release"])
@@ -1268,6 +1317,8 @@ export default function robotwin(pi: ExtensionAPI) {
 		skills.lingbot = pi.getFlag("xpolicy")
 			? { on: true }
 			: await probeSkill(pi, "lingbot", service(pi, "lingbot"), () => vla());
+		const why = va.configError(skills);
+		if (why) throw new Error(why);
 		await capture(
 			{ action: "reset" },
 			{ success: true, instruction: language, instruction_source: reset.instruction_source ?? null },

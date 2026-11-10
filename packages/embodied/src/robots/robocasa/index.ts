@@ -15,7 +15,8 @@
  * kept per state for back-projection. Success is the env's own `_check_success()`
  * (`state.success`), recorded in the session's `robot_result` entry. MotorMind mode (`--mm=true`,
  * ../../modes/motormind) runs the arm on the server's `env.mm_observe` / `env.mm_run_step` (services
- * utils/motormind.py); the base stays where the reset put it.
+ * utils/motormind.py); the base stays where the reset put it. `--vla-alone rldx` runs RLDX-1 alone
+ * (rldx_skill's full-body loop) instead of the planner (../../planner/vla-alone.ts).
  */
 
 import { randomUUID } from "node:crypto";
@@ -36,6 +37,7 @@ import { norm as flagValue } from "../../infra/tiers.ts";
 import type { Move } from "../../modes/units/index.ts";
 import { flipRows, type ObservationDecl } from "../../observation/path.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
 import { vlaSeeds } from "../../planner/vla-seed.ts";
 import {
 	detectionActive,
@@ -439,6 +441,8 @@ export default function robocasa(pi: ExtensionAPI) {
 			rldx_max_chunks: envInt("RLDX_MAX_CHUNKS", 70),
 			rldx_settle_patience: envInt("RLDX_SETTLE_PATIENCE", 999),
 			rldx_action_steps_per_chunk: envInt("RLDX_ACTION_STEPS_PER_CHUNK", 8),
+			// A VLA-alone run (--vla-alone rldx).
+			...va.result(),
 		}),
 		status: () => ({
 			language,
@@ -474,6 +478,14 @@ export default function robocasa(pi: ExtensionAPI) {
 		},
 	});
 	const fly = robot.fly!;
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		// RoboCasa mounts no third-party adapter.
+		mounted: () => [],
+		skills: ["rldx"],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
 
 	const vec = (key: string) => obs[key].toArray();
 	const eef = () => vec("robot0_eef_pos");
@@ -723,16 +735,22 @@ export default function robocasa(pi: ExtensionAPI) {
 		return out;
 	}
 
-	/** RLDX skill run: closed-loop chunks until env success, the policy settles, or the chunk cap. */
-	async function rldx(p: {
-		prompt?: string;
-		base_clip: number | null;
-		max_chunks?: number;
-		force_reset?: boolean;
-		n_action_steps?: number;
-		settle_patience?: number;
-		settle_eps?: number;
-	}) {
+	/**
+	 * RLDX skill run: closed-loop chunks until env success, the policy settles, the chunk cap, or
+	 * `maxSteps` env steps (the VLA-alone budget; the tools have none).
+	 */
+	async function rldx(
+		p: {
+			prompt?: string;
+			base_clip: number | null;
+			max_chunks?: number;
+			force_reset?: boolean;
+			n_action_steps?: number;
+			settle_patience?: number;
+			settle_eps?: number;
+		},
+		maxSteps = Infinity,
+	) {
 		const maxChunks = envInt("RLDX_MAX_CHUNKS", p.max_chunks ?? 70);
 		const nSteps = envInt("RLDX_ACTION_STEPS_PER_CHUNK", p.n_action_steps ?? 8);
 		const patience = envInt("RLDX_SETTLE_PATIENCE", p.settle_patience ?? 999);
@@ -776,7 +794,7 @@ export default function robocasa(pi: ExtensionAPI) {
 		let lastClose = false;
 		let chunks = 0;
 		const vla_seeds: (number | null)[] = [];
-		while (chunks < maxChunks) {
+		while (chunks < maxChunks && applied < maxSteps) {
 			chunks++;
 			if (robot.signal?.aborted) throw new Error("interrupted");
 			const seed = seeds.next();
@@ -814,7 +832,7 @@ export default function robocasa(pi: ExtensionAPI) {
 					mode(i)[0] < 0.5 ? -1 : 1,
 				]),
 			);
-			for (let i = 0; i < Math.min(nSteps, horizon); i++) {
+			for (let i = 0; i < Math.min(nSteps, horizon) && applied < maxSteps; i++) {
 				flyIndex = i;
 				let motion = base(i);
 				const bc = p.base_clip;
@@ -929,6 +947,43 @@ export default function robocasa(pi: ExtensionAPI) {
 		rldxParams("default 0.1 = small"),
 		(p) => rldx({ ...p, base_clip: p.base_clip === undefined ? 0.1 : p.base_clip < 0 ? null : p.base_clip }),
 	);
+
+	/**
+	 * `--vla-alone rldx`: RLDX-1 with full base motion (rldx_skill's loop, the frozen RLDX_* settings) on the
+	 * task language until success or `steps` env steps (0: the task's RoboCasa365 horizon). A call that
+	 * ends because the policy settled or spent its chunk cap is followed by the next, which keeps the
+	 * frame history (same prompt, no other primitive in between).
+	 */
+	async function runVlaAlone(_name: string, steps: number) {
+		const t0 = Date.now();
+		const budget = steps || picked!.task.horizon;
+		const before = envSteps;
+		let calls = 0;
+		let chunks = 0;
+		let status = "";
+		const vla_seeds: (number | null)[] = [];
+		while (envSteps - before < budget) {
+			const r = await rldx({ base_clip: null }, budget - (envSteps - before));
+			if ("error" in r) throw new Error(r.error);
+			calls++;
+			chunks += r.chunks;
+			status = r.status;
+			vla_seeds.push(...r.vla_seeds);
+			if (status === "success" || r.steps_applied === 0) break;
+		}
+		const run = {
+			tool: "rldx_skill",
+			instruction: language,
+			steps_budget: budget,
+			env_steps: envSteps - before,
+			calls,
+			chunks,
+			status,
+		};
+		// The run's end becomes a recorded state: the result's success is the env's, read there.
+		const s = await capture({ action: "vla_alone" }, run, round((Date.now() - t0) / 1000, 1));
+		return { ...run, success: s.success, vla_seeds };
+	}
 
 	for (const name of ["navigate_to", "move_base"])
 		tool(name, "", Type.Object({}), (p) => motion(`env.${name}`, p as Record<string, unknown>));
@@ -1173,6 +1228,8 @@ export default function robocasa(pi: ExtensionAPI) {
 				skills.rldx = state;
 			}),
 		]);
+		const why = va.configError(skills);
+		if (why) throw new Error(why);
 		const meta = await env.call<Record<string, unknown>>("env.get_env_meta", {}, 30_000);
 		const sceneOf = (m: Record<string, unknown>) =>
 			m.scene === null || m.scene === undefined ? "" : String(m.scene);

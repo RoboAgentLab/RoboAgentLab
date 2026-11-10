@@ -42,6 +42,9 @@
 # configuration too, and the summary totals the turns each planner model planned (planner_models).
 # So is code mode (--code, --code-api: high, low or low-noexamples = CaP-X's S2-S4, and --code-oracle), e.g.
 #   eval.sh runs/t50-code all --model openai/gpt-5.5 --code=true --code-api=low
+# and --vla-alone (RLDX-1, `rldx`, run instead of the planner, the VLA-alone baseline; recorded as
+# vla_alone_adapter, in both protocols):
+#   TASKS=OpenDrawer SCENES=0-4 eval.sh runs/rc365-rldx target --vla-alone rldx
 set -uo pipefail
 out=$1 splits=$2
 shift 2
@@ -63,8 +66,17 @@ full=""
 # Common flags have one implementation; only robot-specific options live here.
 source "$here/../../scripts/eval-options.sh"
 eval_options_defaults "${MAX_TURNS:-100}"
+vla_alone=""
+eval_robot_option() {
+	case $1 in
+	--vla-alone) vla_alone=${2:-} ;;
+	--vla-alone=*) vla_alone=${1#*=} ;;
+	esac
+}
 eval_parse_options "$@"
 eval_normalize_options
+# Read by record / valid / the summary (the VLA-alone VLA is part of the configuration).
+export VLA_ALONE=$vla_alone
 
 
 # One protocol per out dir: Target50 results carry protocol_id, robocasa365 results protocol "robocasa365".
@@ -114,9 +126,9 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
-// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
-// message: the result line the robot prints on stderr is the result.
-if (!results.length && codeOracle && codeMode !== "false")
+// An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
+// file without an assistant message: the result line the robot prints on stderr is the result.
+if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))
 	try {
 		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
 			if (line.startsWith("[robocasa] {")) results.push(JSON.parse(line.slice("[robocasa] ".length)));
@@ -167,6 +179,7 @@ const result = {
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
+	vla_alone_adapter: process.env.VLA_ALONE || null,
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -186,6 +199,8 @@ const same = r.protocol === "robocasa365" && r.model === (model || null) && r.th
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before --vla-alone existed here ran the planner.
+	&& (r.vla_alone_adapter ?? null) === (process.env.VLA_ALONE || null)
 	// A code-mode result without its budget key predates the key: whether its helpers were on is unknown, so it is another configuration.
 	&& (codeMode === "false" || r.code_budget_flags === process.env.CODE_BUDGET_FLAGS);
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
@@ -216,7 +231,7 @@ for (const split of splits.split(",")) {
 		valid365 "$dir"
 		case $? in
 		0) continue ;;
-		2) echo "$dir holds a result of another model, thinking level, --max-turns, TIME_LIMIT, units mode, code mode, fallback or --privileged (or of another protocol); use another out dir" >&2 && exit 1 ;;
+		2) echo "$dir holds a result of another model, thinking level, --max-turns, TIME_LIMIT, units mode, code mode, fallback, --vla-alone or --privileged (or of another protocol); use another out dir" >&2 && exit 1 ;;
 		esac
 		rm -rf "$dir" && mkdir -p "$dir"
 		echo "== $split $task scene $scene"
@@ -243,7 +258,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/limit=${r.time_limit}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}${r.vla_alone_adapter ? `/vla_alone=${r.vla_alone_adapter}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);
@@ -310,9 +325,9 @@ for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
 		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
 	}
 }
-// An oracle run (--code-oracle) asks no model, and pi writes no session file without an assistant
-// message: the result line the robot prints on stderr is the result.
-if (!results.length && codeOracle && codeMode !== "false")
+// An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
+// file without an assistant message: the result line the robot prints on stderr is the result.
+if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))
 	try {
 		for (const line of readFileSync(`${dir}/stderr.log`, "utf8").split("\n"))
 			if (line.startsWith("[robocasa] {")) results.push(JSON.parse(line.slice("[robocasa] ".length)));
@@ -363,6 +378,7 @@ const result = {
 	privileged: privileged === "true",
 	fallback_model: fallbackModel || null, fallback_after: fallbackModel ? Number(fallbackAfter) : null, fallback_retry_primary: fallbackModel ? Number(fallbackRetry) : null,
 	code: codeMode, code_api: codeMode === "false" ? null : codeApi || last?.code_api || null, code_api_auto: codeMode === "false" ? null : !codeApi, code_oracle: codeMode === "false" ? null : codeOracle || null,
+	vla_alone_adapter: process.env.VLA_ALONE || null,
 };
 writeFileSync(`${dir}/result.json`, `${JSON.stringify(result, null, 2)}\n`);
 console.log(JSON.stringify({ status, termination_reason: result.termination_reason, success: result.success, claimed: result.claimed, env_steps: result.env_steps }));
@@ -391,6 +407,8 @@ const same = r.protocol_id === protocolId && r.model === (model || null) && r.th
 	// Results written before code mode existed here ran without it.
 	&& (r.code ?? "false") === codeMode && (codeMode === "false" ? (r.code_api ?? null) === null : codeApi ? r.code_api === codeApi : r.code_api_auto === true || (r.code_api_auto === undefined && r.code_api === "high"))
 	&& (r.code_oracle ?? null) === (codeMode === "false" ? null : codeOracle || null)
+	// Results written before --vla-alone existed here ran the planner.
+	&& (r.vla_alone_adapter ?? null) === (process.env.VLA_ALONE || null)
 	// A code-mode result without its budget key predates the key: whether its helpers were on is unknown, so it is another configuration.
 	&& (codeMode === "false" || r.code_budget_flags === process.env.CODE_BUDGET_FLAGS);
 process.exit(same && [...(r.extras ?? [])].sort().join(",") === (extras ?? "") ? 0 : 2);
@@ -418,7 +436,7 @@ while read -r split task seed limit; do
 	valid "$dir"
 	case $? in
 	0) continue ;;
-	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, code mode, vdm, fallback, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens (or an older result format); use another out dir" >&2 && exit 1 ;;
+	2) echo "$dir holds a result of another protocol, model, thinking level, --max-turns, units mode, code mode, vdm, fallback, --vla-alone, --privileged, --anchor-image, --approval, --max-tool-calls or --max-tokens (or an older result format); use another out dir" >&2 && exit 1 ;;
 	esac
 	rm -rf "$dir" && mkdir -p "$dir"
 	echo "== $split $task seed $seed"
@@ -447,7 +465,7 @@ const rows = cells.trim().split("\n").map((line) => {
 	}
 });
 const scoredRows = rows.filter((r) => r.status === "success" || r.status === "failure");
-const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}`));
+const configs = new Set(scoredRows.map((r) => `${r.model}/${r.thinking}/turns=${r.max_turns}/units=${r.units}${r.units_wrist_view === false ? `/no-wrist:${(r.units_plugins ?? []).join("+")}` : ""}${r.stateless ? "/stateless" : ""}${r.anchor_image ? "/anchor" : ""}${(r.approval ?? "off") !== "off" ? `/approval=${r.approval}` : ""}${r.max_tool_calls ? `/tool_calls=${r.max_tool_calls}` : ""}${r.max_tokens ? `/tokens=${r.max_tokens}` : ""}${r.vdm ? `/vdm=${r.vdm_model ?? "default"}${r.vdm_wrist ? "+wrist" : ""}` : ""}${r.vdm_video ? `/vdm_video=${r.vdm_video}:${r.vdm_model ?? "default"}` : ""}${r.privileged ? "/privileged" : ""}${r.fallback_model ? `/fallback=${r.fallback_model}:${r.fallback_after}:${r.fallback_retry_primary}` : ""}${r.code && r.code !== "false" ? `/code=${r.code}:${r.code_api}${r.code_oracle ? `:oracle=${r.code_oracle}` : ""}` : ""}${r.vla_alone_adapter ? `/vla_alone=${r.vla_alone_adapter}` : ""}`));
 if (configs.size > 1) {
 	console.log(`refusing to summarize: ${out} mixes configurations ${[...configs].join(", ")}`);
 	process.exit(1);

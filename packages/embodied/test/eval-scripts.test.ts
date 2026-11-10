@@ -89,6 +89,55 @@ for (const [robot, positional, cell, env] of CELLS) {
 	});
 }
 
+// The VLA-alone baseline (src/planner/vla-alone.ts): each robot's VLA, and RoboCasa365's manifest protocol too.
+const VLA_ALONE: [string, string[], string, Record<string, string> | undefined, string][] = [
+	...CELLS.filter(([r]) => ["maniskill", "libero", "robotwin", "robocasa"].includes(r)).map(
+		([r, p, c, e]) =>
+			[
+				r,
+				p,
+				c,
+				e,
+				({ maniskill: "openvla", libero: "pi0", robotwin: "lingbot", robocasa: "rldx" } as const)[r as "libero"],
+			] as [string, string[], string, Record<string, string> | undefined, string],
+	),
+	["robocasa", ["target"], "target/OpenDrawer_m0", { TASKS: "OpenDrawer", SCENES: "0" }, "rldx"],
+];
+for (const [robot, positional, cell, env, vla] of VLA_ALONE) {
+	test(`${robot}/eval.sh ${positional[0]} records a --vla-alone ${vla} run from the robot's stderr line and never mixes it with planner runs`, () => {
+		const dir = mkdtempSync(join(tmpdir(), "eval-"));
+		const pi = join(dir, "pi");
+		// A VLA-alone run asks no model: no session file, only the robot's result line on stderr.
+		const line = JSON.stringify({
+			robot,
+			planner: "vla",
+			success: true,
+			terminated: true,
+			env_error: false,
+			planner_error: null,
+		});
+		writeFileSync(pi, `#!/usr/bin/env bash\necho '[vla-alone] ran' >&2\necho '[${robot}] ${line}' >&2\n`);
+		chmodSync(pi, 0o755);
+		const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
+		const once = (args: string[]) =>
+			spawnSync("bash", [script, join(dir, "out"), ...positional, ...args], {
+				env: { ...process.env, PI: pi, TIME_LIMIT: "0", ...env },
+				encoding: "utf8",
+			});
+		const first = once(["--vla-alone", vla]);
+		assert.equal(first.status, 0, first.stderr + first.stdout);
+		const r = JSON.parse(readFileSync(join(dir, "out", cell, "result.json"), "utf8"));
+		assert.equal(r.status, "success");
+		assert.equal(r.vla_alone_adapter, vla);
+		assert.match(first.stdout, new RegExp(`vla_alone=${vla}`));
+		// The same configuration keeps the cell; a planner run refuses the out dir.
+		assert.equal(once([`--vla-alone=${vla}`]).status, 0);
+		const planner = once([]);
+		assert.equal(planner.status, 1);
+		assert.match(planner.stderr, /--vla-alone/);
+	});
+}
+
 for (const [robot, positional, cell, env] of CELLS) {
 	test(`${robot}/eval.sh records --vdm-video as its frame count and refuses a value pi would ignore`, () => {
 		const run1 = (args: string[]) => run(robot, positional, cell, args, env);
