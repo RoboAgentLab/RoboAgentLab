@@ -179,8 +179,8 @@ export const worksIn = (c: Cell): Work[] => WORKS.filter((w) => w.cells.includes
 /**
  * A ported work's setting: the `--preset` / `--tier` that reproduces it (../tiers.ts expands it to the
  * flags of that setting; the cell adds none of its own), in the cell the survey files the work (`work`:
- * its works.json id), on the robots that have what it needs (`robots`: id prefixes; absent = any robot
- * that has the cell).
+ * its works.json id), on the robots that have what it needs (`robots`: robot ids; absent = any robot
+ * that has the cell), with the flags a robot needs besides it to mount what the preset needs (`with`).
  */
 /** A live web panel a work or a robot brings, besides the dashboard: its pi flags and the port it serves. */
 export type Panel = { name: string; flags: string; port: number };
@@ -198,9 +198,13 @@ export type Paper = {
 	flag: string;
 	note: string;
 	robots?: string[];
+	/** Flags a robot adds to `flag` (by robot id): the Frankas' --vla mounts the VLA skill RPent calls. */
+	with?: Record<string, string>;
 	/** The work's own panels, preferred over the dashboard alone when the robot can serve them. */
 	panels?: Panel[];
 };
+/** LIBERO's three benchmarks: one robot extension. */
+const LIBEROS = ["libero", "libero-pro", "libero-plus"];
 const capx = (tier: string, o: O, note: string): Paper => ({
 	id: `capx-${tier}`,
 	name: `CaP-X ${tier}`,
@@ -225,8 +229,9 @@ export const PAPERS: Paper[] = [
 		work: "motormind2026",
 		cell: { o: "O2", a: "A1C" },
 		flag: "--preset motormind",
-		note: "LIBERO side camera, settle ticks, no cross-task memory",
-		robots: ["libero"],
+		note: "MotorMind mode, no cross-task memory; LIBERO adds its side camera and settle ticks",
+		// The robots that mount MotorMind mode (--mm); the preset's libero-* flags are LIBERO's only.
+		robots: [...LIBEROS, "maniskill", "metaworld", "robosuite", "robocasa", "robotwin"],
 	},
 	{
 		id: "humanclaw",
@@ -244,7 +249,10 @@ export const PAPERS: Paper[] = [
 		cell: { o: "O1", a: "A2" },
 		flag: "--preset rpent",
 		note: "tools with memory and a VLA skill",
-		robots: ["libero", "robocasa", "franka", "dual-franka"],
+		// The robots with memory and a VLA skill of their own (../tiers.ts `vla`): Pi0.5, RLDX-1, LingBot, the
+		// Frankas' VLA. ManiSkill's OpenVLA is an opt-in adapter on the Bridge WidowX only (--vla-adapter), not one.
+		robots: [...LIBEROS, "robocasa", "robotwin", "franka", "dual-franka"],
+		with: { franka: "--vla", "dual-franka": "--vla" },
 	},
 	{
 		id: "openeta",
@@ -267,21 +275,22 @@ export const PAPERS: Paper[] = [
 export const papersFor = (robot: { id: string; axes: Axes }, c: Cell): Paper[] =>
 	PAPERS.filter(
 		(p) =>
-			p.cell.o === c.o &&
-			p.cell.a === c.a &&
-			supported(robot.axes, c) &&
-			(!p.robots || p.robots.some((r) => robot.id.startsWith(r))),
+			p.cell.o === c.o && p.cell.a === c.a && supported(robot.axes, c) && (!p.robots || p.robots.includes(robot.id)),
 	);
+/** A ported setting's flags on a robot: its preset or tier, and what that robot adds for it. */
+export const paperFlag = (p: Paper, robot: string): string => [p.flag, p.with?.[robot]].filter(Boolean).join(" ");
+/** A ported setting's turns: CaP-X's S tiers are one program; every other setting is multi-turn. */
+export const paperTurns = (p: Paper): "single" | "multi" => (/^--tier S/.test(p.flag) ? "single" : "multi");
 
 /**
  * The work picker's entries: none, then the ported settings of the cell. The survey's other works filed
  * there (worksIn) are not offered until they are ported; the grid counts them.
  */
 export type Pick = { id: string; text: string; paper?: Paper };
-export function pickEntries(papers: Paper[], none: string): Pick[] {
+export function pickEntries(papers: Paper[], none: string, robot = ""): Pick[] {
 	return [
 		{ id: "none", text: none },
-		...papers.map((p) => ({ id: p.id, text: `${p.id}: ${p.name}, ${p.note} (${p.flag})`, paper: p })),
+		...papers.map((p) => ({ id: p.id, text: `${p.id}: ${p.name}, ${p.note} (${paperFlag(p, robot)})`, paper: p })),
 	];
 }
 /** The entries a typed filter keeps: the id or the text (name, note) contains it (case-insensitive). */

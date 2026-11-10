@@ -74,6 +74,22 @@ export function axesFlags(axes: Axes): Expansion {
 	return x;
 }
 
+/**
+ * The VLA skills a robot's manifest may declare, its own executor RPent's preset calls: LIBERO's Pi0.5
+ * (pi0_pick), RoboCasa's RLDX-1 (rldx_skill), RoboTwin's LingBot (lingbot_act), the Frankas' VLA
+ * (vla_grasp; the dual Franka's per-arm skills). The third-party adapters (`<name>_act`, ../primitives/vla-adapters.ts)
+ * are not among them: they mount only with --vla-adapter.
+ */
+export const VLA_SKILLS = new Set([
+	"pi0_pick",
+	"rldx_skill",
+	"lingbot_act",
+	"vla_grasp",
+	"vla_right_grasp",
+	"vla_handoff",
+	"vla_left_place",
+]);
+
 /** What a preset needs the robot to have (`Caps`). */
 export type Need = "units" | "humanclaw" | "memory" | "vla" | "vdm" | "xpolicy" | "motormind";
 type Preset = {
@@ -227,7 +243,7 @@ export type Caps = {
 	groundTruth: boolean;
 	memory: boolean;
 	xpolicy: boolean;
-	/** The manifest declares the pi0_pick VLA skill (RPent's). */
+	/** The manifest declares a VLA skill of the robot's own (`VLA_SKILLS`: RPent's). */
 	vla: boolean;
 	/** The base tiers the robot's manifest declares code primitives in (high, low, raw). */
 	codeTiers: () => string[];
@@ -244,7 +260,9 @@ const NEEDS: Record<Need, (caps: Caps) => string | undefined> = {
 			: `is the HumanCLAW robot's paper setting (--units=both --humanclaw-mode paper); ${caps.robot} is not it`,
 	memory: (caps) => (caps.memory ? undefined : `plans with RPent's memory, which ${caps.robot} does not mount`),
 	vla: (caps) =>
-		caps.vla ? undefined : `calls a VLA skill (pi0_pick), which ${caps.robot}'s manifest does not declare`,
+		caps.vla
+			? undefined
+			: `calls a VLA skill of the robot's own (pi0_pick, rldx_skill, lingbot_act, vla_grasp), which ${caps.robot}'s manifest does not declare`,
 	vdm: (caps) => (caps.vdm ? undefined : `describes each change with VDM (--vdm), which ${caps.robot} does not mount`),
 	xpolicy: (caps) =>
 		caps.xpolicy ? undefined : `runs an XPolicyLab policy (--xpolicy), which ${caps.robot} does not mount`,

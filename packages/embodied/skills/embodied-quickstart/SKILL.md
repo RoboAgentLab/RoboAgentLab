@@ -10,18 +10,39 @@ in the repository; the package root in an npm install). An npm install has no `s
 `https://github.com/LV-Robotics-Lab/pi-embodied.git` and use its `services/`. On a remote box run
 every command over `ssh <host>`; pi and the experiment directory live on the box too.
 
+## Asking the user
+
+When a decision is the user's and their words do not settle it (which robot, setting, planner, GPU,
+where the services run), ask with the `ask_user` tool instead of guessing or writing a question in
+prose: up to 4 independent questions at once, each with a header of at most 12 characters and 2-4
+options taken from what this skill and the platform list (never invented names), the option you
+recommend first with `(Recommended)` at the end of its label and a description saying why. A typed
+answer is always offered. Do not ask what the user already said, and do not ask to confirm a plan:
+/embodied-setup and /embodied-run confirm before anything is written, installed or started. Inside an
+episode the tool is not available: the policy runs without a human.
+
 ## 1. Pick
 
 `/embodied-setup` asks for the robot (sim or real, then its name), its cell in the survey's
 observation × execution grid (Figure A1a), optionally the work to reproduce in that cell, where
 services run, the planner and the experiment directory. A request after the command
-(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language,
-the names in ASCII) settles what it names, and only the rest is asked: a robot by id or label (a
+(`/embodied-setup reproduce RPent on LIBERO-PRO`; any language) settles what it names, and only the
+rest is asked. The session's model reads it (`src/infra/setup/interpret.ts`) against a catalog that
+`src/infra/setup/catalog.ts` generates from the code at that moment: every robot's cells and the ported
+settings it runs (a CaP-X tier only where the manifest has its API level), what it mounts (units, code
+tiers, memory, VDM, MotorMind, Flash, its VLA skills and adapters, the VLA alone), its flags and its
+`eval.sh` usage, the presets and tiers, the planners. Its JSON answer is checked against the same
+catalog and `src/infra/tiers.ts` (`choose`, `conflicts`, `unsupported`); a failed check goes back with
+the reasons, at most twice more, and what it says is not offered is shown as "not supported". Without a
+model, offline, or when no answer passes, the keywords read the request instead: a robot by id or label (a
 name several share, `franka`, narrows the menu to them), a ported setting or a work of the survey
 by short name or id (a work with several cells on the robot asks which; its ported settings narrow
-the picker), levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `here` / `remote` / an ssh
-host, a planner (`openai/gpt-6-astra` or `gpt-6-astra`). The confirmation starts with what the
-request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
+the picker; a robot's own name, `CaP-X on RoboTwin`, is the robot, not the paper that introduced it),
+levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `single-turn` / `multi-turn` (CaP-X's S or M
+tiers), `here` / `remote` / an ssh host, a planner (a registry model by provider/id, id or
+display name: `openai/gpt-6-astra`, `gpt-6-astra`, `Claude Fable 5.1`; `fine-tuned student`; `flash replay`). `VLA only` / `no agent` is the VLA-alone
+baseline (`--vla-alone`, outside the grid; ManiSkill's OpenVLA on the Bridge WidowX only), never A1
+Model; on another robot it is refused. The confirmation starts with what the request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
 flags; the task and the setting go on the command line. With no model configured it writes nothing and
@@ -68,24 +89,28 @@ whether it is ported and the preset:
 | short name | work | cell | flags | robots |
 | --- | --- | --- | --- | --- |
 | showharness | Show-Harness | O1 × A1 Code | `--preset showharness` | any with units |
-| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (side camera, settle ticks, no memory) | LIBERO |
+| motormind | MotorMind | O2 × A1 Code | `--preset motormind` (MotorMind mode, no memory; LIBERO adds its side camera and settle ticks) | LIBERO, ManiSkill, Metaworld, Robosuite, RoboCasa, RoboTwin |
 | humanclaw | HumanCLAW | O1 × A1 Model | `--preset humanclaw` | HumanCLAW |
-| rpent | RPent | O1 × A2 | `--preset rpent` (memory + VLA skill) | LIBERO, RoboCasa, Franka, dual Franka |
+| rpent | RPent | O1 × A2 | `--preset rpent` (memory + the robot's own VLA skill; the Frankas add `--vla`) | LIBERO, RoboCasa, RoboTwin, Franka (RLinf), dual Franka |
 | openeta | OpenETA | O2 × A2 | `--preset openeta` (VDM + anchor image) | any |
-| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth) | simulators with code |
-| capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | any with code |
-| capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | any with code |
+| capx-S1 | CaP-X S1 | O3 × A3 | `--tier S1` (ground truth, high API) | simulators with high-level code primitives: LIBERO, Robosuite, RoboCasa |
+| capx-S2, S3, S4 | CaP-X S2–S4 | O2 × A3 | `--tier S2\|S3\|S4` (one program; high / low / low-noexamples API) | S3, S4: any with code; S2: robots with high-level primitives (LIBERO, Robosuite, RoboCasa, the real arms) |
+| capx-M1 … M4 | CaP-X M1–M4 | O2 × A3 | `--tier M1\|M2\|M3\|M4` (multi-turn; text / image / VDM / VDM + low API) | M4: any with code; M1–M3: robots with high-level primitives. The robot's manifest decides (`src/infra/setup/caps.ts`); a low/raw-only robot (ManiSkill, RoboTwin, Metaworld, …) refuses the high-API tiers at start |
 | xpolicylab | XPolicyLab | (Infrastructure in the survey) | `--preset xpolicylab --xpolicy ws://host:port` (a policy server; not in the wizard) | RoboTwin, RoboDojo, Piper, dual Franka |
 
 A work not in works.json is answered the same way: read its observation access (what the agent is given
 beyond the frames) and execution interface (behaviors to a programmed or learned executor, tools, or
 code) off the taxonomy, name the cell, then the flags.
 
-The planner is a model of the registry or, in A1 Code without a preset, the robot's fine-tuned adapter
-(`src/modes/finetuned` extension, `--model finetuned/<adapter>`): a small VLM + LoRA picks each unit,
-served by vLLM. Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no planner;
-LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) is not an experiment setting and is started
-by hand.
+The planner is a model of the registry, the fine-tuned student (`src/modes/finetuned` extension) or
+Flash. The student is a small VLM + LoRA served by vLLM, on the cell's surface: in A1 Code (alone or
+with Show-Harness's preset) the robot's released adapter picks each unit (`--model finetuned/<adapter>`);
+in A1 Model and A2 it picks each tool call, in A3 it writes each program
+(`--model finetuned/local --ft-model <served adapter> --ft-surface tools|code`; no adapter is released
+for those surfaces). Flash (`--model flash/replay`: a recorded plan replayed with live grounding, no
+model; LIBERO, RoboCasa, RoboTwin, ManiSkill, RoboLab, RoboDojo) needs a plan before the first episode
+(a solved session's, from `capabilities/flash/generate.ts`, or `--flash-plan <file>`). Neither is
+offered with MotorMind's or HumanCLAW's settings, which plan in their own loop.
 
 The fine-tuned planner needs two more steps after the install: `FT_ADAPTER=<adapter> services/setup.sh
 finetuned` (default `qwen3_5_2b_sim`) fetches the released adapter and its base model with
@@ -225,9 +250,21 @@ loopback on the box, so from another machine the ports are tunnelled: the confir
 `ssh -N -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080 <box>` when pi runs over ssh; a `LocalForward`
 of the same ports in the user's ssh config entry for the box makes every ssh session carry them, and
 then http://127.0.0.1:8765/ on the user's machine is the dashboard. `--dashboard-language zh-cn`
-switches the dashboard's UI language. A request names the robot
-(`/embodied-run libero`) or overrides the setting (`metaworld privileged code`). An experiment
-whose venv is missing is refused: run /embodied-setup. The command it builds is the one below.
+switches the dashboard's UI language. A request is read as /embodied-setup reads it, by the session's
+model against a catalog of the experiments here (directory, robot, recorded setting and planner, ready
+or not), each robot's task flags and `eval.sh` usage (positional arguments and the variables its header
+names, such as `TASKS` / `SEEDS` / `SCENES`), the free GPUs and the default budget. It answers with the
+experiment, the task flags or a batch (`packages/embodied/src/robots/<robot>/eval.sh runs/<name> ...`
+over the tasks and seeds asked for, run from the checkout with the robot's environment and the
+experiment's setting and planner; the agent runs it in the background and reports the summary, or it is
+printed), the GPU, a planner, thinking level or budget for this run, and what is not supported; flags the
+robot does not take, a tier the setting cannot run, an experiment that is not here and arguments a
+command line cannot carry are sent back. With the keywords instead (`/embodied-run reproduce RPent on
+LIBERO`): its robot, setting, work or levels pick the installed
+experiment, a planner it names is that episode's `--model`, and `task 3`, `seed 1`, `libero_90`,
+`gpu 2`, `20 turns`, `headless` or `print` answer those questions (setup ignores them). It never
+installs and never starts another setting than the recorded one: when nothing installed matches, or the
+venv is missing, it says why and offers `/embodied-setup <the same request>`. The command it builds is the one below.
 
 
 The launch command `/embodied-setup` hands over (`[setting flags]`: the cell's flags from the table
