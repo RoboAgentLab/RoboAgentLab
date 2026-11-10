@@ -171,6 +171,12 @@ const VLA_SIM = (skill: string): Axes => ({ ...SIM, A1M: `--require-skills ${ski
 const ARM: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A1M: "--vla", A2: "", A3: "--code=true" };
 /** The Polymetis backend has no VLA action space (its env server's has_vla is false): no A1 Model. */
 const POLYMETIS: Axes = { O1: "", O2: "--segment", A1C: "--units=true", A2: "", A3: "--code=true" };
+/** LIBERO's VLA alone: Pi0.5 (the `pi0` skill) on the task language, with openpi's per-suite step budget. */
+const liberoAlone = (task: string): NonNullable<Robot["vlaAlone"]> => ({
+	flags: "--vla-alone pi0",
+	task,
+	needs: "the Pi0.5 server at services.vla (the LIBERO fine-tune: setup.sh's --weights, started by serve.sh)",
+});
 const SIM_FT = "--model finetuned/qwen3_5_2b_showharness_sim";
 const LIBERO_FT = "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero";
 export const ROBOTS: Robot[] = [
@@ -186,6 +192,7 @@ export const ROBOTS: Robot[] = [
 		task: "--libero-type standard --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
+		vlaAlone: liberoAlone("--libero-type standard --suite libero_10 --task 0 --seed 0"),
 	},
 	{
 		id: "libero-pro",
@@ -199,6 +206,7 @@ export const ROBOTS: Robot[] = [
 		task: "--libero-type pro --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
+		vlaAlone: liberoAlone("--libero-type pro --suite libero_10 --task 0 --seed 0"),
 	},
 	{
 		id: "libero-plus",
@@ -212,6 +220,7 @@ export const ROBOTS: Robot[] = [
 		task: "--libero-type plus --suite libero_10 --task 0 --seed 0",
 		weights: "Pi0.5 LIBERO SFT + SAM3 (gated: HF_TOKEN)",
 		finetuned: LIBERO_FT,
+		vlaAlone: liberoAlone("--libero-type plus --suite libero_10 --task 0 --seed 0"),
 	},
 	{
 		id: "maniskill",
@@ -267,6 +276,11 @@ export const ROBOTS: Robot[] = [
 		axes: VLA_SIM("rldx"),
 		task: "--task OpenDrawer --split target --seed 0",
 		weights: "RLDX-1-FT-RC365 VLA",
+		vlaAlone: {
+			flags: "--vla-alone rldx",
+			task: "--task OpenDrawer --split target --seed 0",
+			needs: "the RLDX-1 server at services.rldx (setup.sh's --weights, started by serve.sh)",
+		},
 	},
 	{
 		id: "robotwin",
@@ -278,6 +292,11 @@ export const ROBOTS: Robot[] = [
 		axes: VLA_SIM("lingbot"),
 		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
+		vlaAlone: {
+			flags: "--vla-alone lingbot",
+			task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
+			needs: "the LingBot-VLA server at services.lingbot (setup.sh's --weights, started by serve.sh)",
+		},
 	},
 	{
 		id: "robolab",
@@ -783,7 +802,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 				.map((r) => r.label)
 				.join(
 					", ",
-				)} runs a VLA alone (--vla-alone: OpenVLA on the Bridge WidowX). Nothing set up; for the agent driving the robot's VLA, ask for A1 Model.`,
+				)} run a VLA alone (--vla-alone); no VLA is integrated for the others. Nothing set up; for the agent driving the robot's VLA, ask for A1 Model.`,
 			"error",
 		);
 		return;
@@ -932,10 +951,10 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	if (!finetuned && !vlaAlone && !model?.includes("/")) return;
 	// The weights setup.sh --weights fetches serve the VLA of A1 Model and A2, and O2's SAM3.
 	const weights =
-		robot.weights && cell && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")
+		robot.weights && (vlaAlone || (cell && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")))
 			? await ui.confirm(
 					"Model weights",
-					`Also download ${robot.weights}? (recommended: this cell's tools need them)`,
+					`Also download ${robot.weights}? (recommended: ${vlaAlone ? "the VLA runs on them" : "this cell's tools need them"})`,
 				)
 			: false;
 	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
