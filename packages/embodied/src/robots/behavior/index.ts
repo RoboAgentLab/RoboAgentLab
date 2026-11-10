@@ -198,6 +198,17 @@ export const UNITS_VIEWS = `Each result shows the head camera, then the left wri
 - Head camera (first image): on the robot's head looking ahead and down at the workspace. MV_FWD moves the gripper away from the robot (up the image, smaller), MV_BACK toward it, MV_LEFT toward the image left and MV_RIGHT toward the image right; MV_UP / MV_DOWN raise and lower it.
 - Wrist views: close range from each gripper; judge contact there, direction in the head camera.`;
 
+/** Every second pixel of an HxWx3 uint8 frame (numpy's `[::2, ::2]`): the size of env.vla_chunk's video frames. */
+export function halved(image: NdArray): NdArray {
+	const [h, w, c] = image.shape;
+	const [rows, cols] = [Math.ceil(h / 2), Math.ceil(w / 2)];
+	const out = Buffer.allocUnsafe(rows * cols * c);
+	for (let y = 0; y < rows; y++)
+		for (let x = 0; x < cols; x++)
+			image.data.copy(out, (y * cols + x) * c, (2 * y * w + 2 * x) * c, (2 * y * w + 2 * x + 1) * c);
+	return new NdArray(image.dtype, [rows, cols, c], out);
+}
+
 export default function behavior(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
 	trackFlags(pi);
@@ -476,7 +487,8 @@ export default function behavior(pi: ExtensionAPI) {
 
 	function absorb(o: Obs) {
 		obs = Object.fromEntries(Object.entries(o).filter(([k]) => k in OBS_KEYS)) as Obs;
-		video.frame(obs.head);
+		// The VLA alone's video is env.vla_chunk's frames, at half the head camera's size: this frame joins them.
+		video.frame(alone() ? halved(obs.head) : obs.head);
 	}
 
 	const eefState = (e: Eef) => ({

@@ -5,6 +5,8 @@
 # The server needs RLinf and its openpi, which the BEHAVIOR-1K venv (Isaac Sim, Python 3.12) does not carry:
 # PI05_PYTHON is the python of a venv that does (the LIBERO one, or the Metaworld one after
 # `services/setup.sh metaworld --weights`). `services/setup.sh behavior --weights` downloads the checkpoint.
+# On an sm_120 GPU (RTX 50 series, RTX PRO 6000 Blackwell) that venv needs torch==2.7.1+cu128: RLinf's
+# cu126 pin loads the model and then fails the first inference ("no kernel image is available").
 # start records the server it launches in $LOG_DIR/<module>-<port>.pid, and stop stops only that one:
 # a port that already answers is left alone, so a server someone else started keeps running.
 set -euo pipefail

@@ -5,8 +5,10 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { NdArray } from "../src/infra/rpc.ts";
+import { FRAME_EVENT } from "../src/observation/video.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
-import behavior, { CODE_MAX_MOVE_M, STEP_M, TASKS, VECTORS, VLA_ALONE } from "../src/robots/behavior/index.ts";
+import behavior, { CODE_MAX_MOVE_M, halved, STEP_M, TASKS, VECTORS, VLA_ALONE } from "../src/robots/behavior/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 import { checkSimExplore, fakeEnv as rpcServer } from "./sim-stub.ts";
@@ -20,6 +22,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
+	const emitted: { name: string; data: any }[] = [];
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -34,7 +37,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (name: string, data: unknown) => void emitted.push({ name, data }), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: false,
@@ -55,7 +58,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	return { pi, flags, tools, entries, emitted, emit, run, active: () => active };
 }
 
 const nd = (dtype: string, shape: number[], data: Buffer) => ({ __ndarray__: data.toString("base64"), dtype, shape });
@@ -607,7 +610,8 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 		}
 		process.exitCode = undefined;
 		const chunks = env.calls.filter((c) => c.method === "env.vla_chunk").map((c) => (c.args[0] as any).shape[0]);
-		return { s, env, vla, chunks, errors, result: s.entries.find((e) => e.type === RESULT_ENTRY)?.data };
+		const video = s.emitted.filter((e) => e.name === FRAME_EVENT).map((e) => e.data.shape.join("x"));
+		return { s, env, vla, chunks, errors, video, result: s.entries.find((e) => e.type === RESULT_ENTRY)?.data };
 	};
 	// The BDDL goal holds at step 40: the second chunk stops there.
 	const solved = await run({ control: "challenge", solveAt: 40, limit: 3000 }, { "vla-alone": "pi0" });
@@ -636,6 +640,13 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 		q_score: 1,
 	});
 	assert.equal(vla_seeds.length, 2);
+	// One video, one frame size: the reset's head frame (4x4 here) at half size, like the chunks' frames (2x2).
+	// Mixed sizes encode as garbage (the first frame sets the video's size).
+	assert.deepEqual(solved.video, ["2x2x3", "2x2x3", "2x2x3"]);
+	assert.deepEqual(
+		halved(new NdArray("uint8", [3, 3, 1], Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9]))).data,
+		Buffer.from([1, 3, 7, 9]),
+	);
 	// --vla-alone-steps cuts the last chunk; the partial credit is recorded.
 	const spent = await run({ control: "challenge", limit: 3000 }, { "vla-alone": "pi0", "vla-alone-steps": "40" });
 	assert.deepEqual(spent.chunks, [32, 8]);
