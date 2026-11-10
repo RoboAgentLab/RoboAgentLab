@@ -5,11 +5,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { NdArray } from "../src/infra/rpc.ts";
+import { FRAME_EVENT } from "../src/observation/video.ts";
 import { RESULT_ENTRY, toolSections } from "../src/robot.ts";
-import behavior, { CODE_MAX_MOVE_M, STEP_M, TASKS, VECTORS } from "../src/robots/behavior/index.ts";
+import behavior, { CODE_MAX_MOVE_M, halved, STEP_M, TASKS, VECTORS, VLA_ALONE } from "../src/robots/behavior/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
-import { checkSimExplore } from "./sim-stub.ts";
+import { checkSimExplore, fakeEnv as rpcServer } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -20,6 +22,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
+	const emitted: { name: string; data: any }[] = [];
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -34,7 +37,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (name: string, data: unknown) => void emitted.push({ name, data }), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: false,
@@ -55,7 +58,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	return { pi, flags, tools, entries, emitted, emit, run, active: () => active };
 }
 
 const nd = (dtype: string, shape: number[], data: Buffer) => ({ __ndarray__: data.toString("base64"), dtype, shape });
@@ -514,4 +517,155 @@ test("--code=true: run_code runs on the env server; BDDL success, q_score and th
 	assert.deepEqual(result.reference, { picked: false, in_hand: { left: "radio_89", right: null } });
 	assert.equal(result.code, "true");
 	assert.equal(result.code_api, "low");
+});
+
+test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks run to the BDDL goal or the task's limit, no model is asked", async (t) => {
+	const img = (h: number, w: number, n?: number) =>
+		nd("uint8", n ? [n, h, w, 3] : [h, w, 3], Buffer.alloc((n ?? 1) * h * w * 3));
+	const vec = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
+	// A fake env server in `control` mode: env.vla_chunk steps one control step per action and succeeds at `solveAt`.
+	const sim = async (o: { control?: string; solveAt?: number; limit?: number }) => {
+		let steps = 0;
+		const state = () => ({
+			base_pos: vec([0, 0, 0]),
+			base_quat_xyzw: vec([0, 0, 0, 1]),
+			base_yaw: 0,
+			eef: {
+				left: { pos: vec([0, 0, 1]), quat_xyzw: vec([0, 0, 0, 1]), gripper_width: 0.05 },
+				right: { pos: vec([0, 0, 1]), quat_xyzw: vec([0, 0, 0, 1]), gripper_width: 0.05 },
+			},
+			success: o.solveAt !== undefined && steps >= o.solveAt,
+			q_score: o.solveAt !== undefined && steps >= o.solveAt ? 1 : 0.25,
+			goals: { satisfied: 0, total: 1 },
+			terminated: false,
+			truncated: false,
+			env_steps: steps,
+			privileged: { in_hand: { left: null, right: null }, picked: false },
+		});
+		const frames = () => ({
+			head: img(4, 4),
+			head_depth: nd("float32", [4, 4], Buffer.alloc(64)),
+			left_wrist: img(4, 4),
+			left_wrist_depth: nd("float32", [4, 4], Buffer.alloc(64)),
+			right_wrist: img(4, 4),
+			right_wrist_depth: nd("float32", [4, 4], Buffer.alloc(64)),
+		});
+		return rpcServer((c) => {
+			if (c.method === "env.get_env_meta")
+				return {
+					task: "turning_on_radio",
+					seed: 0,
+					instruction: "Turn on the radio.",
+					image_size: 480,
+					grasping_mode: "assisted",
+					...(o.control ? { control: o.control } : {}),
+					...(o.limit ? { challenge_max_steps: o.limit } : {}),
+				};
+			if (c.method === "env.reset") return [{ ...frames(), ...state() }, {}];
+			if (c.method === "env.vla_obs")
+				return {
+					head: img(720, 720),
+					wrists: img(480, 480, 2),
+					state: vec(Array(256).fill(0)),
+					instruction: "Turn on the radio.",
+				};
+			if (c.method === "env.vla_chunk") {
+				const n = (c.args[0] as { shape: number[] }).shape[0];
+				let ran = 0;
+				while (ran < n && !(o.solveAt !== undefined && steps >= o.solveAt)) {
+					steps++;
+					ran++;
+				}
+				return { steps: ran, frames: [img(2, 2)], ...state() };
+			}
+			return undefined;
+		});
+	};
+	const policy = (embodiment: string) =>
+		rpcServer((c) => {
+			if (c.method === "healthz") return { status: "ok", service: "pi05-vla" };
+			if (c.method === "vla.info")
+				return { embodiment, config_name: "pi05_behavior", action_dim: 23, action_chunk: 32 };
+			if (c.method === "vla.predict")
+				return nd("float32", [1, 32, 23], Buffer.from(Float32Array.from(Array(32 * 23).fill(0)).buffer));
+			return undefined;
+		});
+	const run = async (o: Parameters<typeof sim>[0], values: Record<string, unknown> = {}, embodiment = "behavior") => {
+		const env = await sim(o);
+		t.after(env.close);
+		const vla = await policy(embodiment);
+		t.after(vla.close);
+		const s = stubPi({ "env-url": env.url, task: "turning_on_radio", seed: "0", behavior_vla: vla.url, ...values });
+		behavior(s.pi);
+		// Without a UI a failed start is printed: the messages are the test's `errors`.
+		const errors: string[] = [];
+		const log = console.error;
+		console.error = (m: unknown) => errors.push(String(m));
+		try {
+			await s.emit("session_start");
+			await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		process.exitCode = undefined;
+		const chunks = env.calls.filter((c) => c.method === "env.vla_chunk").map((c) => (c.args[0] as any).shape[0]);
+		const video = s.emitted.filter((e) => e.name === FRAME_EVENT).map((e) => e.data.shape.join("x"));
+		return { s, env, vla, chunks, errors, video, result: s.entries.find((e) => e.type === RESULT_ENTRY)?.data };
+	};
+	// The BDDL goal holds at step 40: the second chunk stops there.
+	const solved = await run({ control: "challenge", solveAt: 40, limit: 3000 }, { "vla-alone": "pi0" });
+	assert.deepEqual(solved.chunks, [32, 32]);
+	const sent = solved.vla.calls.find((c) => c.method === "vla.predict")!.args as any[];
+	assert.deepEqual(sent[0].main_images.shape, [1, 720, 720, 3]);
+	assert.deepEqual(sent[0].wrist_images.shape, [1, 2, 480, 480, 3]);
+	assert.deepEqual(sent[0].states.shape, [1, 256]);
+	assert.equal(sent[0].extra_view_images, null);
+	assert.deepEqual(sent[0].task_descriptions, ["Turn on the radio."]);
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.success, true);
+	assert.equal(solved.result.control, "challenge");
+	assert.deepEqual(solved.result.vla, { pi0: "pi05-vla" });
+	const { vla_seeds, ...rest } = solved.result.vla_alone;
+	assert.deepEqual(rest, {
+		skill: "pi0",
+		tool: "pi0",
+		instruction: "Turn on the radio.",
+		// The challenge's limit for the task: 1.5 x the average human demonstration.
+		steps_budget: 3000,
+		env_steps: 40,
+		chunks: 2,
+		success: true,
+		q_score: 1,
+	});
+	assert.equal(vla_seeds.length, 2);
+	// One video, one frame size: the reset's head frame (4x4 here) at half size, like the chunks' frames (2x2).
+	// Mixed sizes encode as garbage (the first frame sets the video's size).
+	assert.deepEqual(solved.video, ["2x2x3", "2x2x3", "2x2x3"]);
+	assert.deepEqual(
+		halved(new NdArray("uint8", [3, 3, 1], Buffer.from([1, 2, 3, 4, 5, 6, 7, 8, 9]))).data,
+		Buffer.from([1, 3, 7, 9]),
+	);
+	// --vla-alone-steps cuts the last chunk; the partial credit is recorded.
+	const spent = await run({ control: "challenge", limit: 3000 }, { "vla-alone": "pi0", "vla-alone-steps": "40" });
+	assert.deepEqual(spent.chunks, [32, 8]);
+	assert.deepEqual([spent.result.success, spent.result.vla_alone.q_score], [false, 0.25]);
+	// No human statistics in the dataset and no --vla-alone-steps: an env_error that says so.
+	const unknown = await run({ control: "challenge" }, { "vla-alone": "pi0" });
+	assert.deepEqual(unknown.chunks, []);
+	assert.match(JSON.stringify(unknown.result), /the challenge's episode limit is unknown; pass --vla-alone-steps/);
+	// Another embodiment's Pi0.5 server: no action runs.
+	const wrong = await run({ control: "challenge", limit: 100 }, { "vla-alone": "pi0" }, "libero");
+	assert.deepEqual(wrong.chunks, []);
+	assert.match(JSON.stringify(wrong.result), /holds the libero policy, not behavior's/);
+	// The two control modes are different robots: an attached server in the other one is refused, either way.
+	const mode = await run({}, { "vla-alone": "pi0" });
+	assert.match(
+		mode.errors.join("\n"),
+		/env server runs --control primitives, but --vla-alone pi0 needs --control challenge/,
+	);
+	const planner = await run({ control: "challenge" });
+	assert.match(planner.errors.join("\n"), /env server runs --control challenge, which has no primitives/);
+	assert.equal(VLA_ALONE.action, 23);
 });

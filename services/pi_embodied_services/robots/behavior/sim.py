@@ -60,6 +60,52 @@ INSTANCE_SPLITS = {"train": "scenes", "public_test": "scene_test/public"}
 BASE_JOINT_LIMIT_M = 30.0
 
 
+#: The two control modes of the env server (``--control``). ``primitives``: position-controlled
+#: joints and the base as joints, what OmniGibson's semantic primitives drive (the planner's
+#: tools). ``challenge``: the BEHAVIOR challenge's robot (OmniGibson 3.9 ``omnigibson/eval/
+#: r1pro.yaml`` and its Evaluator), which the published policies were trained on and are
+#: evaluated with: a velocity-controlled holonomic base, absolute joint positions for trunk and
+#: arms, a one-number command per gripper, assisted grasping, a 720 px head camera with a 40 mm
+#: horizontal aperture and 480 px wrist cameras. The primitives do not run in it.
+CONTROLS = ("primitives", "challenge")
+#: The challenge's camera sizes (``eval_utils.HEAD_RESOLUTION`` / ``WRIST_RESOLUTION``), px.
+CHALLENGE_HEAD_PX = 720
+CHALLENGE_WRIST_PX = 480
+#: ``Evaluator.EVAL_HEAD_HORIZONTAL_APERTURE`` and ``EVAL_BASE_LINK_MASS``.
+CHALLENGE_HEAD_APERTURE = 40.0
+CHALLENGE_BASE_MASS = 250.0
+#: ``Evaluator``'s episode limit: this many times the average human demonstration's length.
+CHALLENGE_TIMEOUT_MULTIPLIER = 1.5
+#: The R1Pro's reset joints in the challenge (r1pro.yaml): six virtual base joints, the trunk at
+#: JoyLo's default pose, both arms at zero, the four finger joints open.
+CHALLENGE_RESET_JOINTS = (
+    [0.0] * 6 + [1.025, -1.45, -0.47, 0.0] + [0.0] * 14 + [0.05] * 4
+)
+#: The challenge's whole-body action, 23-D (``eval_utils.ACTION_QPOS_INDICES``): base velocity
+#: (x, y, yaw; +-1 maps to +-0.75 m/s and +-1 rad/s), trunk and arm joint positions (rad), one
+#: command per gripper.
+CHALLENGE_ACTION = {
+    "base": (0, 3),
+    "trunk": (3, 7),
+    "arm_left": (7, 14),
+    "gripper_left": (14, 15),
+    "arm_right": (15, 22),
+    "gripper_right": (22, 23),
+}
+#: Where the 2025 demonstrations' 256-D proprio vector holds what the Pi0.5 BEHAVIOR policy
+#: reads of it (RLinf ``behavior_policy.R1PRO_PROPRIO_INDICES``; the keys are the robot's
+#: ``_get_proprioception_dict`` entries). The policy reads nothing else of the vector.
+POLICY_PROPRIO = {
+    "arm_left_qpos": (158, 165),
+    "gripper_left_qpos": (193, 195),
+    "arm_right_qpos": (197, 204),
+    "gripper_right_qpos": (232, 234),
+    "trunk_qpos": (236, 240),
+    "base_qvel": (253, 256),
+}
+POLICY_PROPRIO_DIM = 256
+
+
 def to_np(x: Any) -> np.ndarray:
     """A torch tensor (any device) or array-like as a numpy array."""
     if hasattr(x, "detach"):
@@ -228,6 +274,7 @@ def task_config(
     grasping_mode: str,
     max_steps: int,
     definition_id: int = 0,
+    control: str = "primitives",
 ) -> dict:
     """OmniGibson's env config for one challenge task on the R1Pro: the ``r1pro_primitives.yaml``
     robot (position-controlled joints, the holonomic base as joints; what
@@ -238,6 +285,8 @@ def task_config(
         raise ValueError(
             f"grasping_mode must be sticky or assisted, got {grasping_mode!r}"
         )
+    if control not in CONTROLS:
+        raise ValueError(f"control must be one of {CONTROLS}, got {control!r}")
     joints = {
         "name": "JointController",
         "motor_type": "position",
@@ -245,7 +294,7 @@ def task_config(
         "use_delta_commands": False,
         "use_impedances": False,
     }
-    return {
+    config = {
         "env": {
             "action_frequency": 30,
             "physics_frequency": 120,
@@ -323,6 +372,50 @@ def task_config(
             "reward_config": {"r_potential": 1.0},
         },
     }
+    if control == "challenge":
+        robot = config["robots"][0]
+        robot.update(
+            grasping_mode="assisted",
+            reset_joint_pos=list(CHALLENGE_RESET_JOINTS),
+            controller_config=challenge_controllers(),
+        )
+        config["env"]["rendering_frequency"] = 30
+    return config
+
+
+def challenge_controllers() -> dict:
+    """The challenge's controllers (OmniGibson 3.9 ``omnigibson/eval/r1pro.yaml``)."""
+    joints = {
+        "name": "JointController",
+        "motor_type": "position",
+        "pos_kp": 150,
+        "command_input_limits": None,
+        "command_output_limits": None,
+        "use_impedances": False,
+        "use_delta_commands": False,
+    }
+    gripper = {
+        "name": "MultiFingerGripperController",
+        "mode": "smooth",
+        "command_input_limits": "default",
+        "command_output_limits": "default",
+    }
+    return {
+        "base": {
+            "name": "HolonomicBaseJointController",
+            "motor_type": "velocity",
+            "vel_kp": 150,
+            "command_input_limits": [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]],
+            "command_output_limits": [[-0.75, -0.75, -1.0], [0.75, 0.75, 1.0]],
+            "use_impedances": False,
+        },
+        "trunk": dict(joints),
+        "arm_left": dict(joints),
+        "arm_right": dict(joints),
+        "gripper_left": dict(gripper),
+        "gripper_right": dict(gripper),
+        "camera": {"name": "NullJointController"},
+    }
 
 
 class Handle:
@@ -338,7 +431,9 @@ class Handle:
         self.error = error
 
 
-def launch(config: dict, *, curobo_batch_size: int = 3) -> Handle:
+def launch(
+    config: dict, *, curobo_batch_size: int = 3, primitives: bool = True
+) -> Handle:
     """Start OmniGibson (Isaac Sim) headless on ``OMNIGIBSON_GPU_ID`` and load the task.
 
     Object states and transition rules stay on (BDDL predicates need them); GPU dynamics off
@@ -347,7 +442,8 @@ def launch(config: dict, *, curobo_batch_size: int = 3) -> Handle:
     scene needs). Imports OmniGibson here: its macros read the environment at import, so the
     caller sets ``OMNIGIBSON_*`` first. ``curobo_batch_size`` is the primitives' cuRobo batch
     (OmniGibson's default 3): the planner warms up that many parallel rollouts of every seed, and
-    its GPU memory grows with it; 1 plans the same attempts in sequence.
+    its GPU memory grows with it; 1 plans the same attempts in sequence. ``primitives`` False
+    (the challenge control mode) loads no primitives and no cuRobo: ``Handle.controller`` is None.
     """
     os.environ.setdefault("OMNIGIBSON_HEADLESS", "1")
     import omnigibson as og
@@ -365,14 +461,122 @@ def launch(config: dict, *, curobo_batch_size: int = 3) -> Handle:
     gm.ENABLE_TRANSITION_RULES = True
     gm.USE_GPU_DYNAMICS = False
     gm.RENDER_VIEWER_CAMERA = False
+    if not primitives:
+        apply_challenge_scene(config)
     env = og.Environment(configs=config)
-    controller = with_settable_arm(StarterSemanticActionPrimitives)(
-        env,
-        env.robots[0],
-        enable_head_tracking=False,
-        curobo_batch_size=curobo_batch_size,
+    controller = (
+        with_settable_arm(StarterSemanticActionPrimitives)(
+            env,
+            env.robots[0],
+            enable_head_tracking=False,
+            curobo_batch_size=curobo_batch_size,
+        )
+        if primitives
+        else None
     )
     return Handle(og=og, env=env, controller=controller, error=ActionPrimitiveError)
+
+
+def challenge_tables() -> Any:
+    """The challenge's teleoperation tables, which its Evaluator reads from JoyLo
+    (``gello.utils.og_teleop_cfg``: ``DISABLED_TRANSITION_RULES``, ``ROOM_DEPENDENCIES``,
+    ``TASK_SPECIFIC_EXTRA_ROOMS``). Loaded from the BEHAVIOR-1K checkout's file, so JoyLo and its
+    hardware dependencies need no install."""
+    import importlib.util
+    from pathlib import Path
+
+    import omnigibson
+
+    path = Path(omnigibson.__file__).parents[2] / "joylo/gello/utils/og_teleop_cfg.py"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"--control challenge reads the challenge's tables from {path}: "
+            "OmniGibson must be installed from a BEHAVIOR-1K checkout"
+        )
+    spec = importlib.util.spec_from_file_location("b1k_og_teleop_cfg", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def challenge_rooms(tables: Any, activity: str, scene_model: str) -> list[str]:
+    """The room types the challenge's Evaluator loads for a task (its ``partial_scene_load``):
+    the rooms the task's initial conditions name (``inroom``), the rooms those depend on in this
+    scene, and the task's extra rooms."""
+    from omnigibson.utils.bddl_utils import get_knowledge_base
+
+    conditions = get_knowledge_base().get_task(f"{activity}-0").parse_base_scope()[0]
+    rooms: list[str] = []
+    for cond in conditions.parsed_initial_conditions:
+        if len(cond) == 3 and cond[0] == "inroom" and cond[2] not in rooms:
+            rooms.append(cond[2])
+    dependencies = tables.ROOM_DEPENDENCIES[scene_model]
+    for room in list(rooms):
+        for dependent in dependencies.get(room, []):
+            if dependent not in rooms:
+                rooms.append(dependent)
+    return rooms + list(
+        tables.TASK_SPECIFIC_EXTRA_ROOMS.get(activity, {}).get(scene_model, [])
+    )
+
+
+def apply_challenge_scene(config: dict) -> None:
+    """What the challenge's Evaluator sets before it builds the env (``Evaluator.load_env``): the
+    transition rules it switches off, and only the task's rooms loaded."""
+    tables = challenge_tables()
+    for rule in tables.DISABLED_TRANSITION_RULES:
+        rule.ENABLED = False
+    config["scene"]["load_room_types"] = challenge_rooms(
+        tables, config["task"]["activity_name"], config["scene"]["scene_model"]
+    )
+
+
+def apply_challenge_settings(handle: Handle) -> None:
+    """What OmniGibson 3.9's challenge Evaluator sets on the loaded robot: the cameras' sizes (its
+    RGBDFullResWrapper: head 720 px, wrists 480 px), the base link's mass
+    (``_apply_robot_eval_settings``, with the simulation stopped) and the head camera's
+    horizontal aperture. Stopping the simulation drops the physics views, so they are made again
+    (``og.sim.update_handles``, as the Evaluator does) before the observation space is rebuilt,
+    which reads the robot's joints."""
+    og, env, robot = handle.og, handle.env, handle.robot
+    for camera in CAMERAS:
+        s = sensor(robot, camera)
+        px = CHALLENGE_HEAD_PX if camera == "head" else CHALLENGE_WRIST_PX
+        s.image_height = px
+        s.image_width = px
+    og.sim.stop()
+    robot.base_footprint_link.mass = CHALLENGE_BASE_MASS
+    og.sim.play()
+    sensor(robot, "head").horizontal_aperture = CHALLENGE_HEAD_APERTURE
+    og.sim.update_handles()
+    env.load_observation_space()
+
+
+def policy_proprio(robot: Any) -> np.ndarray:
+    """The 256-D proprio vector of the challenge's demonstrations with the entries the Pi0.5
+    BEHAVIOR policy reads (:data:`POLICY_PROPRIO`) and zeros elsewhere."""
+    d = robot._get_proprioception_dict()
+    out = np.zeros(POLICY_PROPRIO_DIM, dtype=np.float32)
+    for key, (a, b) in POLICY_PROPRIO.items():
+        v = to_np(d[key]).astype(np.float32).reshape(-1)
+        if v.size != b - a:
+            raise ValueError(
+                f"proprio {key} has {v.size} values, the policy reads {b - a}"
+            )
+        out[a:b] = v
+    return out
+
+
+def human_length(task_name: str) -> float | None:
+    """The average human demonstration's length of a task, control steps (a mean, so not whole;
+    the challenge's episode limit is :data:`CHALLENGE_TIMEOUT_MULTIPLIER` times it, cut to an
+    integer); None when the dataset's task statistics are not installed."""
+    try:
+        from omnigibson.eval.utils.score_utils import load_human_stats
+
+        return float(load_human_stats(task_name)["length"])
+    except Exception:
+        return None
 
 
 def load_task_instance(handle: Handle, mode: str, instance_id: int) -> None:

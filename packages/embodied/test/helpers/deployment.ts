@@ -18,7 +18,7 @@ const GRASP = {
 	graspnet1b: "graspnet1b",
 };
 const ADAPTERS = { openvla: "openvla", "openvla-oft": "openvla_oft", gr00t: "gr00t" };
-const SERVICES = ["sam3", "molmo", "vla", "metaworld_vla", "rldx", "lingbot"];
+const SERVICES = ["sam3", "molmo", "vla", "metaworld_vla", "behavior_vla", "rldx", "lingbot"];
 const DIRS: Record<string, string> = {
 	out: "artifacts",
 	"memory-dir": "memory",

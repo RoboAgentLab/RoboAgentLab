@@ -183,7 +183,9 @@ metaworld = [
 metaworld-vla = [
     # The VLA alone on Metaworld (--vla-alone pi0): RLinf's Pi0.5 MetaWorld SFT served by
     # components/pi05_vla_server.py --embodiment metaworld, in the Metaworld venv
-    # (`setup.sh metaworld --weights`).
+    # (`setup.sh metaworld --weights`). The BEHAVIOR-1K VLA alone serves its checkpoint from the
+    # same venv (--embodiment behavior). RLinf pins torch 2.7.1+cu126, which has no sm_120
+    # kernels: on such a GPU install torch==2.7.1+cu128 into the venv afterwards.
     "pi-embodied-services[metaworld,rlinf]",
     "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
 ]

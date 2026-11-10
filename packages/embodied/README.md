@@ -84,7 +84,7 @@ so a session, its `robot_result` row and the eval scripts never notice which pla
 | Metaworld | `src/robots/metaworld` | Metaworld `info["success"]`, latched | memory, explore, video, units, VDM, code, `--privileged`, flywheel, MotorMind; MotorMind refuses rotations (the Sawyer's hand orientation is fixed); the `--vla-alone pi0` baseline (Pi0.5, RLinf's MetaWorld SFT) |
 | Genesis | `src/robots/genesis` | the task predicate (cube_pick: an 8 cm lift) | memory, explore, video, units, VDM, code, `--privileged`, flywheel |
 | HumanCLAW (SMPL-X humanoid, HSSD homes) | `src/robots/humanclaw` | HumanClawBench's NavSR@20cm | video, units, VDM, `--privileged` |
-| BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged` |
+| BEHAVIOR-1K / R1Pro | `src/robots/behavior` | the BDDL activity's `success`, latched (`q_score` = partial credit) | memory, explore, video, units, VDM, code, `--privileged`; the `--vla-alone pi0` baseline (Pi0.5, RLinf's BEHAVIOR-1K checkpoint, on the challenge's robot) |
 | Franka (real) | `src/robots/franka` | operator verdict (`--operator`) | memory, explore, video, units, VDM, code, operator |
 | Dual Franka (real) | `src/robots/dual_franka` | operator verdict (required) | memory, explore, video, units, VDM, code, operator, XPolicyLab |
 | Piper / dual Piper (real) | `src/robots/piper` | operator verdict (required) | memory, explore, video, units, VDM, code, operator |

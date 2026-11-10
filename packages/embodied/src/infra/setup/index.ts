@@ -341,6 +341,13 @@ export const ROBOTS: Robot[] = [
 		needs: "RTX GPU, Isaac Sim 6.1 (OmniGibson), a BEHAVIOR-1K checkout and its data (license key); the R1Pro robot",
 		axes: SIM,
 		task: "--task turning_on_radio --seed 0",
+		// Pi0.5 with RLinf's BEHAVIOR-1K checkpoint on the challenge's robot: only the VLA alone uses it.
+		vlaAlone: {
+			flags: "--vla-alone pi0",
+			task: "--task turning_on_radio --seed 0",
+			needs: "the Pi0.5 server with the BEHAVIOR-1K policy at services.behavior_vla (setup.sh's --weights; started by packages/embodied/src/robots/behavior/serve.sh with PI05_PYTHON, a venv that has RLinf: LIBERO's, or Metaworld's after its --weights)",
+			weights: "Pi0.5 BEHAVIOR-1K (RLinf, ~7 GB)",
+		},
 	},
 	{
 		id: "humanclaw",

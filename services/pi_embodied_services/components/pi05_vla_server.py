@@ -106,6 +106,26 @@ PI05_EMBODIMENTS: dict[str, dict] = {
             "add_value_head": False,
         },
     },
+    # RLinf's Pi0.5 BEHAVIOR-1K checkpoint (RLinf/RLinf-Pi05-BEHAVIOR-1K-PT50-CS32, all 50
+    # challenge tasks): the head view and both wrist views, the R1Pro's 256-D proprio (the policy
+    # reads 23 of it), chunks of 32 whole-body actions (base velocity 3, trunk 4, left arm 7,
+    # left gripper 1, right arm 7, right gripper 1; absolute joint targets), as RLinf's
+    # evaluations/behavior/behavior_openpi_pi05_eval.yaml sets them.
+    "behavior": {
+        "num_action_chunks": 32,
+        "action_dim": 23,
+        "use_proprio": True,
+        "num_steps": 5,
+        "add_value_head": False,
+        "openpi": {
+            "config_name": "pi05_behavior",
+            "num_images_in_input": 3,
+            "action_chunk": 32,
+            "num_steps": 5,
+            "action_env_dim": 23,
+            "add_value_head": False,
+        },
+    },
 }
 
 PI05_ROBOT_PLATFORMS: dict[str, str] = {

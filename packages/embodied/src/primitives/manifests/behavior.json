@@ -1,6 +1,6 @@
 {
 	"robot": "behavior",
-	"internal": [],
+	"internal": ["env.vla_chunk", "env.vla_obs"],
 	"primitives": [
 		{
 			"use": "sim/get_task_language"

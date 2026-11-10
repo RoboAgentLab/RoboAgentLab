@@ -34,12 +34,15 @@ import { cudaDevice, python, service, servicesDir } from "../../infra/config.ts"
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
-import type { NdArray, RpcClient } from "../../infra/rpc.ts";
+import { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { Move, MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
+import { vlaSeeds } from "../../planner/vla-seed.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import { mountGraspTool } from "../../primitives/grasp.ts";
-import { attach, defineRobot, type Json, round, toolResult } from "../../robot.ts";
+import { vlaIdentity, vlaInfo } from "../../primitives/vla-adapters.ts";
+import { attach, defineRobot, type Json, message, round, toolResult } from "../../robot.ts";
 import { StringEnum } from "../../string-enum.ts";
 
 const SYSTEM = template(new URL("./SYSTEM.md", import.meta.url));
@@ -147,9 +150,31 @@ type Meta = {
 	seed: number;
 	instruction: string;
 	image_size: number;
+	/** The env server's control mode: primitives (the planner's tools) or challenge (a published policy's robot). */
+	control?: string;
+	/** The challenge's episode limit for this task (1.5 x the average human demonstration), when the dataset has it. */
+	challenge_max_steps?: number;
 	grasping_mode: string;
 	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 };
+
+/** `env.vla_obs`: what RLinf's Pi0.5 BEHAVIOR policy is given. */
+type VlaObs = { head: NdArray; wrists: NdArray; state: NdArray; instruction: string };
+/** `env.vla_chunk`: the steps run, some head frames for the video, and the state without images. */
+type VlaChunk = Omit<
+	Obs,
+	"head" | "head_depth" | "left_wrist" | "left_wrist_depth" | "right_wrist" | "right_wrist_depth"
+> & {
+	steps: number;
+	frames: NdArray[];
+	cancelled?: boolean;
+};
+/**
+ * The VLA alone (`--vla-alone pi0`): RLinf's Pi0.5 BEHAVIOR-1K checkpoint on the BEHAVIOR challenge's
+ * robot (the env server's `--control challenge`), run as the challenge's evaluator runs a policy: chunks
+ * of 32 whole-body actions (23-D), every one executed, until the BDDL goal holds or the episode's limit.
+ */
+export const VLA_ALONE = { name: "pi0", embodiment: "behavior", action: 23 } as const;
 
 /**
  * Units (../units, --units) run on `env.move_hand_delta`: each MV_* is a 2 cm step in the robot BASE
@@ -172,6 +197,17 @@ export const MAX_HAND_YAW_RAD = 0.3;
 export const UNITS_VIEWS = `Each result shows the head camera, then the left wrist view, then the right wrist view; every unit names the arm it moves.
 - Head camera (first image): on the robot's head looking ahead and down at the workspace. MV_FWD moves the gripper away from the robot (up the image, smaller), MV_BACK toward it, MV_LEFT toward the image left and MV_RIGHT toward the image right; MV_UP / MV_DOWN raise and lower it.
 - Wrist views: close range from each gripper; judge contact there, direction in the head camera.`;
+
+/** Every second pixel of an HxWx3 uint8 frame (numpy's `[::2, ::2]`): the size of env.vla_chunk's video frames. */
+export function halved(image: NdArray): NdArray {
+	const [h, w, c] = image.shape;
+	const [rows, cols] = [Math.ceil(h / 2), Math.ceil(w / 2)];
+	const out = Buffer.allocUnsafe(rows * cols * c);
+	for (let y = 0; y < rows; y++)
+		for (let x = 0; x < cols; x++)
+			image.data.copy(out, (y * cols + x) * c, (2 * y * w + 2 * x) * c, (2 * y * w + 2 * x + 1) * c);
+	return new NdArray(image.dtype, [rows, cols, c], out);
+}
 
 export default function behavior(pi: ExtensionAPI) {
 	// Every flag this robot registers is tracked: numbers fail closed, the result records them (../../infra/params.ts).
@@ -204,6 +240,11 @@ export default function behavior(pi: ExtensionAPI) {
 	let env: RpcClient;
 	let obs: Obs;
 	let meta: Meta;
+	/** Pi0.5 with the BEHAVIOR-1K policy (services.behavior_vla), and what answered there once it ran alone. */
+	let vla: RpcClient;
+	let vlaUsed: string | undefined;
+	/** `--vla-alone pi0`: the episode runs on the challenge's robot, with no planner. */
+	const alone = () => String(pi.getFlag("vla-alone") ?? "").trim() === VLA_ALONE.name;
 	const privileged = () => pi.getFlag("privileged") === true;
 
 	/** The memory cell of this task at instance `seed`. */
@@ -313,6 +354,9 @@ export default function behavior(pi: ExtensionAPI) {
 			reference: { picked: obs?.privileged.picked ?? false, in_hand: obs?.privileged.in_hand ?? null },
 			truncated: obs?.truncated ?? false,
 			env_steps: obs?.env_steps ?? 0,
+			...(meta?.control && meta.control !== "primitives" ? { control: meta.control } : {}),
+			...(vlaUsed ? { vla: { [VLA_ALONE.name]: vlaUsed } } : {}),
+			...va.result(),
 		}),
 		status: () => ({ language: meta.instruction, step: obs.env_steps, solved: obs.success }),
 		finish: {
@@ -329,6 +373,80 @@ export default function behavior(pi: ExtensionAPI) {
 		},
 	});
 	const { video } = robot;
+	// The VLA alone (--vla-alone pi0): Pi0.5 with the BEHAVIOR-1K policy at services.behavior_vla, no planner.
+	const seeds = vlaSeeds(pi, () => ["behavior", robot.task]);
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		// BEHAVIOR-1K mounts no third-party adapter.
+		mounted: () => [],
+		skills: [VLA_ALONE.name],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
+
+	/**
+	 * `--vla-alone pi0`: Pi0.5's chunks on the head view, both wrist views, the proprio and the task's
+	 * description (`env.vla_obs`) until the BDDL goal holds, the episode ends, or `steps` control steps
+	 * (0: the challenge's limit for the task, 1.5 x the average human demonstration).
+	 */
+	async function runVlaAlone(_name: string, steps: number) {
+		const budget = steps || meta.challenge_max_steps || 0;
+		if (!(budget > 0))
+			throw new Error(
+				"--vla-alone: the dataset has no human statistics for this task, so the challenge's episode limit is unknown; pass --vla-alone-steps",
+			);
+		const info = await vlaInfo(vla);
+		// Another embodiment's Pi0.5 server would answer this robot's images with its own actions.
+		if (info.embodiment !== VLA_ALONE.embodiment)
+			throw new Error(
+				`the Pi0.5 server at ${vla.url} holds the ${info.embodiment ?? "unnamed (a server without vla.info)"} policy, not ${VLA_ALONE.embodiment}'s: start it with packages/embodied/src/robots/behavior/serve.sh`,
+			);
+		vlaUsed = vlaIdentity(info);
+		const before = obs.env_steps;
+		let chunks = 0;
+		const vla_seeds: (number | null)[] = [];
+		while (obs.env_steps - before < budget && !obs.success && !obs.terminated && !obs.truncated) {
+			const o = await env.call<VlaObs>("env.vla_obs", {}, 120_000, [], robot.signal);
+			const wire = {
+				main_images: o.head.batched(),
+				wrist_images: o.wrists.batched(),
+				extra_view_images: null,
+				states: NdArray.f32(o.state.toArray(), [1, o.state.shape[0]]),
+				task_descriptions: [o.instruction],
+			};
+			const seed = seeds.next();
+			const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
+			const actions = await vla.call<NdArray>("vla.predict", {}, 300_000, [wire, options], robot.signal);
+			// [1, chunk, 23]: the batch dimension goes, the chunk is cut to what is left of the budget.
+			const [rows, width] = [actions.shape[1], actions.shape[2]];
+			if (width !== VLA_ALONE.action)
+				throw new Error(`the policy answered ${width}-D actions, not the R1Pro's ${VLA_ALONE.action}`);
+			const keep = Math.min(rows, budget - (obs.env_steps - before));
+			const chunk = new NdArray(
+				actions.dtype,
+				[keep, width],
+				actions.data.subarray(0, (keep * actions.data.length) / rows),
+			);
+			const r = await env.call<VlaChunk>("env.vla_chunk", {}, 900_000, [chunk], robot.signal);
+			const { steps: ran, frames, cancelled: _c, ...state } = r;
+			for (const f of frames) video.frame(f);
+			obs = { ...obs, ...state };
+			vla_seeds.push(seed ?? null);
+			chunks++;
+			// A chunk that stepped nothing steps nothing more.
+			if (ran === 0) break;
+		}
+		return {
+			tool: VLA_ALONE.name,
+			instruction: meta.instruction,
+			steps_budget: budget,
+			env_steps: obs.env_steps - before,
+			chunks,
+			success: obs.success,
+			q_score: obs.q_score,
+			vla_seeds,
+		};
+	}
 
 	/** Run one primitive on the server (minutes: cuRobo plans plus hundreds of control steps); the head frame goes to the video. */
 	async function motion(method: string, kwargs: Record<string, unknown>, signal: AbortSignal | undefined) {
@@ -369,7 +487,8 @@ export default function behavior(pi: ExtensionAPI) {
 
 	function absorb(o: Obs) {
 		obs = Object.fromEntries(Object.entries(o).filter(([k]) => k in OBS_KEYS)) as Obs;
-		video.frame(obs.head);
+		// The VLA alone's video is env.vla_chunk's frames, at half the head camera's size: this frame joins them.
+		video.frame(alone() ? halved(obs.head) : obs.head);
 	}
 
 	const eefState = (e: Eef) => ({
@@ -470,6 +589,19 @@ export default function behavior(pi: ExtensionAPI) {
 			throw new Error(`--task ${task} is not a BEHAVIOR-1K challenge task; one of: ${TASKS.join(", ")}`);
 		if (!/^\d+$/.test(seed))
 			throw new Error(`--seed must be a task instance id (a non-negative integer), got ${seed}`);
+		// --vla-alone pi0 needs its Pi0.5 server: probed before Isaac Sim starts, refused when it is off.
+		vla = new RpcClient(service(pi, "behavior_vla"));
+		vlaUsed = undefined;
+		seeds.reset();
+		const why = va.configError({
+			[VLA_ALONE.name]: alone()
+				? await vla.ready(3_000).then(
+						() => ({ on: true }),
+						(err) => ({ on: false, reason: `unreachable at ${vla.url} (${message(err)})` }),
+					)
+				: undefined,
+		});
+		if (why) throw new Error(why);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint);
 		else {
@@ -482,6 +614,8 @@ export default function behavior(pi: ExtensionAPI) {
 					// Unset: the server resolves the GPU as every env server does (utils/gpu.py).
 					...(cudaDevice(pi) ? ["--gpu-id", cudaDevice(pi)] : []),
 					...["--image-size", flag("image-size", "480"), "--grasping-mode", flag("grasping-mode", "sticky")],
+					// The VLA alone drives the challenge's robot (velocity base, joint targets, assisted grasping).
+					...(alone() ? ["--control", "challenge"] : []),
 					...["--curobo-batch-size", flag("curobo-batch-size", "3")],
 					// The server runs segment (--sam3) and point (--molmo) itself.
 					...["--sam3", service(pi, "sam3"), "--molmo", service(pi, "molmo")],
@@ -497,6 +631,12 @@ export default function behavior(pi: ExtensionAPI) {
 		meta = await env.call<Meta>("env.get_env_meta");
 		if (meta.task !== task || meta.seed !== Number(seed))
 			throw new Error(`env server runs ${meta.task} instance ${meta.seed}, not ${task} instance ${seed}`);
+		// The two control modes are different robots: a policy's actions mean nothing to the primitives' one, and back.
+		const control = alone() ? "challenge" : "primitives";
+		if ((meta.control ?? "primitives") !== control)
+			throw new Error(
+				`env server runs --control ${meta.control ?? "primitives"}, ${alone() ? "but --vla-alone pi0 needs --control challenge" : "which has no primitives: start it with --control primitives, or run --vla-alone pi0"}`,
+			);
 		// The server comes up reset; a new session on an attached server resets it again.
 		const [o] = await env.call<[Obs, unknown]>("env.reset", {}, 600_000);
 		absorb(o);

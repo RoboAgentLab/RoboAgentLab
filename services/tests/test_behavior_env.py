@@ -660,3 +660,227 @@ def test_launch_sizes_curobo_for_a_house_and_a_shared_gpu(monkeypatch):
     assert (
         macros.gm.USE_GPU_DYNAMICS is False and macros.gm.ENABLE_OBJECT_STATES is True
     )
+
+
+def _challenge_facade(s: FakeSim):
+    """The fake robot as the challenge control mode serves it: no primitives, a 23-D raw
+    action, and the proprio entries the Pi0.5 BEHAVIOR policy reads."""
+    s.handle = sim.Handle(og=None, env=s.env, controller=None, error=PrimitiveError)
+    s.robot.action_dim = 23
+    s.robot._get_proprioception_dict = lambda: {
+        "base_qvel": np.array([0.1, 0.2, 0.3]),
+        "trunk_qpos": np.array([1.0, 2.0, 3.0, 4.0]),
+        "arm_left_qpos": np.arange(7.0),
+        "arm_right_qpos": np.arange(7.0) + 10,
+        "gripper_left_qpos": np.array([0.05, 0.05]),
+        "gripper_right_qpos": np.array([0.01, 0.02]),
+        "eef_left_pos": np.zeros(3),
+    }
+    s._step = s.env.step = lambda action: _raw_step(s, action)
+    f = env_server.BehaviorEnvFacade(
+        handle=s.handle,
+        meta={
+            "task": "turning_on_radio",
+            "instruction": tasks.LANGUAGE["turning_on_radio"],
+            "control": "challenge",
+        },
+    )
+    f.stop_requested = lambda: s.stop_after is not None and s.steps >= s.stop_after
+    return f
+
+
+def _raw_step(s: FakeSim, action):
+    assert np.asarray(action).shape == (23,)
+    s.steps += 1
+    s.calls.append(("raw", float(action[0])))
+    solved = s.success_at is not None and s.steps >= s.success_at
+    return ({"robot_r": s.frame}, 0.0, solved, False, {"done": {"success": solved}})
+
+
+def test_the_challenge_config_is_omnigibsons_eval_robot():
+    kw = dict(
+        activity="turning_on_radio",
+        scene_model="house_double_floor_lower",
+        instance_id=0,
+        image_size=480,
+        grasping_mode="sticky",
+        max_steps=100,
+    )
+    plain = sim.task_config(**kw)["robots"][0]
+    assert plain["controller_config"]["base"]["motor_type"] == "position"
+    assert "reset_joint_pos" not in plain and plain["grasping_mode"] == "sticky"
+    cfg = sim.task_config(**kw, control="challenge")
+    robot = cfg["robots"][0]
+    c = robot["controller_config"]
+    # OmniGibson 3.9's omnigibson/eval/r1pro.yaml.
+    assert c["base"]["motor_type"] == "velocity"
+    assert c["base"]["command_output_limits"] == [
+        [-0.75, -0.75, -1.0],
+        [0.75, 0.75, 1.0],
+    ]
+    for part in ("trunk", "arm_left", "arm_right"):
+        assert c[part]["motor_type"] == "position" and c[part]["pos_kp"] == 150
+        assert c[part]["use_delta_commands"] is False
+    assert (
+        c["gripper_left"]["name"]
+        == c["gripper_right"]["name"]
+        == "MultiFingerGripperController"
+    )
+    assert c["camera"] == {"name": "NullJointController"}
+    assert robot["grasping_mode"] == "assisted"
+    assert len(robot["reset_joint_pos"]) == 28
+    assert robot["reset_joint_pos"][6:10] == [1.025, -1.45, -0.47, 0.0]
+    assert (
+        cfg["env"]["action_frequency"] == 30 and cfg["env"]["rendering_frequency"] == 30
+    )
+    # The action the policy answers in: 23 numbers in the evaluator's order.
+    spans = sorted(sim.CHALLENGE_ACTION.values())
+    assert spans[0][0] == 0 and spans[-1][1] == 23
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
+    with pytest.raises(ValueError, match="control must be one of"):
+        sim.task_config(**kw, control="teleop")
+
+
+def test_policy_proprio_fills_the_slices_the_pi05_behavior_policy_reads():
+    s = FakeSim()
+    _challenge_facade(s)
+    v = sim.policy_proprio(s.robot)
+    assert v.shape == (256,) and v.dtype == np.float32
+    # RLinf's extract_state_from_proprio (behavior_policy.R1PRO_PROPRIO_INDICES).
+    assert v[253:256].tolist() == pytest.approx([0.1, 0.2, 0.3])
+    assert v[236:240].tolist() == [1.0, 2.0, 3.0, 4.0]
+    assert v[158:165].tolist() == list(np.arange(7.0))
+    assert v[197:204].tolist() == list(np.arange(7.0) + 10)
+    assert float(v[193:195].sum()) == pytest.approx(0.1)
+    assert float(v[232:234].sum()) == pytest.approx(0.03)
+    read = sum(b - a for a, b in sim.POLICY_PROPRIO.values())
+    assert read == 25 and np.count_nonzero(v) <= read
+    s.robot._get_proprioception_dict = lambda: {
+        **{k: np.zeros(b - a) for k, (a, b) in sim.POLICY_PROPRIO.items()},
+        "trunk_qpos": np.zeros(3),
+    }
+    with pytest.raises(ValueError, match="trunk_qpos has 3 values"):
+        sim.policy_proprio(s.robot)
+
+
+def test_the_challenge_mode_serves_the_policys_observation_and_chunks_and_no_primitives():
+    s = FakeSim()
+    f = _challenge_facade(s)
+    f.reset()
+    # No primitives: nothing settles the robot at reset, and every motion refuses.
+    assert s.calls == []
+    with pytest.raises(RuntimeError, match="navigate_to_pose is a semantic primitive"):
+        f._rpc["env.navigate_to_pose"](x=1.0, y=0.0, yaw=0.0)
+    o = f.vla_obs()
+    assert o["head"].shape == (4, 4, 3) and o["wrists"].shape == (2, 4, 4, 3)
+    assert o["state"].shape == (256,)
+    assert o["instruction"] == tasks.LANGUAGE["turning_on_radio"]
+    # A chunk runs every action as one control step and stops at the BDDL success.
+    s.success_at = 7
+    r = f.vla_chunk(np.zeros((32, 23), np.float32))
+    assert r["steps"] == 7 and r["success"] is True and r["env_steps"] == 7
+    assert len(r["frames"]) == 2 and r["frames"][0].shape == (2, 2, 3)
+    assert "head" not in r
+    assert f.vla_chunk(np.zeros((32, 23), np.float32))["steps"] == 0
+    with pytest.raises(ValueError, match=r"actions must be \[N, 23\]"):
+        f.vla_chunk(np.zeros((4, 7), np.float32))
+    # The primitives' mode has neither.
+    plain = FakeSim().facade()
+    plain.reset()
+    with pytest.raises(RuntimeError, match="--control challenge"):
+        plain.vla_obs()
+
+
+def test_the_challenge_scene_loads_the_evaluators_rooms_and_switches_its_rules_off(
+    monkeypatch, tmp_path
+):
+    """Before the env is built, the challenge mode does what the Evaluator's ``load_env`` does:
+    the transition rules of JoyLo's ``DISABLED_TRANSITION_RULES`` are off, and only the task's
+    rooms load (its ``inroom`` conditions, the rooms those depend on in the scene, the task's
+    extra rooms). The tables come from the BEHAVIOR-1K checkout's file, without JoyLo installed."""
+    import sys
+    import types
+
+    cfg = tmp_path / "joylo/gello/utils/og_teleop_cfg.py"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "class RuleA:\n    ENABLED = True\n"
+        "class RuleB:\n    ENABLED = True\n"
+        "DISABLED_TRANSITION_RULES = [RuleA, RuleB]\n"
+        "ROOM_DEPENDENCIES = {'house': {'living_room': ['corridor'], 'garage': ['garden']}}\n"
+        "TASK_SPECIFIC_EXTRA_ROOMS = {'turning_on_radio': {'house': ['kitchen'], 'other': ['x']}}\n"
+    )
+    og = types.ModuleType("omnigibson")
+    og.__file__ = str(tmp_path / "OmniGibson/omnigibson/__init__.py")
+    conditions = SimpleNamespace(
+        parsed_initial_conditions=[
+            ["ontop", "radio.n.01_1", "table.n.02_1"],
+            ["inroom", "table.n.02_1", "living_room"],
+            ["inroom", "floor.n.01_1", "living_room"],
+            ["not", ["toggled_on", "radio.n.01_1"]],
+        ]
+    )
+    asked = []
+    kb = SimpleNamespace(
+        get_task=lambda name: (
+            asked.append(name),
+            SimpleNamespace(parse_base_scope=lambda: [conditions]),
+        )[1]
+    )
+    bddl = types.ModuleType("omnigibson.utils.bddl_utils")
+    bddl.get_knowledge_base = lambda: kb
+    for name, mod in {
+        "omnigibson": og,
+        "omnigibson.utils": types.ModuleType("omnigibson.utils"),
+        "omnigibson.utils.bddl_utils": bddl,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    config = {
+        "scene": {"scene_model": "house", "load_room_types": None},
+        "task": {"activity_name": "turning_on_radio"},
+    }
+    sim.apply_challenge_scene(config)
+    assert config["scene"]["load_room_types"] == ["living_room", "corridor", "kitchen"]
+    assert asked == ["turning_on_radio-0"]
+    tables = sim.challenge_tables()
+    assert [r.ENABLED for r in tables.DISABLED_TRANSITION_RULES] == [
+        True,
+        True,
+    ]  # a fresh load
+    cfg.unlink()
+    with pytest.raises(FileNotFoundError, match="BEHAVIOR-1K checkout"):
+        sim.challenge_tables()
+
+
+def test_the_challenge_settings_remake_the_physics_views_before_the_observation_space():
+    """Stopping the simulation for the base mass drops the physics views; rebuilding the
+    observation space reads the robot's joints, so the views are made again first (on the GPU
+    the rebuild fails on an articulation view of None otherwise)."""
+    calls = []
+    cams = {c: SimpleNamespace() for c in sim.CAMERAS}
+    robot = SimpleNamespace(base_footprint_link=SimpleNamespace(mass=60.0))
+    og = SimpleNamespace(
+        sim=SimpleNamespace(
+            stop=lambda: calls.append("stop"),
+            play=lambda: calls.append("play"),
+            update_handles=lambda: calls.append("update_handles"),
+        )
+    )
+    env = SimpleNamespace(load_observation_space=lambda: calls.append("obs_space"))
+    handle = SimpleNamespace(og=og, env=env, robot=robot)
+    real = sim.sensor
+    try:
+        sim.sensor = lambda r, camera: cams[camera]
+        sim.apply_challenge_settings(handle)
+    finally:
+        sim.sensor = real
+    assert calls == ["stop", "play", "update_handles", "obs_space"]
+    assert robot.base_footprint_link.mass == sim.CHALLENGE_BASE_MASS == 250.0
+    assert (cams["head"].image_height, cams["head"].image_width) == (720, 720)
+    assert cams["head"].horizontal_aperture == 40.0
+    wrists = [c for c in cams if c != "head"]
+    assert len(wrists) == 2 and all(
+        (cams[c].image_height, cams[c].image_width) == (480, 480) for c in wrists
+    )
+    assert not any(hasattr(cams[c], "horizontal_aperture") for c in wrists)
