@@ -122,8 +122,8 @@
 			},
 			"vla_alone": {
 				"mounted": true,
-				"setup_flags": null,
-				"example_task": null
+				"setup_flags": "--vla-alone pi0",
+				"example_task": "--libero-type standard --suite libero_10 --task 0 --seed 0"
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type standard --suite libero_10 --task 0 --seed 0",
@@ -246,8 +246,8 @@
 			},
 			"vla_alone": {
 				"mounted": true,
-				"setup_flags": null,
-				"example_task": null
+				"setup_flags": "--vla-alone pi0",
+				"example_task": "--libero-type pro --suite libero_10 --task 0 --seed 0"
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type pro --suite libero_10 --task 0 --seed 0",
@@ -370,8 +370,8 @@
 			},
 			"vla_alone": {
 				"mounted": true,
-				"setup_flags": null,
-				"example_task": null
+				"setup_flags": "--vla-alone pi0",
+				"example_task": "--libero-type plus --suite libero_10 --task 0 --seed 0"
 			},
 			"fine_tuned_units_adapter": "--model finetuned/local --ft-model <served adapter> --ft-prompt v5-libero",
 			"example_task_flags": "--libero-type plus --suite libero_10 --task 0 --seed 0",
@@ -874,8 +874,8 @@
 			},
 			"vla_alone": {
 				"mounted": true,
-				"setup_flags": null,
-				"example_task": null
+				"setup_flags": "--vla-alone rldx",
+				"example_task": "--task OpenDrawer --split target --seed 0"
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task OpenDrawer --split target --seed 0",
@@ -996,8 +996,8 @@
 			},
 			"vla_alone": {
 				"mounted": true,
-				"setup_flags": null,
-				"example_task": null
+				"setup_flags": "--vla-alone lingbot",
+				"example_task": "--task beat_block_hammer --task-config demo_randomized --seed 0"
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task beat_block_hammer --task-config demo_randomized --seed 0",

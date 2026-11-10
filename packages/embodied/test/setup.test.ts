@@ -1938,7 +1938,7 @@ test("a robot's own name is no work: CaP-X on RoboTwin is CaP-X; multi-turn narr
 	);
 });
 
-test("VLA only, no agent: the VLA-alone baseline on ManiSkill, outside the grid; elsewhere unsupported, never A1 Model", async () => {
+test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, outside the grid; elsewhere unsupported, never A1 Model", async () => {
 	for (const text of [
 		"VLA only, no agent",
 		"OpenVLA alone on maniskill",
@@ -1951,11 +1951,29 @@ test("VLA only, no agent: the VLA-alone baseline on ManiSkill, outside the grid;
 		assert.deepEqual(r.unknown, [], text);
 	}
 	assert.equal(parseRequest("the agent drives the VLA", ROBOTS, []).a, "A1M");
-	// ManiSkill, unnamed: the only robot that runs --vla-alone is taken; no grid, no planner.
+	// Every robot whose code runs --vla-alone has its flags here (../src/infra/setup/caps.ts reads the code).
+	assert.deepEqual(
+		ROBOTS.filter((r) => r.vlaAlone).map((r) => r.id),
+		ROBOTS.filter((r) => robotCaps(r).vlaAlone).map((r) => r.id),
+	);
+	// Unnamed: the robots that run a VLA alone are the menu; no grid, no planner.
 	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
-	let p = fakePi({ cwd, answers: { select: ["here", ""], confirm: [true] } });
+	let p = fakePi({ cwd, answers: { select: ["ManiSkill", "here", ""], confirm: [true] } });
 	await p.run("VLA only, no agent");
-	assert.deepEqual(p.asked, ["Where do the services run?", "Experiment directory", "Set up pi-embodied?"]);
+	assert.deepEqual(p.offered["Robot or benchmark"], [
+		"LIBERO",
+		"LIBERO-PRO",
+		"LIBERO-plus",
+		"ManiSkill 3",
+		"RoboCasa365",
+		"RoboTwin 2",
+	]);
+	assert.deepEqual(p.asked, [
+		"Robot or benchmark",
+		"Where do the services run?",
+		"Experiment directory",
+		"Set up pi-embodied?",
+	]);
 	const summary = p.confirms.at(-1) ?? "";
 	assert.match(summary, /^ManiSkill 3 \(sim\): the VLA alone, no agent /m);
 	assert.match(
@@ -1975,12 +1993,41 @@ test("VLA only, no agent: the VLA-alone baseline on ManiSkill, outside the grid;
 	assert.deepEqual([record.cell, record.vlaAlone, record.planner], [undefined, true, "vla"]);
 	assert.equal(record.task, "--task PutCarrotOnPlateInScene-v1 --seed 0");
 	assert.match(experimentLabel(readExperiment(join(cwd, "embodied-maniskill"), ROBOTS)!), /the VLA alone/);
-	// A robot that runs no VLA alone: refused, nothing asked or written.
-	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	// The robot's own VLA skill: Pi0.5 on LIBERO-PRO, no adapter; its weights are offered (the VLA runs on them).
+	const pro = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+	p = fakePi({ cwd: pro, answers: { select: ["here", ""], confirm: [true, true] } });
 	await p.run("VLA only, no agent, on LIBERO-PRO");
+	assert.deepEqual(p.asked, [
+		"Where do the services run?",
+		"Model weights",
+		"Experiment directory",
+		"Set up pi-embodied?",
+	]);
+	assert.match(p.confirms[0] ?? "", /^Also download Pi0\.5 LIBERO SFT .*\(recommended: the VLA runs on them\)$/);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --vla-alone pi0; planner none \(the VLA alone\)$/m);
+	assert.match(p.confirms.at(-1) ?? "", /^needs: NVIDIA GPU \(MuJoCo EGL\); the Pi0\.5 server at services\.vla/m);
+	assert.match(p.confirms.at(-1) ?? "", /setup\.sh libero-pro --weights/);
+	assert.match(p.confirms.at(-1) ?? "", /pi --libero-type pro --suite libero_10 --task 0 --seed 0 --vla-alone pi0/);
+	const proRecord = JSON.parse(readFileSync(join(pro, "embodied-libero-pro", RECORD), "utf8"));
+	assert.deepEqual([proRecord.vlaAlone, proRecord.flags, proRecord.planner], [true, "--vla-alone pi0", "vla"]);
+	// RoboCasa and RoboTwin: their own skills' names.
+	for (const [name, flags] of [
+		["RoboCasa", "--vla-alone rldx"],
+		["RoboTwin", "--vla-alone lingbot"],
+	]) {
+		p = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", ""], confirm: [false, false] },
+		});
+		await p.run(`the VLA alone on ${name}`);
+		assert.match(p.confirms.at(-1) ?? "", new RegExp(`^flags: ${flags}; planner none`, "m"), name);
+	}
+	// A robot with no VLA integrated: refused, nothing asked or written.
+	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	await p.run("VLA only, no agent, on Metaworld");
 	assert.match(
 		p.notes[0] ?? "",
-		/^the VLA alone \(no agent\) is not supported on LIBERO-PRO: only ManiSkill 3 runs a VLA alone/,
+		/^the VLA alone \(no agent\) is not supported on Metaworld: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, RoboCasa365, RoboTwin 2 run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
 	);
 	assert.deepEqual([p.asked, p.sent], [[], []]);
 });
