@@ -5,7 +5,14 @@ import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
-import metaworld, { EMPTY_WIDTH_M, STEP_M, TASKS, VECTORS, VIEW_SETUP } from "../src/robots/metaworld/index.ts";
+import metaworld, {
+	EMPTY_WIDTH_M,
+	STEP_M,
+	TASKS,
+	VECTORS,
+	VIEW_SETUP,
+	VLA_ALONE,
+} from "../src/robots/metaworld/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 import {
@@ -14,6 +21,7 @@ import {
 	checkSimExplore,
 	f32,
 	fakeEnv,
+	nd,
 	perceptionAnswers,
 	rgb,
 	withPerception,
@@ -207,6 +215,158 @@ async function fakeMetaworld(perception = false) {
 		return undefined;
 	});
 }
+
+test("--vla-alone pi0: the first prompt runs Pi0.5 as RLinf's reference evaluation does, asks no model, and records planner vla", async (t) => {
+	// A fake env that counts raw steps and succeeds once `solveAt` policy actions ran (the 15 settle steps are no policy's).
+	const sim = async (solveAt?: number) => {
+		let steps = 0;
+		const solved = () => solveAt !== undefined && steps - VLA_ALONE.settle >= solveAt;
+		const frame = () => ({
+			agentview: rgb(),
+			wrist: rgb(),
+			tcp_pos: f32([0, 0.6, 0.2]),
+			gripper_width: 0.09,
+			obs: f32([0]),
+		});
+		return fakeEnv((c) => {
+			if (c.method === "env.get_env_meta")
+				return {
+					task: "reach-v3",
+					seed: 0,
+					metaworld: "3.1.1",
+					workspace: { min: [0, 0, 0], max: [1, 1, 1] },
+					...VIEW_SETUP,
+				};
+			if (c.method === "env.reset") return [frame(), {}];
+			if (c.method === "env.get_task_language") return "reach the goal";
+			if (c.method === "env.vla_obs")
+				return { image: rgb(480, 480), state: f32([0, 0.6, 0.2, 1]), instruction: "Reach a goal position" };
+			if (c.method === "env.chunk_step") {
+				const n = (c.args[0] as { shape: number[] }).shape[0];
+				const frames = [];
+				const terms: number[] = [];
+				for (let k = 0; k < n; k++) {
+					steps++;
+					frames.push(frame());
+					terms.push(solved() ? 1 : 0);
+					if (solved()) break;
+				}
+				const flags = nd("bool", [terms.length], Buffer.from(Uint8Array.from(terms)));
+				return [
+					frames,
+					f32(terms),
+					flags,
+					nd("bool", [terms.length], Buffer.alloc(terms.length)),
+					{ success: solved() },
+				];
+			}
+			return undefined;
+		});
+	};
+	// A fake Pi0.5 server: `embodiment` is what vla.info answers; every predict returns five 4-D actions.
+	const policy = (embodiment?: string) =>
+		fakeEnv((c) => {
+			if (c.method === "healthz") return { status: "ok", service: "pi05-vla" };
+			if (c.method === "vla.info") {
+				if (!embodiment) throw new Error("unknown method vla.info");
+				return { embodiment, config_name: "pi05_metaworld", action_dim: 4, action_chunk: 5 };
+			}
+			if (c.method === "vla.predict")
+				return nd("float32", [1, 5, 4], Buffer.from(Float32Array.from(Array(20).fill(0.5)).buffer));
+			return undefined;
+		});
+	const run = async (
+		solveAt: number | undefined,
+		values: Record<string, unknown> = {},
+		embodiment: string | null = "metaworld",
+	) => {
+		const env = await sim(solveAt);
+		t.after(env.close);
+		const vla = await policy(embodiment ?? undefined);
+		t.after(vla.close);
+		const s = stubPi({
+			"env-url": env.url,
+			task: "reach-v3",
+			seed: "0",
+			metaworld_vla: vla.url,
+			"vla-alone": "pi0",
+			...values,
+		});
+		metaworld(s.pi);
+		await s.emit("session_start");
+		process.exitCode = undefined;
+		const log = console.error;
+		console.error = () => {};
+		try {
+			await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		process.exitCode = undefined;
+		const chunks = env.calls.filter((c) => c.method === "env.chunk_step").map((c) => (c.args[0] as any).shape[0]);
+		return { s, env, vla, chunks, result: s.entries.find((e) => e.type === "robot_result")?.data };
+	};
+	// Success at the twelfth policy action: 15 settle steps, then chunks of five, the third stopped by the env.
+	const solved = await run(12);
+	assert.match(solved.s.errors[0] ?? "", /^vla-alone pi0: \{"skill":"pi0"/);
+	assert.deepEqual(solved.chunks, [15, 5, 5, 5]);
+	const sent = solved.vla.calls.find((c) => c.method === "vla.predict")!.args as any[];
+	assert.deepEqual(sent[0].main_images.shape, [1, 480, 480, 3]);
+	assert.deepEqual(sent[0].states.shape, [1, 4]);
+	assert.deepEqual([sent[0].wrist_images, sent[0].extra_view_images], [null, null]);
+	// The training prompt of the task, not the planner's instruction.
+	assert.deepEqual(sent[0].task_descriptions, ["Reach a goal position"]);
+	assert.equal(sent[1].mode, "eval");
+	assert.equal(typeof sent[1].seed, "number");
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.success, true);
+	assert.equal(solved.result.env_error, false);
+	assert.deepEqual(solved.result.vla, { pi0: "pi05-vla" });
+	const { vla_seeds, ...rest } = solved.result.vla_alone;
+	assert.deepEqual(rest, {
+		skill: "pi0",
+		tool: "pi0",
+		instruction: "Reach a goal position",
+		steps_budget: 160,
+		settle_steps: 15,
+		env_steps: 12,
+		chunks: 3,
+		success: true,
+	});
+	assert.equal(vla_seeds.length, 3);
+	// The default budget is the reference evaluation's 160 actions; --vla-alone-steps cuts the last chunk.
+	const spent = await run(undefined, { "vla-alone-steps": "8" });
+	assert.deepEqual(spent.chunks, [15, 5, 3]);
+	assert.equal(spent.result.success, false);
+	assert.equal(spent.result.vla_alone.env_steps, 8);
+	const full = await run(undefined);
+	assert.equal(full.result.vla_alone.env_steps, 160);
+	assert.equal(full.result.vla_alone.chunks, 32);
+	// A Pi0.5 server holding another policy (LIBERO's), or one from before vla.info: an env_error, no action runs.
+	for (const [embodiment, why] of [
+		["libero", /holds the libero policy, not metaworld's/],
+		[null, /holds the unnamed \(a server without vla\.info\) policy/],
+	] as const) {
+		const wrong = await run(undefined, {}, embodiment);
+		assert.deepEqual(wrong.chunks, []);
+		assert.equal(wrong.result.env_error, true);
+		assert.match(JSON.stringify(wrong.result), why);
+	}
+	// No server at services.metaworld_vla: the start is refused before the simulator is asked for anything.
+	const env = await sim();
+	t.after(env.close);
+	const s = stubPi({ "env-url": env.url, task: "reach-v3", metaworld_vla: "http://127.0.0.1:9", "vla-alone": "pi0" });
+	metaworld(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.match(s.errors.join("\n"), /--vla-alone pi0: the pi0 server is unreachable at http:\/\/127\.0\.0\.1:9/);
+	assert.deepEqual(env.calls, []);
+	await s.emit("session_shutdown");
+});
 
 test("memory and exploration: reset restarts the seeded layout, the cell is metaworld_<task>_s<seed>", async (t) => {
 	const env = await fakeMetaworld();

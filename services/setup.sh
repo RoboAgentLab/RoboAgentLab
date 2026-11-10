@@ -18,6 +18,7 @@
 #   maniskill       [maniskill] py3.11, real2sim rigs (robots/maniskill/fetch_real2sim.sh)
 #   robosuite       [robosuite] py3.11 (robosuite 1.5, CaP-X tasks; its own venv: LIBERO needs 1.4)
 #   metaworld       [metaworld] py3.11 (Metaworld MT50, no assets; MuJoCo renders through EGL)
+#                   --weights: Pi0.5 MetaWorld SFT and its server's dependencies ([metaworld-vla], the VLA alone)
 #   genesis         [genesis] py3.11 (Genesis 1.4, OpenETA's Franka cube_pick, no assets; wants torch>=2.8,
 #                   on sm_120 install a cu128 torch into the venv first)
 #   robolab         Isaac Sim 6.1 venv + patched RoboLab (robots/robolab/install_isaac61.sh)
@@ -358,6 +359,15 @@ assert v == "v3.0", f"lerobot writes {v}, the Flywheel export needs v3.0 (lerobo
 		if $assets; then
 			run env PYTHON="$PY" bash "$SERVICES/pi_embodied_services/robots/maniskill/fetch_real2sim.sh" "$wdir/RLinf-real2sim"
 			export_env RLINF_ROOT "$wdir/RLinf-real2sim"
+		fi
+		;;
+	metaworld)
+		# The VLA alone (--vla-alone pi0): RLinf's Pi0.5 MetaWorld SFT, served from this venv by
+		# packages/embodied/src/robots/metaworld/serve.sh (metaworld pins LIBERO's mujoco, so RLinf fits).
+		if $weights; then
+			pip_install -e "$SERVICES[metaworld-vla]"
+			hf_get RLinf/RLinf-Pi05-MetaWorld-SFT 60b2d0309af8bb087c9e9b250f8c7f9db50c0f8e "$wdir/RLinf-Pi05-MetaWorld-SFT"
+			export_env PI05_METAWORLD_CHECKPOINT_PATH "$wdir/RLinf-Pi05-MetaWorld-SFT"
 		fi
 		;;
 	esac

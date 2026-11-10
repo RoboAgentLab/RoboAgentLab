@@ -180,6 +180,13 @@ metaworld = [
     "metaworld==3.1.1",
     "pillow>=10",
 ]
+metaworld-vla = [
+    # The VLA alone on Metaworld (--vla-alone pi0): RLinf's Pi0.5 MetaWorld SFT served by
+    # components/pi05_vla_server.py --embodiment metaworld, in the Metaworld venv
+    # (`setup.sh metaworld --weights`).
+    "pi-embodied-services[metaworld,rlinf]",
+    "rpent-openpi @ git+https://github.com/RLinf/openpi.git@rpent",
+]
 genesis = [
     # Genesis 1.4 (OpenETA's Franka cube_pick, robots/genesis); its own venv: it wants
     # torch>=2.8 and pulls gs-madrona and quadrants. On sm_120 install a cu128 torch first.

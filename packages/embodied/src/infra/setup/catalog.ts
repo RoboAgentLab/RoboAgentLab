@@ -40,7 +40,7 @@ export type CatalogRobot = {
 	task: string;
 	finetuned?: string;
 	flash?: boolean;
-	vlaAlone?: { flags: string; task: string; needs: string };
+	vlaAlone?: { flags: string; task: string; needs: string; weights?: string };
 };
 
 /** pi's own command-line flags a launch may carry besides the extensions' (../../../../coding-agent/src/cli/args.ts). */

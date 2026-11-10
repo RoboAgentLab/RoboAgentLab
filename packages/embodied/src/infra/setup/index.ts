@@ -159,7 +159,7 @@ export type Robot = {
 	/** Flash mounts (`--model flash/replay`): the robot has a hook that replays its recorded plans. */
 	flash?: boolean;
 	/** The VLA-alone baseline (`--vla-alone`, ../../planner/vla-alone.ts): its flags, an example task, what it needs. */
-	vlaAlone?: { flags: string; task: string; needs: string };
+	vlaAlone?: { flags: string; task: string; needs: string; weights?: string };
 };
 
 /** A simulator with ground truth, units and code mode; A1 Model needs a VLA skill (LIBERO's Pi0.5: `LIBERO`). */
@@ -247,6 +247,13 @@ export const ROBOTS: Robot[] = [
 		needs: "NVIDIA GPU (MuJoCo EGL)",
 		axes: SIM,
 		task: "--task reach-v3 --seed 0",
+		// Pi0.5 with RLinf's MetaWorld SFT: only the VLA alone uses it, so its weights are the VLA alone's.
+		vlaAlone: {
+			flags: "--vla-alone pi0",
+			task: "--task reach-v3 --seed 0",
+			needs: "the Pi0.5 server with the Metaworld policy at services.metaworld_vla (setup.sh's --weights; started by packages/embodied/src/robots/metaworld/serve.sh)",
+			weights: "Pi0.5 MetaWorld SFT (RLinf, ~7.5 GB) and its server's dependencies",
+		},
 	},
 	{
 		id: "robosuite",
@@ -451,6 +458,10 @@ const finetunedFlags = (c: Choice) =>
 		? c.robot.finetuned
 		: `--model finetuned/local --ft-model <served adapter> --ft-surface ${c.surface}`;
 
+/** What `setup.sh --weights` fetches for this setup: the VLA alone's own weights when it has some, else the robot's. */
+const weightsOf = (robot: Robot, vlaAlone: boolean) =>
+	vlaAlone ? (robot.vlaAlone?.weights ?? robot.weights) : robot.weights;
+
 /** The setting's flags: the VLA alone's, else the ported work's preset or tier, else the cell's; then a planner's that is no registry model. */
 export function settingFlags(c: Choice): string {
 	if (c.vlaAlone) return c.robot.vlaAlone?.flags ?? "";
@@ -551,7 +562,7 @@ function handoff(c: Choice, settingsText: string): string {
 		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
 		`- setting: ${settingLine(c)}; flags \`${settingFlags(c) || "none"}\``,
 		`- services: ${where}`,
-		`- install: \`${setup}\`${c.weights ? ` (weights: ${c.robot.weights})` : ""}`,
+		`- install: \`${setup}\`${c.weights ? ` (weights: ${weightsOf(c.robot, c.vlaAlone === true)})` : ""}`,
 		...perception,
 		...plannerLines(c),
 		...(c.selfhost ? selfhostHandoff(c.selfhost.spec, c.selfhost.deploy, c.selfhost.deployment) : []),
@@ -956,13 +967,16 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 	const model = finetuned || vlaAlone ? undefined : planner === FLASH ? FLASH_REF : planner;
 	if (!finetuned && !vlaAlone && !model?.includes("/")) return;
 	// The weights setup.sh --weights fetches serve the VLA of A1 Model and A2, and O2's SAM3.
-	const weights =
-		robot.weights && (vlaAlone || (cell && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2")))
-			? await ui.confirm(
-					"Model weights",
-					`Also download ${robot.weights}? (recommended: ${vlaAlone ? "the VLA runs on them" : "this cell's tools need them"})`,
-				)
-			: false;
+	const wanted =
+		vlaAlone || (cell && (cell.a === "A1M" || cell.a === "A2" || cell.o === "O2"))
+			? weightsOf(robot, vlaAlone)
+			: undefined;
+	const weights = wanted
+		? await ui.confirm(
+				"Model weights",
+				`Also download ${wanted}? (recommended: ${vlaAlone ? "the VLA runs on them" : "this cell's tools need them"})`,
+			)
+		: false;
 	const fallback = join(ctx.cwd, `embodied-${robot.id}`);
 	const answer = await chooseValue(ctx, "Experiment directory", [{ value: fallback }]);
 	if (!answer) return;

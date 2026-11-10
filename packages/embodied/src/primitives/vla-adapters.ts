@@ -189,12 +189,15 @@ export type VlaInfo = {
 	unnorm_key?: string | null;
 	/** The action space its chunks are in (services' vla_adapter_base); a server from before it answers LIBERO's. */
 	action_space?: string;
+	/** Pi0.5: the embodiment preset its server was started with (`--embodiment`: libero, metaworld, ...). */
+	embodiment?: string;
 };
 
 /**
  * Which VLA answers on `client`: the server's healthz name and, for the adapters, `vla.info`
  * (`model`, `revision`, the `suite` its actions are un-normalised with, its `action_space`).
- * Pi0.5 and RLDX have no `vla.info`; that error leaves the healthz name alone.
+ * Pi0.5 answers its `embodiment` only; RLDX (and a Pi0.5 server from before it) has no `vla.info`, and that
+ * error leaves the healthz name alone.
  */
 export async function vlaInfo(client: RpcClient): Promise<VlaInfo> {
 	const health = await client.call<{ service?: string }>("healthz", {}, 10_000);
@@ -207,6 +210,7 @@ export async function vlaInfo(client: RpcClient): Promise<VlaInfo> {
 			revision: info.revision,
 			suite: info.suite,
 			...(info.action_space ? { action_space: info.action_space } : {}),
+			...(info.embodiment ? { embodiment: info.embodiment } : {}),
 		};
 	} catch {
 		return { service };

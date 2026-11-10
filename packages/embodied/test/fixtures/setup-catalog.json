@@ -562,7 +562,9 @@
 				"vla_adapters": []
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": "--vla-alone pi0",
+				"example_task": "--task reach-v3 --seed 0"
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task reach-v3 --seed 0",
@@ -572,7 +574,8 @@
 					"eval.sh <out-dir> <tasks> <seeds> [pi args...]      (tasks \"-\" = reach-v3)",
 					"eval.sh runs/mw - 0-9 --model <provider/model> --thinking low",
 					"eval.sh runs/mw pick-place-v3,button-press-v3 0-9 --model <provider/model> --thinking low",
-					"eval.sh runs/mw-units reach-v3 0-4,10-14 --units=true --model <provider/model> --thinking low"
+					"eval.sh runs/mw-units reach-v3 0-4,10-14 --units=true --model <provider/model> --thinking low",
+					"eval.sh runs/mw-pi05 reach-v3,push-v3 0-9 --vla-alone pi0"
 				],
 				"env": []
 			}

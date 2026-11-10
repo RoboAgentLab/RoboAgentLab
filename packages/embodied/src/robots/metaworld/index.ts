@@ -33,10 +33,12 @@ import { python, service, servicesDir } from "../../infra/config.ts";
 import { MOLMO, SAM3 } from "../../infra/model-services.ts";
 import { trackFlags } from "../../infra/params.ts";
 import { encodePng } from "../../infra/png.ts";
-import { NdArray, type RpcClient } from "../../infra/rpc.ts";
+import { NdArray, RpcClient } from "../../infra/rpc.ts";
 import { norm as flagValue } from "../../infra/tiers.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
+import { vlaSeeds } from "../../planner/vla-seed.ts";
 import { detectionActive, detectionArgs, detectionTools, registerDetectionFlags } from "../../primitives/detections.ts";
 import {
 	graspActive,
@@ -47,7 +49,8 @@ import {
 	registerGraspFlags,
 } from "../../primitives/grasp.ts";
 import { pointActive, pointTool, registerPointFlags } from "../../primitives/pointing.ts";
-import { attach, defineRobot, type Json, type Mat, rgbOf, round } from "../../robot.ts";
+import { vlaIdentity, vlaInfo } from "../../primitives/vla-adapters.ts";
+import { attach, defineRobot, type Json, type Mat, message, rgbOf, round } from "../../robot.ts";
 import { StringEnum } from "../../string-enum.ts";
 import { sideBySide } from "../maniskill/index.ts";
 
@@ -176,6 +179,16 @@ type Meta = {
 	workspace?: { min: number[]; max: number[] };
 	capabilities?: { perception?: { segment?: boolean; enhance_depth?: boolean } };
 } & Partial<typeof VIEW_SETUP>;
+/** `env.chunk_step` with every frame: the observations, rewards, success and truncation flags per action, the last info. */
+type ChunkReturn = [Obs[], NdArray, NdArray, NdArray, Info];
+/** `env.vla_obs`: what RLinf's Pi0.5 MetaWorld policy is given. */
+type VlaObs = { image: NdArray; state: NdArray; instruction: string };
+/**
+ * The VLA alone (`--vla-alone pi0`): RLinf's Pi0.5 MetaWorld SFT, run as its reference evaluation runs it
+ * (RLinf toolkits/standalone_eval_scripts/openpi/metaworld_eval.py): 15 no-op steps for the objects to
+ * settle, then at most 160 actions in chunks of five.
+ */
+export const VLA_ALONE = { name: "pi0", embodiment: "metaworld", steps: 160, settle: 15 } as const;
 type CameraMeta = { intrinsic_K: Mat; extrinsic_cam2world: Mat; height: number; width: number };
 type Camera = "agentview" | "wrist";
 const CAMERAS: readonly Camera[] = ["agentview", "wrist"];
@@ -223,6 +236,9 @@ export default function metaworld(pi: ExtensionAPI) {
 	let workspace: Meta["workspace"];
 	/** MotorMind mode: the env server's privileged truth log for this session (the server's own when attached). */
 	let truthLog: string | undefined;
+	/** Pi0.5 with the Metaworld policy (services.metaworld_vla), and what answered there once it ran alone. */
+	let vla: RpcClient;
+	let vlaUsed: string | undefined;
 	/** MotorMind's --mm-home (the mode's flag), which the env server runs with. */
 	const mmHome = () => String(pi.getFlag("mm-home") ?? "refuse").trim();
 
@@ -290,6 +306,8 @@ export default function metaworld(pi: ExtensionAPI) {
 			seed: Number(robot.task.seed),
 			success,
 			env_steps: envStep,
+			...(vlaUsed ? { vla: { [VLA_ALONE.name]: vlaUsed } } : {}),
+			...va.result(),
 		}),
 		status: () => ({ language, step: envStep, solved: success }),
 		// The env server's primitive registry (code.api), recorded per episode.
@@ -359,6 +377,92 @@ export default function metaworld(pi: ExtensionAPI) {
 	const { video } = robot;
 	const fly = robot.fly!;
 	const mem = robot.mem!;
+	// The VLA alone (--vla-alone pi0): Pi0.5 with the Metaworld policy at services.metaworld_vla, no planner.
+	const seeds = vlaSeeds(pi, () => ["metaworld", robot.task]);
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		// Metaworld mounts no third-party adapter.
+		mounted: () => [],
+		skills: [VLA_ALONE.name],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
+
+	/** Run `actions` [N, 4] as raw env steps: each to the video and the Flywheel, the last to the state; the steps run. */
+	async function rawChunk(actions: NdArray) {
+		const [frames, rew, term, , i] = await env.call<ChunkReturn>(
+			"env.chunk_step",
+			{ return_all_frames: true },
+			120_000,
+			[actions],
+			robot.signal,
+		);
+		const [a, r, te] = [actions.toArray(), rew.toArray(), term.toArray()];
+		// One entry per executed action: a success ends the chunk early.
+		const ran = r.length;
+		for (let k = 0; k < ran; k++) {
+			video.frame(sideBySide(frames[k].agentview, frames[k].wrist));
+			if (fly.recording) fly.transition(a.slice(k * 4, (k + 1) * 4), flyObs(frames[k]), r[k], Boolean(te[k]), false);
+		}
+		envStep += ran;
+		absorb(frames[frames.length - 1], i);
+		return ran;
+	}
+
+	/**
+	 * `--vla-alone pi0`: Pi0.5's chunks on the task's training prompt and the 480 px agentview
+	 * (`env.vla_obs`) until Metaworld's success or `steps` actions (0: the reference evaluation's 160).
+	 */
+	async function runVlaAlone(_name: string, steps: number) {
+		const budget = steps || VLA_ALONE.steps;
+		const info = await vlaInfo(vla);
+		// A LIBERO Pi0.5 server would answer a Metaworld image with LIBERO actions.
+		if (info.embodiment !== VLA_ALONE.embodiment)
+			throw new Error(
+				`the Pi0.5 server at ${vla.url} holds the ${info.embodiment ?? "unnamed (a server without vla.info)"} policy, not ${VLA_ALONE.embodiment}'s: start it with packages/embodied/src/robots/metaworld/serve.sh`,
+			);
+		vlaUsed = vlaIdentity(info);
+		await rawChunk(NdArray.f32(Array(VLA_ALONE.settle * 4).fill(0), [VLA_ALONE.settle, 4]));
+		const before = envStep;
+		let chunks = 0;
+		let prompt = "";
+		const vla_seeds: (number | null)[] = [];
+		while (envStep - before < budget && !success) {
+			const o = await call<VlaObs>("env.vla_obs");
+			prompt = o.instruction;
+			const wire = {
+				main_images: o.image.batched(),
+				wrist_images: null,
+				extra_view_images: null,
+				states: NdArray.f32(o.state.toArray(), [1, 4]),
+				task_descriptions: [prompt],
+			};
+			const seed = seeds.next();
+			const options = seed === undefined ? { mode: "eval" } : { mode: "eval", seed };
+			const actions = await vla.call<NdArray>("vla.predict", {}, 120_000, [wire, options], robot.signal);
+			// [1, chunk, 4]: the batch dimension goes, the chunk is cut to what is left of the budget.
+			const [rows, width] = [actions.shape[1], actions.shape[2]];
+			if (width !== 4) throw new Error(`the policy answered ${width}-D actions, not Metaworld's 4`);
+			const keep = Math.min(rows, budget - (envStep - before));
+			const ran = await rawChunk(
+				new NdArray(actions.dtype, [keep, 4], actions.data.subarray(0, (keep * actions.data.length) / rows)),
+			);
+			vla_seeds.push(seed ?? null);
+			chunks++;
+			// A chunk that stepped nothing steps nothing more.
+			if (ran === 0) break;
+		}
+		return {
+			tool: VLA_ALONE.name,
+			instruction: prompt,
+			steps_budget: budget,
+			settle_steps: VLA_ALONE.settle,
+			env_steps: envStep - before,
+			chunks,
+			success,
+			vla_seeds,
+		};
+	}
 	/** raw/metaworld/<task>/seed_NNN (services robots/metaworld/flywheel.py). */
 	const flyMeta = () => ({
 		path: [robot.task.task, `seed_${robot.task.seed.padStart(3, "0")}`],
@@ -590,6 +694,20 @@ export default function metaworld(pi: ExtensionAPI) {
 		const { task, seed } = robot.task;
 		if (!(TASKS as readonly string[]).includes(task))
 			throw new Error(`unknown Metaworld task "${task}"; the ${TASKS.length} tasks are ${TASKS.join(", ")}`);
+		// --vla-alone pi0 needs its Pi0.5 server: probed before the simulator starts, refused when it is off.
+		vla = new RpcClient(service(pi, "metaworld_vla"));
+		vlaUsed = undefined;
+		seeds.reset();
+		const named = String(pi.getFlag("vla-alone") ?? "").trim() === VLA_ALONE.name;
+		const why = va.configError({
+			[VLA_ALONE.name]: named
+				? await vla.ready(3_000).then(
+						() => ({ on: true }),
+						(err) => ({ on: false, reason: `unreachable at ${vla.url} (${message(err)})` }),
+					)
+				: undefined,
+		});
+		if (why) throw new Error(why);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
 		const mm = flagValue(pi.getFlag("mm")) === "true";
 		truthLog =

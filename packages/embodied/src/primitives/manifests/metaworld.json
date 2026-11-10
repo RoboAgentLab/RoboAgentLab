@@ -4,7 +4,8 @@
 		"env.mm_observe",
 		"env.mm_run_step",
 		"env.raw_obs",
-		"env.release_held"
+		"env.release_held",
+		"env.vla_obs"
 	],
 	"primitives": [
 		{

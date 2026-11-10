@@ -1965,6 +1965,7 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 		"LIBERO-PRO",
 		"LIBERO-plus",
 		"ManiSkill 3",
+		"Metaworld",
 		"RoboCasa365",
 		"RoboTwin 2",
 		"RoboDojo",
@@ -2025,12 +2026,30 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 		assert.ok((p.confirms.at(-1) ?? "").split("\n").includes(`flags: ${flags}; planner none (the VLA alone)`), name);
 	}
 	assert.match(p.confirms.at(-1) ?? "", /^needs: .*; an XPolicyLab policy server at ws:\/\/127\.0\.0\.1:19000/m);
-	// A robot with no VLA integrated: refused, nothing asked or written.
-	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	// Metaworld: Pi0.5 serves only its VLA alone, so the weights offered are that run's, and no other cell asks for them.
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", ""], confirm: [true, false] },
+	});
 	await p.run("VLA only, no agent, on Metaworld");
 	assert.match(
+		p.confirms[0] ?? "",
+		/^Also download Pi0\.5 MetaWorld SFT \(RLinf, ~7\.5 GB\) and its server's dependencies\? \(recommended: the VLA runs on them\)$/,
+	);
+	assert.match(p.confirms.at(-1) ?? "", /^flags: --vla-alone pi0; planner none \(the VLA alone\)$/m);
+	assert.match(p.confirms.at(-1) ?? "", /setup\.sh metaworld --weights/);
+	p = fakePi({
+		cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+		answers: { select: ["here", "openai/gpt-6", ""], confirm: [false], keys: [["\r"]] },
+	});
+	await p.run("metaworld O1 A2");
+	assert.ok(!p.asked.includes("Model weights"), "Metaworld's tools need no weights");
+	// A robot with no VLA integrated: refused, nothing asked or written.
+	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
+	await p.run("VLA only, no agent, on Robosuite");
+	assert.match(
 		p.notes[0] ?? "",
-		/^the VLA alone \(no agent\) is not supported on Metaworld: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, RoboCasa365, RoboTwin 2, RoboDojo run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
+		/^the VLA alone \(no agent\) is not supported on Robosuite: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, Metaworld, RoboCasa365, RoboTwin 2, RoboDojo run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
 	);
 	assert.deepEqual([p.asked, p.sent], [[], []]);
 });
