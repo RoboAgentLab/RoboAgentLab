@@ -461,6 +461,8 @@ def launch(
     gm.ENABLE_TRANSITION_RULES = True
     gm.USE_GPU_DYNAMICS = False
     gm.RENDER_VIEWER_CAMERA = False
+    if not primitives:
+        apply_challenge_scene(config)
     env = og.Environment(configs=config)
     controller = (
         with_settable_arm(StarterSemanticActionPrimitives)(
@@ -475,21 +477,78 @@ def launch(
     return Handle(og=og, env=env, controller=controller, error=ActionPrimitiveError)
 
 
+def challenge_tables() -> Any:
+    """The challenge's teleoperation tables, which its Evaluator reads from JoyLo
+    (``gello.utils.og_teleop_cfg``: ``DISABLED_TRANSITION_RULES``, ``ROOM_DEPENDENCIES``,
+    ``TASK_SPECIFIC_EXTRA_ROOMS``). Loaded from the BEHAVIOR-1K checkout's file, so JoyLo and its
+    hardware dependencies need no install."""
+    import importlib.util
+    from pathlib import Path
+
+    import omnigibson
+
+    path = Path(omnigibson.__file__).parents[2] / "joylo/gello/utils/og_teleop_cfg.py"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"--control challenge reads the challenge's tables from {path}: "
+            "OmniGibson must be installed from a BEHAVIOR-1K checkout"
+        )
+    spec = importlib.util.spec_from_file_location("b1k_og_teleop_cfg", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def challenge_rooms(tables: Any, activity: str, scene_model: str) -> list[str]:
+    """The room types the challenge's Evaluator loads for a task (its ``partial_scene_load``):
+    the rooms the task's initial conditions name (``inroom``), the rooms those depend on in this
+    scene, and the task's extra rooms."""
+    from omnigibson.utils.bddl_utils import get_knowledge_base
+
+    conditions = get_knowledge_base().get_task(f"{activity}-0").parse_base_scope()[0]
+    rooms: list[str] = []
+    for cond in conditions.parsed_initial_conditions:
+        if len(cond) == 3 and cond[0] == "inroom" and cond[2] not in rooms:
+            rooms.append(cond[2])
+    dependencies = tables.ROOM_DEPENDENCIES[scene_model]
+    for room in list(rooms):
+        for dependent in dependencies.get(room, []):
+            if dependent not in rooms:
+                rooms.append(dependent)
+    return rooms + list(
+        tables.TASK_SPECIFIC_EXTRA_ROOMS.get(activity, {}).get(scene_model, [])
+    )
+
+
+def apply_challenge_scene(config: dict) -> None:
+    """What the challenge's Evaluator sets before it builds the env (``Evaluator.load_env``): the
+    transition rules it switches off, and only the task's rooms loaded."""
+    tables = challenge_tables()
+    for rule in tables.DISABLED_TRANSITION_RULES:
+        rule.ENABLED = False
+    config["scene"]["load_room_types"] = challenge_rooms(
+        tables, config["task"]["activity_name"], config["scene"]["scene_model"]
+    )
+
+
 def apply_challenge_settings(handle: Handle) -> None:
-    """What OmniGibson 3.9's challenge Evaluator sets on the loaded robot: the base link's mass
-    (``_apply_robot_eval_settings``, with the simulation stopped), the head camera's horizontal
-    aperture, and the cameras' sizes (its RGBDFullResWrapper: head 720 px, wrists 480 px), after
-    which the observation space is rebuilt."""
+    """What OmniGibson 3.9's challenge Evaluator sets on the loaded robot: the cameras' sizes (its
+    RGBDFullResWrapper: head 720 px, wrists 480 px), the base link's mass
+    (``_apply_robot_eval_settings``, with the simulation stopped) and the head camera's
+    horizontal aperture. Stopping the simulation drops the physics views, so they are made again
+    (``og.sim.update_handles``, as the Evaluator does) before the observation space is rebuilt,
+    which reads the robot's joints."""
     og, env, robot = handle.og, handle.env, handle.robot
-    og.sim.stop()
-    robot.base_footprint_link.mass = CHALLENGE_BASE_MASS
-    og.sim.play()
     for camera in CAMERAS:
         s = sensor(robot, camera)
         px = CHALLENGE_HEAD_PX if camera == "head" else CHALLENGE_WRIST_PX
         s.image_height = px
         s.image_width = px
+    og.sim.stop()
+    robot.base_footprint_link.mass = CHALLENGE_BASE_MASS
+    og.sim.play()
     sensor(robot, "head").horizontal_aperture = CHALLENGE_HEAD_APERTURE
+    og.sim.update_handles()
     env.load_observation_space()
 
 
@@ -508,14 +567,14 @@ def policy_proprio(robot: Any) -> np.ndarray:
     return out
 
 
-def human_length(task_name: str) -> int | None:
-    """The average human demonstration's length of a task, control steps (the challenge's
-    episode limit is :data:`CHALLENGE_TIMEOUT_MULTIPLIER` times it); None when the dataset's
-    task statistics are not installed."""
+def human_length(task_name: str) -> float | None:
+    """The average human demonstration's length of a task, control steps (a mean, so not whole;
+    the challenge's episode limit is :data:`CHALLENGE_TIMEOUT_MULTIPLIER` times it, cut to an
+    integer); None when the dataset's task statistics are not installed."""
     try:
         from omnigibson.eval.utils.score_utils import load_human_stats
 
-        return int(load_human_stats(task_name)["length"])
+        return float(load_human_stats(task_name)["length"])
     except Exception:
         return None
 

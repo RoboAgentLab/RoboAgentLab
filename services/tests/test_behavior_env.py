@@ -789,3 +789,98 @@ def test_the_challenge_mode_serves_the_policys_observation_and_chunks_and_no_pri
     plain.reset()
     with pytest.raises(RuntimeError, match="--control challenge"):
         plain.vla_obs()
+
+
+def test_the_challenge_scene_loads_the_evaluators_rooms_and_switches_its_rules_off(
+    monkeypatch, tmp_path
+):
+    """Before the env is built, the challenge mode does what the Evaluator's ``load_env`` does:
+    the transition rules of JoyLo's ``DISABLED_TRANSITION_RULES`` are off, and only the task's
+    rooms load (its ``inroom`` conditions, the rooms those depend on in the scene, the task's
+    extra rooms). The tables come from the BEHAVIOR-1K checkout's file, without JoyLo installed."""
+    import sys
+    import types
+
+    cfg = tmp_path / "joylo/gello/utils/og_teleop_cfg.py"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        "class RuleA:\n    ENABLED = True\n"
+        "class RuleB:\n    ENABLED = True\n"
+        "DISABLED_TRANSITION_RULES = [RuleA, RuleB]\n"
+        "ROOM_DEPENDENCIES = {'house': {'living_room': ['corridor'], 'garage': ['garden']}}\n"
+        "TASK_SPECIFIC_EXTRA_ROOMS = {'turning_on_radio': {'house': ['kitchen'], 'other': ['x']}}\n"
+    )
+    og = types.ModuleType("omnigibson")
+    og.__file__ = str(tmp_path / "OmniGibson/omnigibson/__init__.py")
+    conditions = SimpleNamespace(
+        parsed_initial_conditions=[
+            ["ontop", "radio.n.01_1", "table.n.02_1"],
+            ["inroom", "table.n.02_1", "living_room"],
+            ["inroom", "floor.n.01_1", "living_room"],
+            ["not", ["toggled_on", "radio.n.01_1"]],
+        ]
+    )
+    asked = []
+    kb = SimpleNamespace(
+        get_task=lambda name: (
+            asked.append(name),
+            SimpleNamespace(parse_base_scope=lambda: [conditions]),
+        )[1]
+    )
+    bddl = types.ModuleType("omnigibson.utils.bddl_utils")
+    bddl.get_knowledge_base = lambda: kb
+    for name, mod in {
+        "omnigibson": og,
+        "omnigibson.utils": types.ModuleType("omnigibson.utils"),
+        "omnigibson.utils.bddl_utils": bddl,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+
+    config = {
+        "scene": {"scene_model": "house", "load_room_types": None},
+        "task": {"activity_name": "turning_on_radio"},
+    }
+    sim.apply_challenge_scene(config)
+    assert config["scene"]["load_room_types"] == ["living_room", "corridor", "kitchen"]
+    assert asked == ["turning_on_radio-0"]
+    tables = sim.challenge_tables()
+    assert [r.ENABLED for r in tables.DISABLED_TRANSITION_RULES] == [
+        True,
+        True,
+    ]  # a fresh load
+    cfg.unlink()
+    with pytest.raises(FileNotFoundError, match="BEHAVIOR-1K checkout"):
+        sim.challenge_tables()
+
+
+def test_the_challenge_settings_remake_the_physics_views_before_the_observation_space():
+    """Stopping the simulation for the base mass drops the physics views; rebuilding the
+    observation space reads the robot's joints, so the views are made again first (on the GPU
+    the rebuild fails on an articulation view of None otherwise)."""
+    calls = []
+    cams = {c: SimpleNamespace() for c in sim.CAMERAS}
+    robot = SimpleNamespace(base_footprint_link=SimpleNamespace(mass=60.0))
+    og = SimpleNamespace(
+        sim=SimpleNamespace(
+            stop=lambda: calls.append("stop"),
+            play=lambda: calls.append("play"),
+            update_handles=lambda: calls.append("update_handles"),
+        )
+    )
+    env = SimpleNamespace(load_observation_space=lambda: calls.append("obs_space"))
+    handle = SimpleNamespace(og=og, env=env, robot=robot)
+    real = sim.sensor
+    try:
+        sim.sensor = lambda r, camera: cams[camera]
+        sim.apply_challenge_settings(handle)
+    finally:
+        sim.sensor = real
+    assert calls == ["stop", "play", "update_handles", "obs_space"]
+    assert robot.base_footprint_link.mass == sim.CHALLENGE_BASE_MASS == 250.0
+    assert (cams["head"].image_height, cams["head"].image_width) == (720, 720)
+    assert cams["head"].horizontal_aperture == 40.0
+    wrists = [c for c in cams if c != "head"]
+    assert len(wrists) == 2 and all(
+        (cams[c].image_height, cams[c].image_width) == (480, 480) for c in wrists
+    )
+    assert not any(hasattr(cams[c], "horizontal_aperture") for c in wrists)
