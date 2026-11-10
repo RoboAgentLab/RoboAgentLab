@@ -7,8 +7,12 @@
 
 The Python API rather than the ``hf`` CLI: the CLI is built on typer, and in the BEHAVIOR-1K venv
 (Isaac Sim pins click 8.1.7, huggingface_hub needs typer >= 0.20) every ``hf`` command exits 1 on
-an uncaught ``click.exceptions.Exit: 0``, after a complete download too. Run as a file, so the
-venv needs huggingface_hub and nothing of this package.
+an uncaught ``click.exceptions.Exit: 0``, after a complete download too.
+
+Run as a file, so the venv needs huggingface_hub and nothing of the services package. It lives
+beside setup.sh, not in the package: a script's directory comes first on ``sys.path``, and
+``pi_embodied_services/utils`` holds a ``logging.py`` that would stand in for the standard
+library's in everything huggingface_hub imports.
 """
 
 import argparse
