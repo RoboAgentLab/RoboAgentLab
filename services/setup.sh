@@ -168,18 +168,17 @@ pip_install() {
 	fi
 }
 
-# hf_get REPO REV DIR [FILE...]: a Hugging Face snapshot (or some files of it) into DIR
-# (DIR "-" = the HF cache). huggingface_hub reads HF_ENDPOINT and HF_TOKEN itself.
+# hf_get REPO REV DIR [FILE...] [--repo-type TYPE]: a Hugging Face snapshot (or some files of it) into DIR
+# (DIR "-" = the HF cache). huggingface_hub reads HF_ENDPOINT and HF_TOKEN itself. Through its Python API
+# (utils/hf_get.py), not the `hf` CLI: in the BEHAVIOR-1K venv the CLI exits 1 after a complete download
+# (Isaac Sim pins click 8.1.7, huggingface_hub needs typer >= 0.20, and the two do not fit).
 hf_get() {
 	local repo=$1 rev=$2 dir=$3
 	shift 3
-	local cli=$venv/bin/hf
-	if [ ! -x "$cli" ] && ! $dry; then
+	if ! $dry && ! "$PY" -c 'import huggingface_hub' 2>/dev/null; then
 		pip_install "huggingface_hub>=0.34"
 	fi
-	local args=(download "$repo" "$@" --revision "$rev")
-	[ "$dir" = - ] || args+=(--local-dir "$dir")
-	run "$cli" "${args[@]}" ||
+	run "$PY" "$SERVICES/pi_embodied_services/utils/hf_get.py" "$repo" "$rev" "$dir" "$@" ||
 		die "download of $repo failed (gated repos need HF_TOKEN and an accepted license; set HF_ENDPOINT for a mirror)"
 }
 

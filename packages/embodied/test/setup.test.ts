@@ -436,7 +436,8 @@ test("setup.sh parses and its dry run prints the plan without running it", async
 	});
 	assert.match(out, /pip install .*services\\\[libero-pro\\\]/);
 	assert.match(out, /liberopro-download-assets --skip-existing/);
-	assert.match(out, /hf download facebook\/sam3 sam3\.pt/);
+	// Through huggingface_hub's Python API: the `hf` CLI exits 1 in the BEHAVIOR-1K venv (click 8.1.7 against typer).
+	assert.match(out, /utils\/hf_get\.py facebook\/sam3 [0-9a-f]{40} \S+\/sam3 sam3\.pt/);
 	assert.match(out, /export PI05_CHECKPOINT_PATH=/);
 	assert.throws(() => readFileSync(join(home, "venv/pi-embodied.env")));
 	assert.throws(() => execFileSync("bash", [script, "nope", "--dry-run"], { stdio: "pipe" }));
