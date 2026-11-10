@@ -14,7 +14,11 @@
  *
  * With `--xpolicy <ws url>`, `xpolicy_act` runs an XPolicyLab policy (../../primitives/xpolicy.ts, env_cfg arx_x5, joint or
  * ee actions) on RoboDojo's native observation, one native action per step, as RoboDojo's own
- * eval_one_episode does.
+ * eval_one_episode does. `--vla-alone xpolicy` (with --xpolicy) runs that policy alone instead of the
+ * planner, to the end of the episode: the VLA-alone baseline (../../planner/vla-alone.ts).
+ *
+ *   pi -p -e packages/embodied/src/robots/robodojo --task stack_bowls --seed 0 \
+ *      --xpolicy ws://127.0.0.1:19000 --vla-alone xpolicy "Solve the task."
  *
  * Every motion goes through RoboDojo's own `take_action` (one 25 Hz control step each, counted against
  * the task's `step_lim`): `move_to` / `move_delta` interpolate one arm's end effector in the env frame
@@ -37,6 +41,7 @@ import { encodePng } from "../../infra/png.ts";
 import type { NdArray, RpcClient } from "../../infra/rpc.ts";
 import type { MoveUnit, Vec3 } from "../../modes/units/index.ts";
 import { template } from "../../planner/context-version.ts";
+import { vlaAlone } from "../../planner/vla-alone.ts";
 import {
 	detectionActive,
 	detectionArgs,
@@ -54,6 +59,8 @@ const read = (name: string) => template(new URL(name, import.meta.url));
 const SYSTEM = read("./SYSTEM.md");
 const EXPLORE = read("./explore.md");
 
+/** `--vla-alone xpolicy`: the name of RoboDojo's VLA alone, the XPolicyLab policy served at --xpolicy. */
+export const XPOLICY_ALONE = "xpolicy";
 export const ARMS = ["left", "right"] as const;
 export type Arm = (typeof ARMS)[number];
 export const VIEWS = ["head", "left_wrist", "right_wrist"] as const;
@@ -318,6 +325,7 @@ export default function robodojo(pi: ExtensionAPI) {
 			unstable: obs?.unstable ?? false,
 			env_steps: obs?.env_steps ?? 0,
 			step_lim: obs?.step_lim ?? null,
+			...va.result(),
 		}),
 		status: () => ({ language: meta.instruction, step: obs.env_steps, solved: obs.success }),
 		finish: {
@@ -361,6 +369,46 @@ export default function robodojo(pi: ExtensionAPI) {
 	});
 	const { video } = robot;
 	const fly = robot.fly!;
+	// The VLA alone (--vla-alone xpolicy): the XPolicyLab policy at --xpolicy runs the episode, no planner.
+	const va = vlaAlone(pi, {
+		ready: () => robot.ready,
+		// RoboDojo mounts no third-party adapter: its policies are XPolicyLab's.
+		mounted: () => [],
+		skills: [XPOLICY_ALONE],
+		run: runVlaAlone,
+		ran: robot.ranWithoutPlanner,
+	});
+
+	/**
+	 * `--vla-alone xpolicy`: the policy's chunks on RoboDojo's task instruction, as RoboDojo's own
+	 * eval_one_episode runs them, until RoboDojo ends the episode (success or the task's `step_lim`) or
+	 * `steps` control steps are spent (0: what is left of `step_lim`).
+	 */
+	async function runVlaAlone(_name: string, steps: number) {
+		const budget = steps || obs.step_lim - obs.env_steps;
+		if (!(budget > 0)) throw new Error("--vla-alone: the episode has no step left; pass --vla-alone-steps");
+		const before = obs.env_steps;
+		let chunks = 0;
+		let actions = 0;
+		while (obs.env_steps - before < budget && !obs.ended) {
+			const at = obs.env_steps;
+			const r = await robot.xpolicy.run(1, budget - (obs.env_steps - before));
+			chunks += r.chunks;
+			actions += r.executed_actions;
+			// A chunk that stepped nothing steps nothing more.
+			if (obs.env_steps === at) break;
+		}
+		return {
+			tool: "xpolicy_act",
+			instruction: meta.instruction,
+			steps_budget: budget,
+			env_steps: obs.env_steps - before,
+			chunks,
+			actions,
+			success: obs.success,
+			score: obs.score,
+		};
+	}
 
 	async function resetEnv(signal?: AbortSignal) {
 		const [o, info] = await env.call<[Obs, { instruction: string; error?: string }]>(
@@ -613,6 +661,11 @@ export default function robodojo(pi: ExtensionAPI) {
 
 	async function startEpisode() {
 		const { task, seed } = robot.task;
+		// --vla-alone xpolicy has nothing to run without a policy server: refused before Isaac Sim starts.
+		const why = va.configError({
+			[XPOLICY_ALONE]: { on: flag("xpolicy", "").trim() !== "", reason: "not named: pass --xpolicy <ws url>" },
+		});
+		if (why) throw new Error(why);
 		const endpoint = pi.getFlag("env-url") as string | undefined;
 		if (endpoint) env = await attach(endpoint, 1_200_000);
 		else {

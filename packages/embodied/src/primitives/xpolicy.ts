@@ -388,6 +388,85 @@ export function xpolicy(
 		if (session && RESETS.includes(event.toolName) && !event.isError) session.fresh = true;
 	});
 
+	/**
+	 * XPolicyLab's deploy loop for `chunks` action chunks, at most `limit` actions (a chunk is cut there):
+	 * what `xpolicy_act` does, and what a VLA-alone run (../planner/vla-alone.ts) repeats. Returns the run.
+	 */
+	async function run(chunks: number, signal?: AbortSignal, limit = Number.POSITIVE_INFINITY) {
+		const s = current();
+		const rpc = bridge?.rpc;
+		if (!session || !s || !rpc) throw new Error("xpolicy_act needs --xpolicy <ws url> (see the session start)");
+		const live = session;
+		const call = <T = Json>(method: string, kwargs: Json) => rpc.call<T>(method, kwargs, callMs(), [], signal);
+		let policyMs = 0;
+		const update = async () => {
+			const r = await call<{ ms: number }>("xpolicy.update_obs", {
+				obs: wireObs(await s.observe(signal), live.dims),
+			});
+			policyMs += r.ms;
+		};
+		if (live.fresh) {
+			const meta = s.caseMeta?.();
+			if (meta) await call("xpolicy.prepare_case", { case_meta: { ...meta, action_type: live.type } });
+			await call("xpolicy.reset", {});
+			live.fresh = false;
+		}
+		live.acted = true;
+		const sizes: number[] = [];
+		let executed = 0;
+		let stop = "completed";
+		for (let c = 0; c < chunks; c++) {
+			if (s.over()) {
+				stop = "episode_over";
+				break;
+			}
+			await update();
+			const got = await call<{ actions: unknown[]; ms: number }>("xpolicy.get_action", {});
+			policyMs += got.ms;
+			if (!Array.isArray(got.actions) || !got.actions.length)
+				throw new Error("the policy returned an empty action chunk");
+			// The whole chunk is checked before its first action moves the robot.
+			const actions = got.actions.map((a, i) => {
+				try {
+					const parsed = parseAction(a, live.dims, live.type);
+					if (!s.actions.includes(parsed.type))
+						throw new Error(`this robot executes ${s.actions.join(" or ")} actions, not ${parsed.type}`);
+					return parsed;
+				} catch (err) {
+					throw new Error(`action ${i} of the chunk: ${message(err)}`);
+				}
+			});
+			sizes.push(actions.length);
+			for (let j = 0; j < actions.length; j++) {
+				if (signal?.aborted) throw new Error("xpolicy_act interrupted");
+				await s.act(actions[j], signal);
+				executed++;
+				if (s.over() || executed >= limit) break;
+				if (j < actions.length - 1) await update();
+			}
+			live.chunks++;
+			if (s.over()) {
+				stop = "episode_over";
+				break;
+			}
+			if (executed >= limit) {
+				stop = "budget";
+				break;
+			}
+		}
+		live.actions += executed;
+		const done = {
+			chunks: sizes.length,
+			chunk_sizes: sizes,
+			executed_actions: executed,
+			action_type: live.type,
+			policy_ms: Math.round(policyMs),
+			stop_reason: stop,
+		};
+		pi.appendEntry(XPOLICY_ENTRY, { kind: "act", requested_chunks: chunks, ...done });
+		return done;
+	}
+
 	/** Registered at the first start with --xpolicy (off registers nothing, like --privileged's ground_truth_poses). */
 	let registered = false;
 	const register = () =>
@@ -396,74 +475,9 @@ export function xpolicy(
 			DESCRIPTION,
 			Type.Object({ chunks: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, description: "Default 1" })) }),
 			async ({ chunks = 1 }, signal) => {
-				const s = current();
-				const rpc = bridge?.rpc;
-				if (!session || !s || !rpc) throw new Error("xpolicy_act needs --xpolicy <ws url> (see the session start)");
-				const live = session;
-				const call = <T = Json>(method: string, kwargs: Json) => rpc.call<T>(method, kwargs, callMs(), [], signal);
-				let policyMs = 0;
-				const update = async () => {
-					const r = await call<{ ms: number }>("xpolicy.update_obs", {
-						obs: wireObs(await s.observe(signal), live.dims),
-					});
-					policyMs += r.ms;
-				};
-				if (live.fresh) {
-					const meta = s.caseMeta?.();
-					if (meta) await call("xpolicy.prepare_case", { case_meta: { ...meta, action_type: live.type } });
-					await call("xpolicy.reset", {});
-					live.fresh = false;
-				}
-				live.acted = true;
-				const sizes: number[] = [];
-				let executed = 0;
-				let stop = "completed";
-				for (let c = 0; c < chunks; c++) {
-					if (s.over()) {
-						stop = "episode_over";
-						break;
-					}
-					await update();
-					const got = await call<{ actions: unknown[]; ms: number }>("xpolicy.get_action", {});
-					policyMs += got.ms;
-					if (!Array.isArray(got.actions) || !got.actions.length)
-						throw new Error("the policy returned an empty action chunk");
-					// The whole chunk is checked before its first action moves the robot.
-					const actions = got.actions.map((a, i) => {
-						try {
-							const parsed = parseAction(a, live.dims, live.type);
-							if (!s.actions.includes(parsed.type))
-								throw new Error(`this robot executes ${s.actions.join(" or ")} actions, not ${parsed.type}`);
-							return parsed;
-						} catch (err) {
-							throw new Error(`action ${i} of the chunk: ${message(err)}`);
-						}
-					});
-					sizes.push(actions.length);
-					for (let j = 0; j < actions.length; j++) {
-						if (signal?.aborted) throw new Error("xpolicy_act interrupted");
-						await s.act(actions[j], signal);
-						executed++;
-						if (s.over()) break;
-						if (j < actions.length - 1) await update();
-					}
-					live.chunks++;
-					if (s.over()) {
-						stop = "episode_over";
-						break;
-					}
-				}
-				live.actions += executed;
-				const run = {
-					chunks: sizes.length,
-					chunk_sizes: sizes,
-					executed_actions: executed,
-					action_type: live.type,
-					policy_ms: Math.round(policyMs),
-					stop_reason: stop,
-				};
-				pi.appendEntry(XPOLICY_ENTRY, { kind: "act", requested_chunks: chunks, ...run });
-				return s.present({ xpolicy: run });
+				const done = await run(chunks, signal);
+				// `run` throws without a spec: one is there.
+				return (current() as XPolicySpec).present({ xpolicy: done });
 			},
 		);
 
@@ -529,6 +543,10 @@ export function xpolicy(
 				await rpc.call("xpolicy.trial_end", { result: current()?.trialResult?.() ?? {} }, 30_000).catch(() => {});
 			await rpc.call("xpolicy.close", {}, 30_000).catch(() => {});
 		},
+		/** The deploy loop outside a tool call (a VLA-alone run): `chunks` chunks, at most `limit` actions. */
+		run,
+		/** Whether this episode is connected to a policy server (--xpolicy, after `start`). */
+		connected: () => session !== undefined,
 		/** The robot result's xpolicy fields (none without --xpolicy). */
 		result: (): Json =>
 			session

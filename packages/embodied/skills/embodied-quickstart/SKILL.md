@@ -42,9 +42,10 @@ levels (`O2`, `A1 Model`, `units`, `privileged`, `sam3`), `single-turn` / `multi
 tiers), `here` / `remote` / an ssh host, a planner (a registry model by provider/id, id or
 display name: `openai/gpt-6-astra`, `gpt-6-astra`, `Claude Fable 5.1`; `fine-tuned student`; `flash replay`). `VLA only` / `no agent` is the VLA-alone
 baseline (`--vla-alone`, outside the grid, no planner): Pi0.5 on LIBERO / LIBERO-PRO / LIBERO-plus (`--vla-alone pi0`),
-RLDX-1 on RoboCasa365 (`rldx`), LingBot-VLA on RoboTwin (`lingbot`), OpenVLA on ManiSkill's Bridge WidowX; several of them
-unnamed is a menu. It is never A1 Model; a robot with no VLA integrated (Metaworld, Robosuite, Genesis, RoboLab, RoboDojo,
-BEHAVIOR-1K, HumanCLAW, the real arms) refuses it. The confirmation starts with what the request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
+RLDX-1 on RoboCasa365 (`rldx`), LingBot-VLA on RoboTwin (`lingbot`), OpenVLA on ManiSkill's Bridge WidowX, and on RoboDojo
+the XPolicyLab policy served at `--xpolicy` (`--xpolicy ws://host:port --vla-alone xpolicy`; the user starts that policy
+server from XPolicyLab); several of them unnamed is a menu. It is never A1 Model; a robot with no VLA integrated (Metaworld,
+Robosuite, Genesis, RoboLab, BEHAVIOR-1K, HumanCLAW, the real arms) refuses it. The confirmation starts with what the request settled. The wizard and writes the experiment directory's `.pi/settings.json`: the
 robot extension, the dashboard, and this package without its onboarding extension. A robot extension
 replaces the coding tools, so start pi for the robot only in that directory. Settings cannot hold
 flags; the task and the setting go on the command line. With no model configured it writes nothing and

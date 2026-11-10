@@ -319,6 +319,12 @@ export const ROBOTS: Robot[] = [
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets; two arms",
 		axes: SIM,
 		task: "--task stack_bowls --seed 0",
+		// RoboDojo's policies are XPolicyLab's: the one served at --xpolicy runs alone.
+		vlaAlone: {
+			flags: "--xpolicy ws://127.0.0.1:19000 --vla-alone xpolicy",
+			task: "--task stack_bowls --seed 0",
+			needs: "an XPolicyLab policy server at ws://127.0.0.1:19000 (a policy's setup_eval_policy_server.sh with RoboDojo's checkpoint; another address: change --xpolicy) and XPOLICYLAB_ROOT for the bridge",
+		},
 	},
 	{
 		id: "behavior",

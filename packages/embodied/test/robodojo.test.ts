@@ -22,6 +22,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	let active: string[] = [];
+	const entries: { type: string; data: any }[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, o: { default?: unknown }) => {
@@ -35,7 +36,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 			active = names;
 		},
 		getActiveTools: () => active,
-		appendEntry: () => {},
+		appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const ctx = {
@@ -57,7 +58,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, emit, run, active: () => active };
+	return { pi, flags, tools, emit, run, entries, active: () => active };
 }
 
 /** A fake RoboDojo env server (the wire protocol of ../src/rpc.ts): moves land exactly, `solveAfter` motions succeed. */
@@ -66,6 +67,8 @@ async function fakeEnv(
 		layouts?: number;
 		task?: string;
 		solveAfter?: number;
+		/** RoboDojo's success once this many native actions (`env.step`) ran. */
+		solveAtStep?: number;
 		resetError?: string;
 		perception?: boolean;
 		/** Recorded control steps per motion: RoboDojo's success after each (Flywheel policy frames). */
@@ -93,7 +96,9 @@ async function fakeEnv(
 	});
 	const f32 = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
 	const img = () => nd("uint8", [2, 2, 3], Buffer.alloc(12));
-	const solved = () => o.solveAfter !== undefined && motions >= o.solveAfter;
+	const solved = () =>
+		(o.solveAfter !== undefined && motions >= o.solveAfter) ||
+		(o.solveAtStep !== undefined && steps >= o.solveAtStep);
 	const arm = (a: string) => ({
 		eef_pos: f32(pos[a]),
 		eef_quat_wxyz: f32([0, 0.6, 0.8, 0]),
@@ -414,8 +419,11 @@ test("--code=true: run_code runs on the env server; its observation and success 
 	assert.equal(env.calls.filter((c) => c.method === "code.run").length, 1);
 });
 
-/** A fake xpolicy bridge (`POST /call`, ../src/primitives/xpolicy.ts): `chunks` are get_action's replies in order. */
-async function fakeBridge(chunks: unknown[][]) {
+/**
+ * A fake xpolicy bridge (`POST /call`, ../src/primitives/xpolicy.ts): `chunks` are get_action's replies in
+ * order, then `every` (a policy that keeps answering) when given.
+ */
+async function fakeBridge(chunks: unknown[][], every?: unknown[]) {
 	const calls: { method: string; kwargs: Record<string, any> }[] = [];
 	const server = createServer((req, res) => {
 		let body = "";
@@ -429,7 +437,7 @@ async function fakeBridge(chunks: unknown[][]) {
 			if (method === "healthz") return reply({ status: "ok" });
 			if (method === "xpolicy.action_dims") return reply({ robot: "dual_x5", arm_dim: [6, 6], ee_dim: [1, 1] });
 			if (method === "xpolicy.connect") return reply({ server_instance_id: "s", xpolicylab_rev: "d6332bf", ms: 1 });
-			if (method === "xpolicy.get_action") return reply({ actions: chunks.shift() ?? [], ms: 5 });
+			if (method === "xpolicy.get_action") return reply({ actions: chunks.shift() ?? every ?? [], ms: 5 });
 			reply({ result: null, ms: 1 });
 		});
 	});
@@ -479,6 +487,80 @@ test("xpolicy_act sends RoboDojo's native observation and runs each action as on
 	assert.deepEqual(round(steps[1].left_ee_pose), [-0.3, -0.15, 0.97, 0, 0.6, 0.8, 0]);
 	assert.deepEqual(steps[1].right_ee_pose, [0.3, 0, 0.9, 1, 0, 0, 0]);
 	assert.deepEqual([steps[1].left_ee_joint_state, steps[1].right_ee_joint_state], [[1], [1]]);
+});
+
+test("--vla-alone xpolicy: the first prompt runs the XPolicyLab policy to RoboDojo's success or the step budget, asks no model, and records planner vla", async (t) => {
+	const q = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+	// A policy that answers four joint actions per chunk, for ever.
+	const chunk = Array.from({ length: 4 }, () => ({ left_arm_joint_state: q, left_ee_joint_state: [0.2] }));
+	const run = async (fake: Parameters<typeof fakeEnv>[0], values: Record<string, unknown> = {}) => {
+		const env = await fakeEnv(fake);
+		t.after(env.close);
+		const bridge = await fakeBridge([], chunk);
+		t.after(bridge.close);
+		const s = await start(
+			{ xpolicy: "ws://policy:19000", "xpolicy-bridge": bridge.url, "vla-alone": "xpolicy", ...values },
+			env,
+		);
+		const log = console.error;
+		console.error = () => {};
+		let handled: unknown;
+		try {
+			handled = await s.emit("input", { text: "Solve the task.", source: "interactive" });
+			// A second prompt runs nothing more.
+			await s.emit("input", { text: "again", source: "interactive" });
+			await s.emit("session_shutdown");
+		} finally {
+			console.error = log;
+		}
+		process.exitCode = 0;
+		return {
+			handled,
+			errors: s.errors,
+			result: s.entries.find((e) => e.type === "robot_result")?.data,
+			steps: env.calls.filter((c) => c.method === "env.step").length,
+			chunks: bridge.calls.filter((c) => c.method === "xpolicy.get_action").length,
+			ended: bridge.calls.some((c) => c.method === "xpolicy.trial_end"),
+		};
+	};
+	// RoboDojo judges success at the tenth native action: the third chunk stops there.
+	const solved = await run({ solveAtStep: 10 });
+	assert.deepEqual(solved.handled, { action: "handled" }, solved.errors.join("\n"));
+	assert.deepEqual([solved.steps, solved.chunks], [10, 3]);
+	assert.equal(solved.result.planner, "vla");
+	assert.equal(solved.result.turns, 0);
+	assert.equal(solved.result.success, true);
+	assert.equal(solved.result.env_error, false);
+	assert.deepEqual(solved.result.vla_alone, {
+		skill: "xpolicy",
+		tool: "xpolicy_act",
+		instruction: "Stack the three bowls together.",
+		// What is left of the task's step_lim.
+		steps_budget: 800,
+		env_steps: 10,
+		chunks: 3,
+		actions: 10,
+		success: true,
+		score: 1,
+	});
+	assert.deepEqual([solved.result.xpolicy_chunks, solved.result.xpolicy_actions], [3, 10]);
+	assert.ok(solved.ended, "the trial is ended on the policy server");
+	// --vla-alone-steps bounds a run that never succeeds; the last chunk is cut to what is left of it.
+	const spent = await run({}, { "vla-alone-steps": "6" });
+	assert.deepEqual([spent.steps, spent.chunks], [6, 2]);
+	assert.equal(spent.result.success, false);
+	assert.deepEqual(
+		[spent.result.vla_alone.steps_budget, spent.result.vla_alone.env_steps, spent.result.vla_alone.score],
+		[6, 6, 0.15],
+	);
+	// Without --xpolicy there is no policy to run: refused before the simulator is asked for anything.
+	const env = await fakeEnv();
+	t.after(env.close);
+	const s = await start({ "vla-alone": "xpolicy" }, env);
+	assert.match(s.errors.join("\n"), /--vla-alone xpolicy: the xpolicy server is not named: pass --xpolicy <ws url>/);
+	assert.deepEqual(env.calls, []);
+	await s.emit("session_shutdown");
+	process.exitCode = 0;
 });
 
 test("the Flywheel takes success per control step: a success midway through go_home keeps its whole return", async (t) => {

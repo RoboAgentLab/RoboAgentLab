@@ -1180,7 +1180,9 @@
 				"vla_adapters": []
 			},
 			"vla_alone": {
-				"mounted": false
+				"mounted": true,
+				"setup_flags": "--xpolicy ws://127.0.0.1:19000 --vla-alone xpolicy",
+				"example_task": "--task stack_bowls --seed 0"
 			},
 			"fine_tuned_units_adapter": null,
 			"example_task_flags": "--task stack_bowls --seed 0",
@@ -1190,7 +1192,8 @@
 					"eval.sh <out-dir> <tasks> <seeds> [pi args...]",
 					"eval.sh runs/rd stack_bowls,push_T 0-4 --model <provider/model> --thinking low",
 					"eval.sh runs/rd-units stack_bowls 0-2 --units=true --model <provider/model> --thinking low",
-					"eval.sh runs/rd-code stack_bowls 0-4 --code=true --code-api=low --model <provider/model>"
+					"eval.sh runs/rd-code stack_bowls 0-4 --code=true --code-api=low --model <provider/model>",
+					"eval.sh runs/rd-pi05 stack_bowls 0-24 --xpolicy ws://127.0.0.1:19000 --vla-alone xpolicy"
 				],
 				"env": []
 			}
