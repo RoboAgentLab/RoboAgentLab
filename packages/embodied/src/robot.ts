@@ -1316,6 +1316,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			actedBy = by;
 		},
 		/**
+		 * The XPolicyLab policy this episode is connected to (`xpolicy` in the spec, --xpolicy), for a run
+		 * without the planner: `run` is `xpolicy_act`'s loop for `chunks` chunks and at most `limit` actions.
+		 */
+		xpolicy: {
+			connected: () => xp?.connected() === true,
+			run: (chunks: number, limit?: number) => {
+				if (!xp) throw new Error("this robot mounts no XPolicyLab client");
+				return xp.run(chunks, signal, limit);
+			},
+		},
+		/**
 		 * A real robot, the moment its env server answers and before it asks the operator to confirm
 		 * anything or resets the arm: code mode's `code.preflight` (../modes/code), so a server that
 		 * would refuse every program fails the start first. No-op when code mode is off; `start` of

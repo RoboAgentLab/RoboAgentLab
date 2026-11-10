@@ -1967,6 +1967,7 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 		"ManiSkill 3",
 		"RoboCasa365",
 		"RoboTwin 2",
+		"RoboDojo",
 	]);
 	assert.deepEqual(p.asked, [
 		"Robot or benchmark",
@@ -2010,24 +2011,26 @@ test("VLA only, no agent: the VLA-alone baseline on every robot that runs one, o
 	assert.match(p.confirms.at(-1) ?? "", /pi --libero-type pro --suite libero_10 --task 0 --seed 0 --vla-alone pi0/);
 	const proRecord = JSON.parse(readFileSync(join(pro, "embodied-libero-pro", RECORD), "utf8"));
 	assert.deepEqual([proRecord.vlaAlone, proRecord.flags, proRecord.planner], [true, "--vla-alone pi0", "vla"]);
-	// RoboCasa and RoboTwin: their own skills' names.
+	// RoboCasa and RoboTwin: their own skills' names. RoboDojo: the XPolicyLab policy served at --xpolicy.
 	for (const [name, flags] of [
 		["RoboCasa", "--vla-alone rldx"],
 		["RoboTwin", "--vla-alone lingbot"],
+		["RoboDojo", "--xpolicy ws://127.0.0.1:19000 --vla-alone xpolicy"],
 	]) {
 		p = fakePi({
 			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
 			answers: { select: ["here", ""], confirm: [false, false] },
 		});
 		await p.run(`the VLA alone on ${name}`);
-		assert.match(p.confirms.at(-1) ?? "", new RegExp(`^flags: ${flags}; planner none`, "m"), name);
+		assert.ok((p.confirms.at(-1) ?? "").split("\n").includes(`flags: ${flags}; planner none (the VLA alone)`), name);
 	}
+	assert.match(p.confirms.at(-1) ?? "", /^needs: .*; an XPolicyLab policy server at ws:\/\/127\.0\.0\.1:19000/m);
 	// A robot with no VLA integrated: refused, nothing asked or written.
 	p = fakePi({ cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")), answers: {} });
 	await p.run("VLA only, no agent, on Metaworld");
 	assert.match(
 		p.notes[0] ?? "",
-		/^the VLA alone \(no agent\) is not supported on Metaworld: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, RoboCasa365, RoboTwin 2 run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
+		/^the VLA alone \(no agent\) is not supported on Metaworld: only LIBERO, LIBERO-PRO, LIBERO-plus, ManiSkill 3, RoboCasa365, RoboTwin 2, RoboDojo run a VLA alone \(--vla-alone\); no VLA is integrated for the others\./,
 	);
 	assert.deepEqual([p.asked, p.sent], [[], []]);
 });
