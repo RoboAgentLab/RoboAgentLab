@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import io
 import math
 import os
@@ -114,6 +115,9 @@ MOTIONS = (
     "env.move_to_joints",
     "env.move_along_trajectory",
 )
+#: The challenge control mode's policy chunk (``env.vla_chunk``): the head frame of every
+#: this-many-th executed action goes to the episode video, at half size.
+VLA_VIDEO_EVERY = 4
 #: The perception reads whose tool picture a program does not receive.
 PICTURES = ("env.segment", "env.point")
 
@@ -183,6 +187,8 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         sam3: str | None = None,
         molmo: str | None = None,
     ):
+        #: The control mode (sim.CONTROLS): read by _register_rpc, which the base's init calls.
+        self._control = str(meta.get("control", "primitives"))
         super().__init__()
         self._h = handle
         self._env = handle.env
@@ -228,6 +234,14 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._rpc["env.back_project"] = self.back_project
         self._rpc["env.move_to_joints"] = self.move_to_joints
         self._rpc["env.move_along_trajectory"] = self.move_along_trajectory
+        # The challenge control mode: the policy's observation and its chunks of whole-body
+        # actions; the primitives need the other mode's controllers and refuse.
+        self._rpc["env.vla_obs"] = self.vla_obs
+        self._rpc["env.vla_chunk"] = self.vla_chunk
+        self._readonly_methods.add("env.vla_obs")
+        if self._control == "challenge":
+            for method in MOTIONS:
+                self._rpc[method] = self._not_in_challenge(self._rpc[method])
         # The primitives are packages/embodied/src/primitives/manifests/behavior.json (with
         # pi); code.api, the programs' whitelist and the startup self-check come from it.
         self._manifest_code_run(
@@ -239,6 +253,20 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             begin=self._begin_run,
             finish=self._finish_run,
         )
+
+    @staticmethod
+    def _not_in_challenge(fn):
+        """``fn`` (a primitive) as the challenge control mode serves it: a refusal. The
+        primitives plan for position-controlled joints and a base moved as joints."""
+
+        @functools.wraps(fn)
+        def refuse(*args, **kwargs):
+            raise RuntimeError(
+                f"{fn.__name__} is a semantic primitive: the env server runs with "
+                "--control challenge (the published policies' robot), which has none"
+            )
+
+        return refuse
 
     def _has(self, capability: str) -> bool:
         """What this server can serve of the manifest's ``requires``."""
@@ -479,7 +507,9 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
         self._solved = False
         self._info = None
         self._obs, info = self._env.reset()
-        self._run(self._ctrl._settle_robot())
+        # The challenge's episodes start at the reset pose as it is (its Evaluator settles nothing).
+        if self._ctrl is not None:
+            self._run(self._ctrl._settle_robot())
         self._initial_goals = sim.goal_satisfaction(self._task)
         self._initial_heights = sim.object_heights(self._task)
         return self._pack(), {"instruction": self._meta["instruction"], **(info or {})}
@@ -1026,6 +1056,57 @@ class BehaviorEnvFacade(CodeRunMixin, MainThreadServeMixin, BaseEnvFacade):
             raise ValueError(f"no depth at ({row}, {col}); pick another pixel")
         return {"camera": camera, "pixel": [row, col], "world_xyz": p}
 
+    # ---- the challenge control mode: a published policy's observation and actions ----
+
+    def _challenge(self) -> None:
+        if self._control != "challenge":
+            raise RuntimeError(
+                "this needs the env server started with --control challenge "
+                f"(it runs --control {self._control})"
+            )
+
+    def vla_obs(self) -> dict:
+        """What RLinf's Pi0.5 BEHAVIOR policy is given (its ``BehaviorEnv._wrap_obs``): the head
+        view (720 px), the left and right wrist views stacked (2 x 480 px), the 256-D proprio
+        (``sim.policy_proprio``) and the task's description."""
+        self._challenge()
+        imgs = sim.images(self._obs, self._robot)
+        return {
+            "head": imgs["head"],
+            "wrists": np.stack([imgs["left_wrist"], imgs["right_wrist"]]),
+            "state": sim.policy_proprio(self._robot),
+            "instruction": self._meta["instruction"],
+        }
+
+    def vla_chunk(self, actions) -> dict:
+        """Run whole-body actions ``[N, 23]`` (``sim.CHALLENGE_ACTION``), one control step each,
+        as the challenge's Evaluator does; stops at BDDL success, the episode's end or a stop
+        request. Returns the steps run, the state without images and some head frames for the
+        episode video (every ``VLA_VIDEO_EVERY``-th step, half size)."""
+        self._challenge()
+        a = np.asarray(actions, dtype=np.float32)
+        dim = int(self._robot.action_dim)
+        if a.ndim != 2 or a.shape[1] != dim:
+            raise ValueError(f"actions must be [N, {dim}], got {list(a.shape)}")
+        ran, frames, cancelled = 0, [], False
+        for row in a:
+            if self._solved or self._terminated or self._truncated:
+                break
+            if self.stop_requested():
+                cancelled = True
+                break
+            self._absorb(self._env.step(row))
+            ran += 1
+            if ran % VLA_VIDEO_EVERY == 1:
+                head = sim.images(self._obs, self._robot)["head"]
+                frames.append(np.ascontiguousarray(head[::2, ::2]))
+        return {
+            "steps": ran,
+            "frames": frames,
+            **({"cancelled": True} if cancelled else {}),
+            **self._state(),
+        }
+
     # ---- reads ----
 
     def raw_obs(self) -> dict:
@@ -1117,6 +1198,14 @@ def main():
     )
     p.add_argument("--grasping-mode", default="sticky", choices=["sticky", "assisted"])
     p.add_argument(
+        "--control",
+        default="primitives",
+        choices=sim.CONTROLS,
+        help="primitives: the planner's tools (position-controlled joints, cuRobo); challenge: the "
+        "BEHAVIOR challenge's robot, which published policies drive (env.vla_obs / env.vla_chunk; "
+        "assisted grasping, 720 px head and 480 px wrist cameras; the primitives refuse)",
+    )
+    p.add_argument(
         "--max-steps",
         type=int,
         default=20000,
@@ -1182,15 +1271,24 @@ def main():
         image_size=args.image_size,
         grasping_mode=args.grasping_mode,
         max_steps=args.max_steps,
+        control=args.control,
     )
+    challenge = args.control == "challenge"
+    if challenge:
+        args.grasping_mode = "assisted"
     t0 = time.monotonic()
-    handle = sim.launch(config, curobo_batch_size=args.curobo_batch_size)
+    handle = sim.launch(
+        config, curobo_batch_size=args.curobo_batch_size, primitives=not challenge
+    )
     # A failure after Kit is up must not reach its shutdown, which can swallow the traceback and
     # exit 0: print it and leave hard.
     try:
+        if challenge:
+            sim.apply_challenge_settings(handle)
         if split is not None:
             handle.env.reset()
             sim.load_task_instance(handle, split, args.seed)
+        human = sim.human_length(args.task) if challenge else None
         facade = BehaviorEnvFacade(
             handle=handle,
             meta={
@@ -1204,6 +1302,18 @@ def main():
                 "robot": "R1Pro",
                 "cameras": sorted(sim.CAMERAS),
                 "image_size": args.image_size,
+                "control": args.control,
+                # The challenge's episode limit (1.5 x the average human demonstration), when
+                # the dataset's task statistics are there: the VLA alone's default budget.
+                **(
+                    {
+                        "challenge_max_steps": int(
+                            human * sim.CHALLENGE_TIMEOUT_MULTIPLIER
+                        )
+                    }
+                    if human
+                    else {}
+                ),
                 "grasping_mode": args.grasping_mode,
                 "max_steps": args.max_steps,
                 "curobo_batch_size": args.curobo_batch_size,
