@@ -48,6 +48,8 @@ export const SERVICE_DEFAULTS: Record<string, string> = {
 	vla: "http://127.0.0.1:18200",
 	// Pi0.5 with the Metaworld policy (robots/metaworld/serve.sh): its own port, LIBERO's server holds another policy.
 	metaworld_vla: "http://127.0.0.1:18250",
+	// Pi0.5 with the BEHAVIOR-1K policy (robots/behavior/serve.sh).
+	behavior_vla: "http://127.0.0.1:18260",
 	rldx: "http://127.0.0.1:18500",
 	lingbot: "ws://127.0.0.1:18400",
 	finetuned: "http://127.0.0.1:8010/v1",
@@ -59,6 +61,7 @@ export const SERVICE_KEYS = [
 	"molmo",
 	"vla",
 	"metaworld_vla",
+	"behavior_vla",
 	"openvla",
 	"openvla_oft",
 	"gr00t",
