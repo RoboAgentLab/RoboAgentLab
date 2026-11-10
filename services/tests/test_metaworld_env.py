@@ -38,6 +38,38 @@ def test_task_table_is_mt50_with_the_ml45_split():
         mw.instruction("reach-v9")
 
 
+def test_the_vla_prompts_cover_mt50_and_vla_obs_is_rlinfs_policy_input():
+    # RLinf's training prompts, one per task, kept apart from the planner's instructions.
+    assert list(mw.VLA_INSTRUCTIONS) != [] and set(mw.VLA_INSTRUCTIONS) == set(mw.TASKS)
+    assert mw.VLA_INSTRUCTIONS["reach-v3"] != mw.instruction("reach-v3")
+    f = _facade()
+    f.reset()
+    sizes = []
+    frame = np.zeros((mw.VLA_IMAGE, mw.VLA_IMAGE, 3), dtype=np.uint8)
+    f._render = lambda camera, h, w, depth=False: sizes.append((camera, h, w)) or frame
+    o = f.vla_obs()
+    assert sizes == [("agentview", 480, 480)]
+    assert o["image"].shape == (480, 480, 3) and o["image"].dtype == np.uint8
+    # The first four observation values: the hand's xyz and the gripper opening.
+    assert o["state"].dtype == np.float32
+    assert o["state"].tolist() == pytest.approx([0.0, 0.6, 0.2, 1.0])
+    assert o["instruction"] == mw.VLA_INSTRUCTIONS["reach-v3"]
+    assert "env.vla_obs" in f._readonly_methods
+
+
+def test_the_vla_image_is_the_camera_rlinf_renders():
+    # RLinf (and LeRobot's metaworld_mt50) render Metaworld's camera 2 moved to
+    # [0.75, 0.075, 0.7] and turn the image 180 degrees: that is corner4, the agentview.
+    env_dict = pytest.importorskip("metaworld.env_dict")
+    mujoco = pytest.importorskip("mujoco")
+    m = env_dict.ALL_V3_ENVIRONMENTS["reach-v3"](render_mode=None).model
+    cam = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, mw.CAMERAS["agentview"])
+    assert m.cam_pos[cam].tolist() == pytest.approx([0.75, 0.075, 0.7])
+    assert m.cam_quat[cam].tolist() == pytest.approx(m.cam_quat[2].tolist())
+    assert m.cam_fovy[cam] == m.cam_fovy[2]
+    assert "agentview" in mw.ROTATED_VIEWS
+
+
 def test_task_table_matches_the_installed_metaworld():
     env_dict = pytest.importorskip("metaworld.env_dict")
     assert list(env_dict.ALL_V3_ENVIRONMENTS) == mw.TASKS

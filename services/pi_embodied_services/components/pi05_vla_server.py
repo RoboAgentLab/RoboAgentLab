@@ -88,6 +88,24 @@ PI05_EMBODIMENTS: dict[str, dict] = {
             "add_value_head": False,
         },
     },
+    # RLinf's Pi0.5 MetaWorld SFT (RLinf/RLinf-Pi05-MetaWorld-SFT, fine-tuned on LeRobot's
+    # lerobot/metaworld_mt50): one 480 px image, the hand's xyz and gripper opening, chunks of
+    # five 4-D actions, as RLinf's metaworld_50_ppo_openpi_pi05.yaml sets them.
+    "metaworld": {
+        "num_action_chunks": 5,
+        "action_dim": 4,
+        "use_proprio": True,
+        "num_steps": 5,
+        "add_value_head": False,
+        "openpi": {
+            "config_name": "pi05_metaworld",
+            "num_images_in_input": 1,
+            "action_chunk": 5,
+            "num_steps": 5,
+            "action_env_dim": 4,
+            "add_value_head": False,
+        },
+    },
 }
 
 PI05_ROBOT_PLATFORMS: dict[str, str] = {
@@ -207,6 +225,21 @@ class Pi05VLAFacade(BaseVLAFacade):
         )
         self._model = get_model(cfg, torch_dtype=None).cuda().eval()
         logger.info("model ready in %.1fs", time.time() - t0)
+
+    def _register_rpc(self):
+        super()._register_rpc()
+        self._rpc["vla.info"] = self.info
+
+    def info(self) -> dict:
+        """Which policy this server holds: a robot checks ``embodiment`` before it runs it
+        (a LIBERO server would answer a Metaworld observation with LIBERO actions)."""
+        emb = PI05_EMBODIMENTS[self._embodiment]
+        return {
+            "embodiment": self._embodiment,
+            "config_name": emb["openpi"]["config_name"],
+            "action_dim": emb["action_dim"],
+            "action_chunk": emb["num_action_chunks"],
+        }
 
     # ---- inference ----
 

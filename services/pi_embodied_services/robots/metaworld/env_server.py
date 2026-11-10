@@ -152,6 +152,66 @@ INSTRUCTIONS: dict[str, str] = {
     "window-close-v3": "Push the window handle to slide the window closed.",
 }
 TASKS = list(INSTRUCTIONS)
+#: The prompts of the VLA alone (``env.vla_obs``): the task strings RLinf's Pi0 / Pi0.5 MetaWorld
+#: SFT checkpoints were fine-tuned and evaluated with (RLinf, Apache-2.0,
+#: rlinf/envs/sim/metaworld/metaworld_config.json ``TASK_DESCRIPTIONS``; LeRobot's
+#: lerobot/metaworld_mt50). A fine-tuned policy is prompted in its training distribution, so these
+#: are kept verbatim instead of INSTRUCTIONS, which were written for a planner.
+VLA_INSTRUCTIONS: dict[str, str] = {
+    "assembly-v3": "Pick up a nut and place it onto a peg",
+    "basketball-v3": "Dunk the basketball into the basket",
+    "bin-picking-v3": "Grasp the puck from one bin and place it into another bin",
+    "box-close-v3": "Grasp the cover and close the box with it",
+    "button-press-topdown-v3": "Press a button from the top",
+    "button-press-topdown-wall-v3": "Bypass a wall and press a button from the top",
+    "button-press-v3": "Press a button",
+    "button-press-wall-v3": "Bypass a wall and press a button",
+    "coffee-button-v3": "Push a button on the coffee machine",
+    "coffee-pull-v3": "Pull a mug from a coffee machine",
+    "coffee-push-v3": "Push a mug under a coffee machine",
+    "dial-turn-v3": "Rotate a dial 180 degrees",
+    "disassemble-v3": "Pick a nut out of a peg",
+    "door-close-v3": "Close a door with a revolving joint",
+    "door-lock-v3": "Lock the door by rotating the lock clockwise",
+    "door-open-v3": "Open a door with a revolving joint",
+    "door-unlock-v3": "Unlock the door by rotating the lock counter-clockwise",
+    "hand-insert-v3": "Insert the gripper into a hole",
+    "drawer-close-v3": "Push and close a drawer",
+    "drawer-open-v3": "Open a drawer",
+    "faucet-open-v3": "Rotate the faucet counter-clockwise",
+    "faucet-close-v3": "Rotate the faucet clockwise",
+    "hammer-v3": "Hammer a screw on the wall",
+    "handle-press-side-v3": "Press a handle down sideways",
+    "handle-press-v3": "Press a handle down",
+    "handle-pull-side-v3": "Pull a handle up sideways",
+    "handle-pull-v3": "Pull a handle up",
+    "lever-pull-v3": "Pull a lever down 90 degrees",
+    "peg-insert-side-v3": "Insert a peg sideways",
+    "pick-place-wall-v3": "Pick a puck, bypass a wall and place the puck",
+    "pick-out-of-hole-v3": "Pick up a puck from a hole",
+    "reach-v3": "Reach a goal position",
+    "push-back-v3": "Push the puck to a goal",
+    "push-v3": "Push the puck to a goal",
+    "pick-place-v3": "Pick and place a puck to a goal",
+    "plate-slide-v3": "Slide a plate into a cabinet",
+    "plate-slide-side-v3": "Slide a plate into a cabinet sideways",
+    "plate-slide-back-v3": "Get a plate from the cabinet",
+    "plate-slide-back-side-v3": "Get a plate from the cabinet sideways",
+    "peg-unplug-side-v3": "Unplug a peg sideways",
+    "soccer-v3": "Kick a soccer into the goal",
+    "stick-push-v3": "Grasp a stick and push a box using the stick",
+    "stick-pull-v3": "Grasp a stick and pull a box with the stick",
+    "push-wall-v3": "Bypass a wall and push a puck to a goal",
+    "reach-wall-v3": "Bypass a wall and reach a goal",
+    "shelf-place-v3": "Pick and place a puck onto a shelf",
+    "sweep-into-v3": "Sweep a puck into a hole",
+    "sweep-v3": "Sweep a puck off the table",
+    "window-open-v3": "Push and open a window",
+    "window-close-v3": "Push and close a window",
+}
+#: The VLA's image size: RLinf renders the same camera (Metaworld's camera 2 moved to
+#: ``corner4``'s pose, i.e. the agentview) at Metaworld's 480 px and turns it 180 degrees.
+VLA_IMAGE = 480
 #: Metaworld's ML45 split (``env_dict.ML45_V3``): 45 train tasks, 5 held-out test tasks.
 ML45_TEST = [
     "bin-picking-v3",
@@ -382,6 +442,7 @@ class MetaworldEnvFacade(
             {
                 "env.state": self.state,
                 "env.raw_obs": self.raw_obs,
+                "env.vla_obs": self.vla_obs,
                 "env.move_delta": self.move_delta,
                 "env.set_gripper": self.set_gripper,
                 "env.ground_truth_poses": self.ground_truth_poses,
@@ -395,7 +456,9 @@ class MetaworldEnvFacade(
                 **self._mm_rpc(),
             }
         )
-        self._readonly_methods.update({"env.back_project", "env.segment"})
+        self._readonly_methods.update(
+            {"env.back_project", "env.segment", "env.vla_obs"}
+        )
         # The primitives are packages/embodied/src/primitives/manifests/metaworld.json (with
         # pi); code.api, the programs' whitelist and the startup self-check come from it.
         self._manifest_code_run(
@@ -1089,6 +1152,16 @@ class MetaworldEnvFacade(
         return {
             "obs": np.asarray(self._obs, dtype=np.float64),
             "info": dict(self._info),
+        }
+
+    def vla_obs(self) -> dict:
+        """What RLinf's Pi0 / Pi0.5 MetaWorld policy is given (its ``MetaworldEnv._wrap_obs``
+        and standalone ``metaworld_eval.py``): the agentview at ``VLA_IMAGE`` px, the first four
+        observation values (hand xyz and the gripper opening) and the task's training prompt."""
+        return {
+            "image": self._render("agentview", VLA_IMAGE, VLA_IMAGE),
+            "state": np.asarray(self._obs[:4], dtype=np.float32),
+            "instruction": VLA_INSTRUCTIONS[self._meta["task"]],
         }
 
     def ground_truth_poses(self, names=None) -> dict:
