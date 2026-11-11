@@ -50,6 +50,15 @@ const Run = defineDoc<{ signature: string; task: TaskId<number> | null; attempt:
 	initial: () => ({ signature: "", task: null, attempt: 0 }),
 });
 
+// Set once this scheduler is stopping: on INT, TERM or HUP, or when a worker was killed by a signal.
+let stopping = false;
+let opened: { close(context: typeof BACKGROUND_CONTEXT): Promise<void> } | undefined;
+const stop = () => {
+	stopping = true;
+	// Close preserves unfinished checkpoints; abortTask would make them terminal instead.
+	void opened?.close(context);
+};
+
 const Episode = defineTask<{ index: number; worker: number }, { phase: "execute" }, number>({
 	name: "embodied.eval.episode",
 	version: 1,
@@ -58,7 +67,7 @@ const Episode = defineTask<{ index: number; worker: number }, { phase: "execute"
 		execute: async (task, runtime, taskContext) => {
 			// The shell guards against surviving worker groups before opening this database. A replay
 			// calls eval.sh again: it validates and skips valid results, or starts a fresh episode.
-			const code = await new Promise<number>((resolve, reject) => {
+			const code = await new Promise<number | null>((resolve, reject) => {
 				const child = spawn(
 					"bash",
 					[
@@ -74,8 +83,17 @@ const Episode = defineTask<{ index: number; worker: number }, { phase: "execute"
 					},
 				);
 				child.once("error", reject);
-				child.once("close", (exitCode) => resolve(exitCode ?? 1));
+				child.once("close", (exitCode) => resolve(exitCode));
 			});
+			if (code === null) {
+				// The worker was killed by a signal, so the episode did not finish and has no exit status to record.
+				// A stop signals the scheduler's whole process group at once, and the worker's death can be handled
+				// here before the scheduler's own signal handler has run. Recording it as a completed episode (exit
+				// status 1) would end the lane and the run, and the next invocation would start a fresh run instead
+				// of resuming this one. Stop the scheduler and leave the task unfinished, whoever sent the signal.
+				stop();
+				throw new Error("the episode's worker was killed by a signal");
+			}
 			await runtime.commit(
 				() => ({ status: "terminal", outcome: { status: "completed", result: code } }),
 				taskContext,
@@ -167,12 +185,8 @@ const harness = await Harness.open(
 	{ models: createModels(), registry },
 	context,
 );
-let stopping = false;
-const stop = () => {
-	stopping = true;
-	// Close preserves unfinished checkpoints; abortTask would make them terminal instead.
-	void harness.close(context);
-};
+opened = harness;
+if (stopping) stop();
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, stop);
 try {
 	const root = await harness.root(context);

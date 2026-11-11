@@ -14,7 +14,7 @@
 # `<robot>/eval.sh` call, so a cell's directory, result.json, validity and rerun rules are exactly
 # eval.sh's: a cell already holding a valid result is skipped, an invalid one is rerun, and a result
 # of another configuration stops the run. Workers take units in order from a shared list (a unit is
-# claimed with an atomic mkdir), so the set of cells does not depend on N and an interrupted run is
+# claimed by creating its claim file exclusively), so the set of cells does not depend on N and an interrupted run is
 # finished by running the same command again. Each worker runs in its own process group; INT, TERM
 # and HUP (an ssh drop) stop every group and wait for it, and a rerun refuses to start while a group
 # of an earlier run (.parallel/w*.pid) is still alive, since it would race it for the same cells.
@@ -237,6 +237,13 @@ if [ -n "${LOCK:-}" ]; then
 	esac
 fi
 
+# Claim job <i> for the calling worker: of all the workers that ask, exactly one succeeds. The shell creates the
+# claim file itself with O_CREAT|O_EXCL (noclobber), in a subshell so the worker's other redirections still
+# overwrite. Not `mkdir "$state/claims/$i"`: its exit status is only as atomic as the mkdir on PATH, and uutils
+# coreutils (Ubuntu's default from 25.10 on) checked that the directory was missing and then counted a mkdir(2)
+# that failed on an existing directory as success, so two workers racing for a job both took it and its cell ran twice.
+claim() { (set -o noclobber && : >"$state/claims/$1") 2>/dev/null; }
+
 worker() { # <k> [one-based job index, for Durable]
 	local k=$1 gpu="" line v key dirs envs args rc log=$state/w$1.log
 	local selected=${2:-0}
@@ -260,7 +267,7 @@ worker() { # <k> [one-based job index, for Durable]
 		i=$((i + 1))
 		[ "$selected" -eq 0 ] || [ "$selected" -eq "$i" ] || continue
 		[ -e "$state/abort" ] && return
-		if [ "$selected" -eq 0 ]; then mkdir "$state/claims/$i" 2>/dev/null || continue; fi
+		if [ "$selected" -eq 0 ]; then claim "$i" || continue; fi
 		local vout=$out mine=()
 		[ -n "${vnames[v]}" ] && vout=$out/${vnames[v]}
 		read -ra mine <<<"${vargs[v]}"
