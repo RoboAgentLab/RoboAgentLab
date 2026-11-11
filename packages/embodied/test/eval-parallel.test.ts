@@ -69,15 +69,26 @@ function sandbox() {
 	return { dir, env, tool, run, calls };
 }
 
-/** Every cell directory under `out` with its result status, relative to `out`. */
+/**
+ * Every cell directory under `out` with its result status, relative to `out`. A result.json that does not parse
+ * is "missing", as in the runner's summary: an interrupt can stop eval.sh between creating the file and writing
+ * it, and the runner counts such a cell as invalid and reruns it.
+ */
 function cells(out: string) {
 	const found: Record<string, string> = {};
+	const status = (result: string) => {
+		try {
+			return JSON.parse(readFileSync(result, "utf8")).status as string;
+		} catch {
+			return "missing";
+		}
+	};
 	const walk = (d: string, rel: string) => {
 		for (const e of readdirSync(d, { withFileTypes: true })) {
 			if (!e.isDirectory() || e.name === ".parallel") continue;
 			const path = join(d, e.name);
 			const result = join(path, "result.json");
-			if (existsSync(result)) found[`${rel}${e.name}`] = JSON.parse(readFileSync(result, "utf8")).status;
+			if (existsSync(result)) found[`${rel}${e.name}`] = status(result);
 			else walk(path, `${rel}${e.name}/`);
 		}
 	};
@@ -142,6 +153,28 @@ test("N=1 and N=4 run the same cells, each once, with the same summary", () => {
 	const n4 = s.calls().filter(([d]) => d.includes("/n4/"));
 	assert.equal(n4.length, 16);
 	assert.equal(new Set(n4.map(([d]) => d)).size, 16);
+});
+
+test("a job's claim does not depend on mkdir(1) refusing a directory that already exists", () => {
+	const s = sandbox();
+	// uutils coreutils' mkdir (Ubuntu's default from 25.10 on) checked for the directory and then created it, and
+	// exited 0 when another process had created it in between. This stand-in loses that race every time.
+	s.tool("mkdir", `for last; do :; done\n[ -d "$last" ] && exit 0\nexec /bin/mkdir "$@"`);
+	const out = join(s.dir, "out");
+	// Every episode fails without a result, so no cell is ever valid and each worker that takes a job runs it.
+	const r = s.run(["-j", "4", "maniskill", out, "PickCube-v1,StackCube-v1", "0-3", "--model", "m/x"], {
+		FAKE_FAIL: "0,1,2,3",
+	});
+	assert.equal(r.status, 1, r.stderr + r.stdout);
+	assert.match(r.stdout, /invalid 8 \(env_error 8,/);
+	assert.deepEqual(
+		s
+			.calls()
+			.map(([d]) => d.split("/").pop())
+			.sort(),
+		["PickCube-v1", "StackCube-v1"].flatMap((t) => [0, 1, 2, 3].map((i) => `${t}_s${i}`)),
+		"every job was taken by exactly one worker",
+	);
 });
 
 test("variants run the same seeds into their own dirs; success, Pass@k and --min-success per variant", () => {
@@ -266,6 +299,9 @@ test("a rerun fills only the invalid cells; infrastructure failures are counted 
 	const first = s.run(args, { FAKE_FAIL: "1,4" });
 	assert.equal(first.status, 1);
 	assert.match(first.stdout, /success 2\/4 \(50\.0%\).*invalid 2 \(env_error 2,/);
+	// A result cut off by an interrupt (the file created, nothing written yet) is invalid too.
+	writeFileSync(join(out, "PickCube-v1_s2/result.json"), "");
+	assert.equal(cells(out)["PickCube-v1_s2"], "missing");
 	const before = s.calls().length;
 	const second = s.run(args);
 	assert.equal(second.status, 0, second.stdout);
@@ -275,14 +311,14 @@ test("a rerun fills only the invalid cells; infrastructure failures are counted 
 			.slice(before)
 			.map(([d]) => d.split("/").pop())
 			.sort(),
-		["PickCube-v1_s1", "PickCube-v1_s4"],
+		["PickCube-v1_s1", "PickCube-v1_s2", "PickCube-v1_s4"],
 	);
 	assert.match(second.stdout, /success 3\/6 \(50\.0%\).*invalid 0/);
 	// A result of another configuration stops the run before any episode.
 	const third = s.run(["maniskill", out, "PickCube-v1", "0-5", "--model", "m/other"]);
 	assert.notEqual(third.status, 0);
 	assert.match(third.stderr, /use another out dir/);
-	assert.equal(s.calls().length, before + 2);
+	assert.equal(s.calls().length, before + 3);
 });
 
 test("an interrupted run stops its episodes, and the rerun only fills the cells without a valid result", async () => {
@@ -693,6 +729,62 @@ test("a killed Durable scheduler is drained by its shell before recovery", async
 		assert.deepEqual(groups(out), []);
 		const retry = s.run(args);
 		assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+	} finally {
+		child.kill("SIGTERM");
+		await exited;
+	}
+});
+
+test("Durable stops and keeps the episode unfinished when its worker is killed by a signal", async () => {
+	const s = sandbox();
+	const out = join(s.dir, "out");
+	const hang = join(s.dir, "hang");
+	writeFileSync(hang, "");
+	const args = ["--durable", "-j", "2", "maniskill", out, "PickCube-v1", "0-5", "--model", "m/x"];
+	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
+	const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+	const pidFile = join(out, "PickCube-v1_s2/pid");
+	try {
+		for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+		const hung = Number(readFileSync(pidFile, "utf8"));
+		const statusFile = join(out, ".parallel/durable-status.json");
+		const task = JSON.parse(readFileSync(statusFile, "utf8")).task;
+		// A stop signals the scheduler's whole process group at once, and the scheduler may handle its worker's
+		// death before its own signal. Here only the worker (the parent of eval.sh, itself the parent of pi) is
+		// killed, so the scheduler sees that death first every time.
+		const parent = (pid: number) =>
+			Number(spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).stdout);
+		const worker = parent(parent(hung));
+		assert.equal(parent(worker), groups(out)[0], "the worker is the scheduler's child");
+		process.kill(worker, "SIGTERM");
+		// The episode did not finish: the run is interrupted, not completed with a failed worker.
+		assert.equal(await exited, 130);
+		assert.ok(await untilGone(hung), "the rest of the killed worker's episode was stopped");
+		const done = cells(out);
+		assert.equal(done["PickCube-v1_s2"], undefined);
+		const before = s.calls().length;
+		const changed = s.run(args.map((a) => (a === "m/x" ? "m/other" : a)));
+		assert.notEqual(changed.status, 0);
+		assert.match(changed.stderr, /unfinished durable run has different arguments/);
+		assert.equal(s.calls().length, before);
+		const retry = s.run(args);
+		assert.equal(retry.status, 0, retry.stdout + retry.stderr);
+		assert.equal(
+			JSON.parse(readFileSync(statusFile, "utf8")).task,
+			task,
+			"resume preserves the original task identity",
+		);
+		const expected = [0, 1, 2, 3, 4, 5]
+			.map((i) => `PickCube-v1_s${i}`)
+			.filter((c) => done[c] !== "success" && done[c] !== "failure");
+		assert.deepEqual(
+			s
+				.calls()
+				.slice(before)
+				.map(([d]) => d.split("/").pop())
+				.sort(),
+			expected.sort(),
+		);
 	} finally {
 		child.kill("SIGTERM");
 		await exited;
