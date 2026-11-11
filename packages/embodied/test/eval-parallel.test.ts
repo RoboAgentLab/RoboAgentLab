@@ -69,15 +69,26 @@ function sandbox() {
 	return { dir, env, tool, run, calls };
 }
 
-/** Every cell directory under `out` with its result status, relative to `out`. */
+/**
+ * Every cell directory under `out` with its result status, relative to `out`. A result.json that does not parse
+ * is "missing", as in the runner's summary: an interrupt can stop eval.sh between creating the file and writing
+ * it, and the runner counts such a cell as invalid and reruns it.
+ */
 function cells(out: string) {
 	const found: Record<string, string> = {};
+	const status = (result: string) => {
+		try {
+			return JSON.parse(readFileSync(result, "utf8")).status as string;
+		} catch {
+			return "missing";
+		}
+	};
 	const walk = (d: string, rel: string) => {
 		for (const e of readdirSync(d, { withFileTypes: true })) {
 			if (!e.isDirectory() || e.name === ".parallel") continue;
 			const path = join(d, e.name);
 			const result = join(path, "result.json");
-			if (existsSync(result)) found[`${rel}${e.name}`] = JSON.parse(readFileSync(result, "utf8")).status;
+			if (existsSync(result)) found[`${rel}${e.name}`] = status(result);
 			else walk(path, `${rel}${e.name}/`);
 		}
 	};
@@ -288,6 +299,9 @@ test("a rerun fills only the invalid cells; infrastructure failures are counted 
 	const first = s.run(args, { FAKE_FAIL: "1,4" });
 	assert.equal(first.status, 1);
 	assert.match(first.stdout, /success 2\/4 \(50\.0%\).*invalid 2 \(env_error 2,/);
+	// A result cut off by an interrupt (the file created, nothing written yet) is invalid too.
+	writeFileSync(join(out, "PickCube-v1_s2/result.json"), "");
+	assert.equal(cells(out)["PickCube-v1_s2"], "missing");
 	const before = s.calls().length;
 	const second = s.run(args);
 	assert.equal(second.status, 0, second.stdout);
@@ -297,14 +311,14 @@ test("a rerun fills only the invalid cells; infrastructure failures are counted 
 			.slice(before)
 			.map(([d]) => d.split("/").pop())
 			.sort(),
-		["PickCube-v1_s1", "PickCube-v1_s4"],
+		["PickCube-v1_s1", "PickCube-v1_s2", "PickCube-v1_s4"],
 	);
 	assert.match(second.stdout, /success 3\/6 \(50\.0%\).*invalid 0/);
 	// A result of another configuration stops the run before any episode.
 	const third = s.run(["maniskill", out, "PickCube-v1", "0-5", "--model", "m/other"]);
 	assert.notEqual(third.status, 0);
 	assert.match(third.stderr, /use another out dir/);
-	assert.equal(s.calls().length, before + 2);
+	assert.equal(s.calls().length, before + 3);
 });
 
 test("an interrupted run stops its episodes, and the rerun only fills the cells without a valid result", async () => {
