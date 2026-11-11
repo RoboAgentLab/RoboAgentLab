@@ -1303,6 +1303,9 @@ def main():
                 "cameras": sorted(sim.CAMERAS),
                 "image_size": args.image_size,
                 "control": args.control,
+                # Extra Kit arguments change what the renderer does (a skipped driver check):
+                # they belong to the run's record.
+                **({"kit_args": sim.kit_args()} if sim.kit_args() else {}),
                 # The challenge's episode limit (1.5 x the average human demonstration), when
                 # the dataset's task statistics are there: the VLA alone's default budget.
                 **(

@@ -152,6 +152,8 @@ type Meta = {
 	image_size: number;
 	/** The env server's control mode: primitives (the planner's tools) or challenge (a published policy's robot). */
 	control?: string;
+	/** Extra Kit arguments the env server started Isaac Sim with (PI_EMBODIED_KIT_ARGS); absent when none. */
+	kit_args?: string[];
 	/** The challenge's episode limit for this task (1.5 x the average human demonstration), when the dataset has it. */
 	challenge_max_steps?: number;
 	grasping_mode: string;
@@ -355,6 +357,8 @@ export default function behavior(pi: ExtensionAPI) {
 			truncated: obs?.truncated ?? false,
 			env_steps: obs?.env_steps ?? 0,
 			...(meta?.control && meta.control !== "primitives" ? { control: meta.control } : {}),
+			// Extra Kit arguments of the env server (PI_EMBODIED_KIT_ARGS, e.g. a skipped RTX driver check): the renderer's setup.
+			...(meta?.kit_args?.length ? { kit_args: meta.kit_args } : {}),
 			...(vlaUsed ? { vla: { [VLA_ALONE.name]: vlaUsed } } : {}),
 			...va.result(),
 		}),

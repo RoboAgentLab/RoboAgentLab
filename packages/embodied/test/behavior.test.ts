@@ -524,7 +524,7 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 		nd("uint8", n ? [n, h, w, 3] : [h, w, 3], Buffer.alloc((n ?? 1) * h * w * 3));
 	const vec = (v: number[]) => nd("float32", [v.length], Buffer.from(Float32Array.from(v).buffer));
 	// A fake env server in `control` mode: env.vla_chunk steps one control step per action and succeeds at `solveAt`.
-	const sim = async (o: { control?: string; solveAt?: number; limit?: number }) => {
+	const sim = async (o: { control?: string; solveAt?: number; limit?: number; kitArgs?: string[] }) => {
 		let steps = 0;
 		const state = () => ({
 			base_pos: vec([0, 0, 0]),
@@ -560,6 +560,7 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 					grasping_mode: "assisted",
 					...(o.control ? { control: o.control } : {}),
 					...(o.limit ? { challenge_max_steps: o.limit } : {}),
+					...(o.kitArgs ? { kit_args: o.kitArgs } : {}),
 				};
 			if (c.method === "env.reset") return [{ ...frames(), ...state() }, {}];
 			if (c.method === "env.vla_obs")
@@ -626,6 +627,8 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 	assert.equal(solved.result.turns, 0);
 	assert.equal(solved.result.success, true);
 	assert.equal(solved.result.control, "challenge");
+	// No extra Kit arguments, no entry; the env server's are recorded (a skipped RTX driver check changes the renderer).
+	assert.equal("kit_args" in solved.result, false);
 	assert.deepEqual(solved.result.vla, { pi0: "pi05-vla" });
 	const { vla_seeds, ...rest } = solved.result.vla_alone;
 	assert.deepEqual(rest, {
@@ -648,7 +651,12 @@ test("--vla-alone pi0: the env server runs the challenge's robot, Pi0.5's chunks
 		Buffer.from([1, 3, 7, 9]),
 	);
 	// --vla-alone-steps cuts the last chunk; the partial credit is recorded.
-	const spent = await run({ control: "challenge", limit: 3000 }, { "vla-alone": "pi0", "vla-alone-steps": "40" });
+	const kitArgs = ["--/rtx/verifyDriverVersion/enabled=false"];
+	const spent = await run(
+		{ control: "challenge", limit: 3000, kitArgs },
+		{ "vla-alone": "pi0", "vla-alone-steps": "40" },
+	);
+	assert.deepEqual(spent.result.kit_args, kitArgs);
 	assert.deepEqual(spent.chunks, [32, 8]);
 	assert.deepEqual([spent.result.success, spent.result.vla_alone.q_score], [false, 0.25]);
 	// No human statistics in the dataset and no --vla-alone-steps: an env_error that says so.
