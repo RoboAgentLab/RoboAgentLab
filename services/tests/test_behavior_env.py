@@ -919,3 +919,42 @@ def test_extra_kit_arguments_reach_simulation_app(monkeypatch):
     assert rest == () and kw == {"experience": "kit"}
     # The caller's config is not edited.
     assert given == {"headless": True, "extra_args": ["--x"]}
+
+
+def test_a_substance_in_the_task_scope_has_no_pose_and_does_not_stop_the_reset():
+    """``make_microwave_popcorn``'s scope holds the popcorn, a particle system. OmniGibson 3.9's
+    scope entity for it has no ``is_system`` and forwards other attributes to the system, which has
+    particle poses but no pose of its own: the env server died at reset on
+    ``'MacroPhysicalParticleSystem' object has no attribute 'get_position_orientation'``. Such an
+    entity is left out of the poses and the heights, like an object that is not in the scene."""
+
+    class System:
+        exists = True
+
+        def get_particle_position_orientation(self, idx):
+            return np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0])
+
+    class ScopeEntity:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    bag = SimpleNamespace(
+        exists=True,
+        get_position_orientation=lambda: (
+            np.array([1.0, 2.0, 0.9]),
+            np.array([0.0, 0.0, 0.0, 1.0]),
+        ),
+    )
+    task = SimpleNamespace(
+        object_scope={
+            "popcorn__bag.n.01_1": ScopeEntity(bag),
+            "popcorn.n.02_1": ScopeEntity(System()),
+        }
+    )
+    with pytest.raises(AttributeError, match="get_position_orientation"):
+        task.object_scope["popcorn.n.02_1"].get_position_orientation()
+    assert list(sim.object_poses(task)) == ["popcorn__bag.n.01_1"]
+    assert sim.object_heights(task) == {"popcorn__bag.n.01_1": pytest.approx(0.9)}

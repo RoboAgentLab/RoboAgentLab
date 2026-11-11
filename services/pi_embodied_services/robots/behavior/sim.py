@@ -869,14 +869,20 @@ def q_score(solved: bool, now: list[list[bool]], initial: list[list[bool]]) -> f
 
 def object_poses(task: Any) -> dict[str, dict]:
     """World poses of the task's BDDL objects (``env.ground_truth_poses``): the instances of
-    ``task.object_scope`` that exist in the scene (systems and unsampled ones have no pose)."""
+    ``task.object_scope`` that exist in the scene (systems and unsampled ones have no pose).
+    A system is told by what it lacks, a pose: OmniGibson 3.9's scope entity for a substance
+    (``make_microwave_popcorn``'s popcorn, a ``MacroPhysicalParticleSystem``) carries no
+    ``is_system`` and forwards every other attribute to the system itself."""
     from pi_embodied_services.utils import ground_truth
 
     poses: dict[str, dict] = {}
     for inst, entity in task.object_scope.items():
         if getattr(entity, "is_system", False) or not getattr(entity, "exists", True):
             continue
-        pos, quat = entity.get_position_orientation()
+        pose_of = getattr(entity, "get_position_orientation", None)
+        if pose_of is None:
+            continue
+        pos, quat = pose_of()
         x, y, z, w = to_np(quat).reshape(4)
         poses[str(inst)] = ground_truth.pose(to_np(pos), [w, x, y, z])
     return poses
