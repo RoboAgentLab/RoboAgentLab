@@ -721,7 +721,7 @@ test("a killed Durable scheduler is drained by its shell before recovery", async
 	}
 });
 
-test("Durable keeps an episode unfinished when its worker's death reaches the scheduler before the stop signal", async () => {
+test("Durable stops and keeps the episode unfinished when its worker is killed by a signal", async () => {
 	const s = sandbox();
 	const out = join(s.dir, "out");
 	const hang = join(s.dir, "hang");
@@ -730,22 +730,24 @@ test("Durable keeps an episode unfinished when its worker's death reaches the sc
 	const child = spawn("bash", [RUNNER, ...args], { env: { ...s.env, FAKE_HANG: hang }, stdio: "ignore" });
 	const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
 	const pidFile = join(out, "PickCube-v1_s2/pid");
-	let scheduler: number | undefined;
 	try {
 		for (let i = 0; i < 200 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
 		const hung = Number(readFileSync(pidFile, "utf8"));
 		const statusFile = join(out, ".parallel/durable-status.json");
 		const task = JSON.parse(readFileSync(statusFile, "utf8")).task;
-		// The stop signal goes to the scheduler's whole process group at once. Freeze the scheduler so that, when it
-		// continues, the stop signal and its worker's death are both waiting for it: the order the two are handled
-		// in is then the kernel's and the event loop's, not the order they were sent in.
-		[scheduler] = groups(out);
-		process.kill(scheduler, "SIGSTOP");
-		child.kill("SIGTERM");
-		assert.ok(await untilGone(hung), "the hung episode was stopped");
-		process.kill(scheduler, "SIGCONT");
+		// A stop signals the scheduler's whole process group at once, and the scheduler may handle its worker's
+		// death before its own signal. Here only the worker (the parent of eval.sh, itself the parent of pi) is
+		// killed, so the scheduler sees that death first every time.
+		const parent = (pid: number) =>
+			Number(spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).stdout);
+		const worker = parent(parent(hung));
+		assert.equal(parent(worker), groups(out)[0], "the worker is the scheduler's child");
+		process.kill(worker, "SIGTERM");
+		// The episode did not finish: the run is interrupted, not completed with a failed worker.
 		assert.equal(await exited, 130);
+		assert.ok(await untilGone(hung), "the rest of the killed worker's episode was stopped");
 		const done = cells(out);
+		assert.equal(done["PickCube-v1_s2"], undefined);
 		const before = s.calls().length;
 		const changed = s.run(args.map((a) => (a === "m/x" ? "m/other" : a)));
 		assert.notEqual(changed.status, 0);
@@ -770,11 +772,6 @@ test("Durable keeps an episode unfinished when its worker's death reaches the sc
 			expected.sort(),
 		);
 	} finally {
-		if (scheduler) {
-			try {
-				process.kill(scheduler, "SIGCONT");
-			} catch {}
-		}
 		child.kill("SIGTERM");
 		await exited;
 	}
