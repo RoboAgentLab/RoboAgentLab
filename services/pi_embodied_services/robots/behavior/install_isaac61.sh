@@ -27,6 +27,12 @@
 # 0 and a *-tro_state.json overlay per instance, which the env server loads). Then run the env server with
 # OMNIGIBSON_DATA_PATH=<data> (or --data-path).
 #
+# NVIDIA driver: Omniverse RTX refuses the Linux drivers 570.00 to 570.158 (it recommends 580.95.05). Kit
+# still starts there, but no renderer is made and the env server's first reset fails on "Observation space
+# does not match returned observations". Where the driver cannot be changed,
+# PI_EMBODIED_KIT_ARGS=--/rtx/verifyDriverVersion/enabled=false in the env server's environment skips the
+# check (the server's meta records it as kit_args); NVIDIA does not support rendering on those drivers.
+#
 # Index choices: pypi.nvidia.com for the NVIDIA wheels (NVIDIA_INDEX, e.g. https://pypi.nvidia.cn),
 # PIP_INDEX for the rest, TORCH_INDEX for torch (default download.pytorch.org/whl/cu128); B1K_GIT and
 # CUROBO_GIT name the two git repositories (a GitHub mirror where github.com is slow).

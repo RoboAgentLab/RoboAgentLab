@@ -27,6 +27,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import shlex
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -170,6 +171,38 @@ def set_render_gpu(environ: dict | None = None) -> None:
         env.pop("OMNIGIBSON_GPU_ID", None)
     else:
         env["OMNIGIBSON_GPU_ID"] = "0"
+
+
+#: Extra Kit command-line arguments for the env server's Isaac Sim (shell-split), e.g.
+#: ``--/rtx/verifyDriverVersion/enabled=false``: Omniverse RTX refuses the Linux drivers
+#: 570.00 to 570.158 ("unsupported or has known issues"; Kit still starts, no renderer is made,
+#: and the first reset fails on "Observation space does not match returned observations"), and
+#: this setting skips that check where the driver cannot be changed.
+KIT_ARGS_ENV = "PI_EMBODIED_KIT_ARGS"
+
+
+def kit_args(environ: dict | None = None) -> list[str]:
+    """The extra Kit arguments of :data:`KIT_ARGS_ENV` (none when unset)."""
+    env = os.environ if environ is None else environ
+    return shlex.split(env.get(KIT_ARGS_ENV, ""))
+
+
+def add_kit_args(args: list[str]) -> None:
+    """Start Kit with ``args`` too. OmniGibson builds ``SimulationApp``'s config itself and clears
+    ``sys.argv`` around it, so there is no way in but the class it calls: ``isaacsim.SimulationApp``
+    is wrapped to append them to the config's ``extra_args``. Call before the env is built."""
+    if not args:
+        return
+    import isaacsim
+
+    base = isaacsim.SimulationApp
+
+    def app(config: dict | None = None, *rest: Any, **kw: Any) -> Any:
+        config = dict(config or {})
+        config["extra_args"] = [*config.get("extra_args", []), *args]
+        return base(config, *rest, **kw)
+
+    isaacsim.SimulationApp = app
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +479,7 @@ def launch(
     (the challenge control mode) loads no primitives and no cuRobo: ``Handle.controller`` is None.
     """
     os.environ.setdefault("OMNIGIBSON_HEADLESS", "1")
+    add_kit_args(kit_args())
     import omnigibson as og
     from omnigibson.action_primitives import curobo as og_curobo
     from omnigibson.action_primitives.action_primitive_set_base import (

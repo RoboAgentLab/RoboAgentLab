@@ -884,3 +884,38 @@ def test_the_challenge_settings_remake_the_physics_views_before_the_observation_
         (cams[c].image_height, cams[c].image_width) == (480, 480) for c in wrists
     )
     assert not any(hasattr(cams[c], "horizontal_aperture") for c in wrists)
+
+
+def test_extra_kit_arguments_reach_simulation_app(monkeypatch):
+    """``PI_EMBODIED_KIT_ARGS`` (shell-split) is appended to the ``extra_args`` of the config
+    OmniGibson hands ``isaacsim.SimulationApp``: the way to skip Omniverse RTX's driver check on a
+    box whose driver cannot be changed. Unset, ``SimulationApp`` is left as it is."""
+    import sys
+    import types
+
+    started = []
+
+    def simulation_app(config=None, *rest, **kw):
+        started.append((config, rest, kw))
+        return "app"
+
+    isaacsim = types.ModuleType("isaacsim")
+    isaacsim.SimulationApp = simulation_app
+    monkeypatch.setitem(sys.modules, "isaacsim", isaacsim)
+
+    assert sim.kit_args({}) == []
+    sim.add_kit_args(sim.kit_args({}))
+    assert isaacsim.SimulationApp is simulation_app
+
+    args = sim.kit_args(
+        {sim.KIT_ARGS_ENV: "--/rtx/verifyDriverVersion/enabled=false '--/a/b=c d'"}
+    )
+    assert args == ["--/rtx/verifyDriverVersion/enabled=false", "--/a/b=c d"]
+    sim.add_kit_args(args)
+    given = {"headless": True, "extra_args": ["--x"]}
+    assert isaacsim.SimulationApp(given, experience="kit") == "app"
+    config, rest, kw = started[-1]
+    assert config == {"headless": True, "extra_args": ["--x", *args]}
+    assert rest == () and kw == {"experience": "kit"}
+    # The caller's config is not edited.
+    assert given == {"headless": True, "extra_args": ["--x"]}
