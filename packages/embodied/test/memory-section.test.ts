@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type MemoryOptions, memory } from "../src/capabilities/memory/index.ts";
+import { useDeployment } from "./helpers/deployment.ts";
+
+// A deployment of its own: a developer's config that names dirs.memory would move the library under test.
+useDeployment({});
 
 const reference = "maniskill_PickCube-v1_s0";
 const tag = "maniskill_PickCube-v1_s2";
@@ -38,12 +42,23 @@ function fixture(t: { after: (fn: () => void) => void }, options: Partial<Memory
 	return { root, flags, mem, start: () => hooks.get("session_start")?.({}, ctx) };
 }
 
-for (const layout of ["missing corpus", "empty corpus", "empty task_only", "unrelated reference"]) {
+// "tiers a merge left empty": mergeMemory creates every tier before it looks at the inbox, so an
+// exploration that published nothing leaves these directories and no file.
+const MERGED_EMPTY = ["global", "suite", "task_only", "_internal/inbox", "_internal/merged", "_internal/conflicts"];
+for (const layout of [
+	"missing corpus",
+	"empty corpus",
+	"empty task_only",
+	"unrelated reference",
+	"tiers a merge left empty",
+]) {
 	test(`default memory section skips reads with ${layout}`, async (t) => {
 		const f = fixture(t);
 		if (layout !== "missing corpus") mkdirSync(f.root);
 		if (layout === "empty task_only" || layout === "unrelated reference") mkdirSync(join(f.root, "task_only"));
 		if (layout === "unrelated reference") writeFileSync(join(f.root, "task_only", `${tag}.json`), "{}");
+		if (layout === "tiers a merge left empty")
+			for (const tier of MERGED_EMPTY) mkdirSync(join(f.root, tier), { recursive: true });
 		await f.start();
 		assert.equal(f.mem.configError(), undefined);
 		const text = f.mem.section() ?? "";
@@ -57,19 +72,16 @@ for (const layout of ["missing corpus", "empty corpus", "empty task_only", "unre
 
 for (const path of [
 	"MEMORY.md",
-	"global",
-	"suite",
+	"global/leaf.md",
+	"suite/leaf.md",
 	`task_only/${reference}.json`,
 	`task_only/${reference}_recipe.jsonl`,
 ]) {
-	test(`default memory section is unchanged when only ${path} exists`, async (t) => {
+	test(`default memory section is unchanged when the library holds only ${path}`, async (t) => {
 		const f = fixture(t);
 		const target = join(f.root, path);
-		if (path === "global" || path === "suite") mkdirSync(target, { recursive: true });
-		else {
-			mkdirSync(dirname(target), { recursive: true });
-			writeFileSync(target, "");
-		}
+		mkdirSync(dirname(target), { recursive: true });
+		writeFileSync(target, "");
 		await f.start();
 		assert.equal(f.mem.configError(), undefined);
 		assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
@@ -89,6 +101,17 @@ test("memory availability is captured at session start and refreshed for the nex
 	rmSync(f.root, { recursive: true });
 	await f.start();
 	assert.equal(f.mem.section(), absent);
+});
+
+test("a cell without a reference has no task pair to name: any task_only file is memory", async (t) => {
+	// The real robots' cells (`reference: ""`): the reference pair would be `task_only/.json`.
+	const f = fixture(t, { cell: () => ({ tag, reference: "" }) });
+	mkdirSync(join(f.root, "task_only"), { recursive: true });
+	await f.start();
+	assert.match(f.mem.section() ?? "", /No memory is available for this cell at session start/);
+	writeFileSync(join(f.root, "task_only", `${tag}.json`), "{}");
+	await f.start();
+	assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
 });
 
 test("custom templates, memory off and sessions without a cell keep their existing behavior", async (t) => {

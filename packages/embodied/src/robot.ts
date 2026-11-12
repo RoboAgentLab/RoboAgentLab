@@ -942,9 +942,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		const mod = mm?.on() ? mm : un?.mode() ? un : co?.mode() ? co : undefined;
 		const mode = mod?.mode();
 		// The prompt (the robot's and the mode's) describes only the tools left active by --tools/--exclude-tools and --units/--code.
-		// Every evaluation prompt reads memory once, in memory's section (./capabilities/memory): at the robot
-		// prompt's `{{memory}}`, else at its end (not when the robot's prompt has its own, memory.inPrompt),
-		// and after the mode's prompt when the mode replaces the robot's. Exploration's prompt has its own.
+		// Every evaluation prompt carries memory's section once (./capabilities/memory: the required reading,
+		// or its notice that the library holds nothing): at the robot prompt's `{{memory}}`, else at its end
+		// (not when the robot's prompt has its own, memory.inPrompt), and after the mode's prompt when the mode
+		// replaces the robot's. Exploration's prompt has its own.
 		const section = exploring() ? undefined : mem?.section();
 		const memoryBlock = section ? `[tool:read]\n${section}\n[/tool:read]` : "";
 		const robotPrompt = spec.prompt?.();

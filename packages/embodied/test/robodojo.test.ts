@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -620,13 +620,31 @@ test("eval.sh follows RoboDojo's SeedManager: an unstable layout is not scored a
 	assert.match(short.r.stdout, /success 3\/3 .*unstable 1 \(replaced\), invalid 0/);
 });
 
-test("the evaluation prompt carries memory's mandatory reading step once, at SYSTEM.md's {{memory}}", async (t) => {
+test("the evaluation prompt carries memory's section once, at SYSTEM.md's {{memory}}: the reading step, or the notice without a library", async (t) => {
 	const env = await fakeEnv();
 	t.after(env.close);
-	const s = await start({}, env);
+	// A library of the test's own: without one the robot reads the host's memory home.
+	const memoryDir = mkdtempSync(join(tmpdir(), "robodojo-memory-"));
+	t.after(() => rmSync(memoryDir, { recursive: true, force: true }));
+	writeFileSync(join(memoryDir, "MEMORY.md"), "# index\n");
+	const s = await start({ "memory-dir": memoryDir }, env);
 	const prompt = (await s.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
 	assert.match(prompt, /# Memory\nCell `\w+`/);
 	assert.match(prompt, /Before your first motion, read `[^`]+\/MEMORY\.md`/);
 	assert.equal(prompt.split("Reading memory is a required step before your first robot action").length, 2);
 	assert.doesNotMatch(prompt, /\{\{\w+\}\}/);
+	// No library (an empty memory home): the notice stands in the same place and asks for no read.
+	const home = mkdtempSync(join(tmpdir(), "robodojo-memory-home-"));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const hostHome = process.env.PI_EMBODIED_MEMORY;
+	process.env.PI_EMBODIED_MEMORY = home;
+	t.after(() => {
+		if (hostHome === undefined) delete process.env.PI_EMBODIED_MEMORY;
+		else process.env.PI_EMBODIED_MEMORY = hostHome;
+	});
+	const bare = await start({}, env);
+	const empty = (await bare.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
+	assert.match(empty, /# Memory\nCell `\w+`\. No memory is available for this cell at session start\./);
+	assert.equal(empty.split("# Memory\n").length, 2);
+	assert.doesNotMatch(empty, /MEMORY\.md|Reading memory is a required step|\{\{\w+\}\}/);
 });
