@@ -336,7 +336,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
 		// A run that asks for memory (a published corpus, --memory-profile, or dirs.memory) refuses to start
-		// without one: the prompt would send the agent to files that do not exist.
+		// without one: it would otherwise go on as a run without memory (the notice of `section()`, or a
+		// robot's own section naming files that do not exist) although memory was asked for.
 		else if (
 			(explicit || opts.published !== false || cfgDir(pi, "memory")) &&
 			!existsSync(join(root, "MEMORY.md")) &&
@@ -471,8 +472,9 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		/**
 		 * The memory section of an evaluation prompt: the robot's template or ./section.md, closed by
 		 * ./required.md. When the default section's library held nothing at session start (no index, no file
-		 * in global/ or suite/, no task reference), a notice replaces it: the planner would spend its first
-		 * calls on reads that can only fail. Undefined without a cell (nothing to read) or with memory off.
+		 * in global/ or suite/, no task reference; for a cell without a reference, no file under task_only/),
+		 * a notice replaces it: the planner would spend its first calls on reads that can only fail.
+		 * Undefined without a cell (nothing to read) or with memory off.
 		 */
 		section(): string | undefined {
 			if (!cell || profile === "off") return undefined;

@@ -154,9 +154,16 @@ function mdFiles(dir: string): string[] {
 	}
 }
 
+/**
+ * Whether `dir` holds a regular file at any depth. A subdirectory that cannot be listed is skipped (one
+ * unreadable directory does not empty the whole tier), and links are not followed: the file tools do not
+ * search through a linked directory and the guard refuses reads through one.
+ */
 export function hasFiles(dir: string): boolean {
 	try {
-		return readdirSync(dir, { recursive: true, withFileTypes: true }).some((e) => e.isFile());
+		return readdirSync(dir, { withFileTypes: true }).some(
+			(e) => e.isFile() || (e.isDirectory() && hasFiles(join(dir, e.name))),
+		);
 	} catch {
 		return false;
 	}

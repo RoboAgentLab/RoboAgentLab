@@ -31,6 +31,11 @@ const DIRS: Record<string, string> = {
 	"serve-log-dir": "logs",
 };
 
+// The environment form of a deployment's dirs (PI_EMBODIED_DIRS_<KIND>) wins over every deployment. Tests
+// name their directories through the deployment, so the ones a developer's shell exports are dropped here;
+// a test that needs one sets it itself.
+for (const key of Object.keys(process.env)) if (key.startsWith("PI_EMBODIED_DIRS_")) delete process.env[key];
+
 let file: string | undefined;
 
 /** Make `d` the deployment in effect (until the next call); returns the config file. */

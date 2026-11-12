@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -64,11 +64,38 @@ for (const layout of [
 		const text = f.mem.section() ?? "";
 		assert.match(text, /No memory is available for this cell at session start/);
 		assert.match(text, /Skip memory reads and searches/);
-		assert.doesNotMatch(text, /MEMORY\.md|global\/|suite\/|task_only\/|Reading memory is a required step/);
+		// The notice names the output dir, whose temp path may itself contain "suite/" and the like.
+		const named = text.replaceAll(f.mem.render("{{output_dir}}"), "<output>");
+		assert.doesNotMatch(named, /MEMORY\.md|global\/|suite\/|task_only\/|Reading memory is a required step/);
 		assert.match(text, /In your `finish` summary, say that none matched/);
 		assert.deepEqual(f.mem.tools, ["read", "ls", "grep", "find", "write"]);
 	});
 }
+
+test("a tier is judged by the files that can be read in it", { skip: process.getuid?.() === 0 }, async (t) => {
+	// One subdirectory that cannot be listed does not empty the tier: the leaf beside it is still memory.
+	const f = fixture(t);
+	const locked = join(f.root, "global", "locked");
+	mkdirSync(locked, { recursive: true });
+	writeFileSync(join(f.root, "global", "leaf.md"), "");
+	chmodSync(locked, 0o000);
+	try {
+		await f.start();
+		assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
+	} finally {
+		// Before the fixture's cleanup, which cannot remove a directory it cannot list.
+		chmodSync(locked, 0o700);
+	}
+	// A linked directory is not memory: the file tools do not search through it and the guard refuses the read.
+	const g = fixture(t);
+	const outside = mkdtempSync(join(tmpdir(), "memory-section-outside-"));
+	t.after(() => rmSync(outside, { recursive: true, force: true }));
+	writeFileSync(join(outside, "leaf.md"), "");
+	mkdirSync(join(g.root, "suite"), { recursive: true });
+	symlinkSync(outside, join(g.root, "suite", "linked"));
+	await g.start();
+	assert.match(g.mem.section() ?? "", /No memory is available for this cell at session start/);
+});
 
 for (const path of [
 	"MEMORY.md",
