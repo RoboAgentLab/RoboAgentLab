@@ -72,29 +72,74 @@ for (const layout of [
 	});
 }
 
-test("a tier is judged by the files that can be read in it", { skip: process.getuid?.() === 0 }, async (t) => {
-	// One subdirectory that cannot be listed does not empty the tier: the leaf beside it is still memory.
-	const f = fixture(t);
-	const locked = join(f.root, "global", "locked");
-	mkdirSync(locked, { recursive: true });
-	writeFileSync(join(f.root, "global", "leaf.md"), "");
-	chmodSync(locked, 0o000);
-	try {
-		await f.start();
-		assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
-	} finally {
-		// Before the fixture's cleanup, which cannot remove a directory it cannot list.
-		chmodSync(locked, 0o700);
-	}
-	// A linked directory is not memory: the file tools do not search through it and the guard refuses the read.
-	const g = fixture(t);
+test(
+	"one subdirectory that cannot be listed does not empty its tier",
+	{ skip: process.getuid?.() === 0 },
+	async (t) => {
+		// Root lists any directory, so the case cannot be built for it. The two names swap roles: whatever order
+		// the file system lists a directory in, the locked one comes before the leaf in one of the two libraries.
+		for (const locked of ["a", "b"]) {
+			const f = fixture(t);
+			const tier = join(f.root, "global");
+			mkdirSync(tier, { recursive: true });
+			for (const name of ["a", "b"])
+				if (name === locked) mkdirSync(join(tier, name), { mode: 0o000 });
+				else writeFileSync(join(tier, name), "");
+			try {
+				await f.start();
+				assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }), `locked ${locked}`);
+			} finally {
+				// Before the fixture's cleanup, which cannot remove a directory it cannot list.
+				chmodSync(join(tier, locked), 0o700);
+			}
+		}
+	},
+);
+
+test("a library behind a linked directory is not announced as empty, nor refused as missing", async (t) => {
 	const outside = mkdtempSync(join(tmpdir(), "memory-section-outside-"));
 	t.after(() => rmSync(outside, { recursive: true, force: true }));
-	writeFileSync(join(outside, "leaf.md"), "");
-	mkdirSync(join(g.root, "suite"), { recursive: true });
-	symlinkSync(outside, join(g.root, "suite", "linked"));
-	await g.start();
-	assert.match(g.mem.section() ?? "", /No memory is available for this cell at session start/);
+	mkdirSync(join(outside, "notes"));
+	mkdirSync(join(outside, "empty"));
+	writeFileSync(join(outside, "notes", "leaf.md"), "");
+	const layouts: [string, boolean, (root: string) => void][] = [
+		[
+			"a linked directory that holds a leaf, a level below the tier",
+			true,
+			(root) => {
+				mkdirSync(join(root, "suite", "shared"), { recursive: true });
+				symlinkSync(join(outside, "notes"), join(root, "suite", "shared", "linked"));
+			},
+		],
+		[
+			"links that hold no leaf: two back into the tier, one to an empty directory, one to nothing, one to a file",
+			false,
+			(root) => {
+				mkdirSync(join(root, "global", "a"), { recursive: true });
+				symlinkSync(join(root, "global"), join(root, "global", "a", "up"));
+				symlinkSync(join(root, "global", "a"), join(root, "global", "again"));
+				symlinkSync(join(outside, "empty"), join(root, "global", "empty"));
+				symlinkSync(join(outside, "gone.md"), join(root, "global", "gone.md"));
+				symlinkSync(join(outside, "notes", "leaf.md"), join(root, "global", "leaf.md"));
+			},
+		],
+	];
+	for (const [layout, holds, build] of layouts) {
+		// The section of a run that did not ask for memory.
+		const f = fixture(t);
+		build(f.root);
+		await f.start();
+		assert.equal(f.mem.configError(), undefined, layout);
+		if (holds) assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }), layout);
+		else assert.match(f.mem.section() ?? "", /No memory is available for this cell at session start/, layout);
+		// The start check of a run that asked for local memory.
+		const asked = fixture(t);
+		asked.flags["memory-profile"] = "local";
+		build(asked.root);
+		await asked.start();
+		if (holds) assert.equal(asked.mem.configError(), undefined, layout);
+		else assert.match(asked.mem.configError() ?? "", /local memory corpus not found/, layout);
+	}
 });
 
 for (const path of [

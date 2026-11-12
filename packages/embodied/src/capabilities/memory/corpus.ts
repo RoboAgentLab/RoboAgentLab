@@ -15,6 +15,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -155,18 +156,26 @@ function mdFiles(dir: string): string[] {
 }
 
 /**
- * Whether `dir` holds a regular file at any depth. A subdirectory that cannot be listed is skipped (one
- * unreadable directory does not empty the whole tier), and links are not followed: the file tools do not
- * search through a linked directory and the guard refuses reads through one.
+ * Whether `dir` holds a regular file at any depth. Linked directories are followed, each real directory is
+ * visited once (which ends link loops), and a subdirectory that cannot be listed is skipped rather than
+ * emptying the tier. A link to a file is not counted: a library made of such links alone is still missing.
  */
 export function hasFiles(dir: string): boolean {
-	try {
-		return readdirSync(dir, { withFileTypes: true }).some(
-			(e) => e.isFile() || (e.isDirectory() && hasFiles(join(dir, e.name))),
-		);
-	} catch {
-		return false;
-	}
+	const seen = new Set<string>();
+	// A link is walked as a directory; one that leads to a file, or nowhere, fails the listing and holds nothing.
+	const walk = (path: string): boolean => {
+		try {
+			const real = realpathSync(path);
+			if (seen.has(real)) return false;
+			seen.add(real);
+			return readdirSync(real, { withFileTypes: true }).some(
+				(e) => e.isFile() || ((e.isDirectory() || e.isSymbolicLink()) && walk(join(real, e.name))),
+			);
+		} catch {
+			return false;
+		}
+	};
+	return walk(dir);
 }
 
 /** Directory lock: merges from parallel cells serialize; a lock older than 5 min is stale. */
