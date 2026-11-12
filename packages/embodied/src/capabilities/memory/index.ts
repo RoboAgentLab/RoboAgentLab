@@ -254,6 +254,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	let profile: "hf" | "local" | "off" = "hf";
 	let cell: { tag: string; reference: string } | undefined;
 	let guard: Guard | undefined;
+	let emptySection = false;
 	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
 	let loaded: Record<string, string> = {};
 
@@ -276,8 +277,18 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		guard = undefined;
 		loaded = {};
 		problem = undefined;
+		emptySection = false;
 		try {
 			await establish(ctx);
+			// Snapshot only the default section's paths; a robot's custom template may name other files.
+			if (cell && profile !== "off" && !opts.prompt)
+				emptySection = ![
+					"MEMORY.md",
+					"global",
+					"suite",
+					`task_only/${cell.reference}.json`,
+					`task_only/${cell.reference}_recipe.jsonl`,
+				].some((path) => existsSync(join(root, path)));
 		} catch (err) {
 			guard = undefined;
 			problem = err instanceof Error ? err.message : String(err);
@@ -451,9 +462,16 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		get profile() {
 			return profile;
 		},
-		/** The memory section of an evaluation prompt, rendered and closed by ./required.md; undefined without a cell (nothing to read) or with memory off. */
+		/** The evaluation memory section: skip absent default paths, else close with ./required.md; undefined without a cell or with memory off. */
 		section(): string | undefined {
 			if (!cell || profile === "off") return undefined;
+			if (emptySection)
+				return this.render(
+					"# Memory\nCell `{{recipe_tag}}`. No memory is available for this cell at session start. " +
+						"Skip memory reads and searches; proceed with the task. " +
+						"You write only to `{{output_dir}}/`, and you read nothing else on disk. " +
+						"In your `finish` summary, say that none matched.",
+				);
 			return this.render(`${(opts.prompt?.(profile) ?? SECTION).trim()}\n\n${REQUIRED}`, { task: "" });
 		},
 		/** Fill {{memory_dir}}, {{memory_inbox}}, {{memory_profile}}, {{output_dir}}, {{recipe_tag}}, {{reference_tag}} and `extra`. */
