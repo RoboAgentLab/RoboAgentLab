@@ -15,7 +15,6 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -156,26 +155,32 @@ function mdFiles(dir: string): string[] {
 }
 
 /**
- * Whether `dir` holds a regular file at any depth. Linked directories are followed, each real directory is
- * visited once (which ends link loops), and a subdirectory that cannot be listed is skipped rather than
- * emptying the tier. A link to a file is not counted: a library made of such links alone is still missing.
+ * Whether `dir` holds a regular file at any depth. Linked directories are followed, each directory is
+ * listed once (it is known by its device and inode, which ends link loops), and a subdirectory that
+ * cannot be listed is skipped rather than emptying the tier. A link to a file is not counted: a library
+ * made of such links alone is still missing.
  */
 export function hasFiles(dir: string): boolean {
 	const seen = new Set<string>();
-	// A link is walked as a directory; one that leads to a file, or nowhere, fails the listing and holds nothing.
-	const walk = (path: string): boolean => {
+	// The paths still to list, each as the walk came by it, so that the system resolves the links in it:
+	// fs.realpathSync folds a ".." in a link's target before it resolves the links in front of it. A list
+	// rather than recursion: however deep the directories go, no visit is cut short.
+	const todo = [dir];
+	for (let path = todo.pop(); path !== undefined; path = todo.pop()) {
 		try {
-			const real = realpathSync(path);
-			if (seen.has(real)) return false;
-			seen.add(real);
-			return readdirSync(real, { withFileTypes: true }).some(
-				(e) => e.isFile() || ((e.isDirectory() || e.isSymbolicLink()) && walk(join(real, e.name))),
-			);
+			const at = statSync(path, { bigint: true });
+			const id = `${at.dev}:${at.ino}`;
+			if (!at.isDirectory() || seen.has(id)) continue;
+			seen.add(id);
+			for (const e of readdirSync(path, { withFileTypes: true })) {
+				if (e.isFile()) return true;
+				if (e.isDirectory() || e.isSymbolicLink()) todo.push(join(path, e.name));
+			}
 		} catch {
-			return false;
+			// A directory that cannot be listed, or a link that leads nowhere: it holds nothing the walk can count.
 		}
-	};
-	return walk(dir);
+	}
+	return false;
 }
 
 /** Directory lock: merges from parallel cells serialize; a lock older than 5 min is stale. */
