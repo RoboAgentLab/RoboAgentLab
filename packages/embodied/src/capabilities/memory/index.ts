@@ -22,7 +22,7 @@ import { syncMemory } from "./sync.ts";
 const READABLE = ["global", "suite", "task_only", "results"];
 /** The default memory section (see MemoryOptions.prompt). */
 const SECTION = readFileSync(new URL("./section.md", import.meta.url), "utf8").trim();
-/** What closes every memory section, the robot's own too: reading memory is required and reported. */
+/** What closes a memory section that names files, the robot's own too: reading memory is required and reported. */
 const REQUIRED = readFileSync(new URL("./required.md", import.meta.url), "utf8").trim();
 const ACCESS: Record<string, Access> = {
 	read: "read",
@@ -61,7 +61,8 @@ export type MemoryOptions = {
 	 * The robot's memory section, as a template (`{{memory_dir}}` ...); default ./section.md: read the
 	 * corpus, then the cell's reference and recipe. ../../robot.ts puts it in every evaluation prompt: at
 	 * the robot prompt's `{{memory}}`, else at its end, and after the mode's prompt when a mode replaces
-	 * the robot's (--units=true, --code=true). ./required.md closes it either way.
+	 * the robot's (--units=true, --code=true). ./required.md closes it either way. A default section whose
+	 * library holds nothing at session start is replaced by a notice (`section()`).
 	 */
 	prompt?: (profile: "hf" | "local") => string;
 	/**
@@ -254,6 +255,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	let profile: "hf" | "local" | "off" = "hf";
 	let cell: { tag: string; reference: string } | undefined;
 	let guard: Guard | undefined;
+	let emptySection = false;
 	/** The memory files the agent read this episode: path under the corpus -> SHA-256 when read (../context-version.ts). */
 	let loaded: Record<string, string> = {};
 
@@ -276,8 +278,23 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		guard = undefined;
 		loaded = {};
 		problem = undefined;
+		emptySection = false;
 		try {
 			await establish(ctx);
+			// Snapshot what the default section points to; a robot's custom template may name other files.
+			// A tier counts only when it holds a file: a merge creates global/, suite/ and task_only/ even
+			// when it publishes nothing. A cell without a reference (the real robots) has no task pair to
+			// name, so any file under task_only/ counts for it.
+			if (cell && profile !== "off" && !opts.prompt) {
+				const ref = cell.reference;
+				const task = ref
+					? [`${ref}.json`, `${ref}_recipe.jsonl`].some((f) => existsSync(join(root, "task_only", f)))
+					: hasFiles(join(root, "task_only"));
+				emptySection =
+					!existsSync(join(root, "MEMORY.md")) &&
+					!["global", "suite"].some((s) => hasFiles(join(root, s))) &&
+					!task;
+			}
 		} catch (err) {
 			guard = undefined;
 			problem = err instanceof Error ? err.message : String(err);
@@ -319,7 +336,8 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (explore) return;
 		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
 		// A run that asks for memory (a published corpus, --memory-profile, or dirs.memory) refuses to start
-		// without one: the prompt would send the agent to files that do not exist.
+		// without one: it would otherwise go on as a run without memory (the notice of `section()`, or a
+		// robot's own section naming files that do not exist) although memory was asked for.
 		else if (
 			(explicit || opts.published !== false || cfgDir(pi, "memory")) &&
 			!existsSync(join(root, "MEMORY.md")) &&
@@ -451,9 +469,22 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		get profile() {
 			return profile;
 		},
-		/** The memory section of an evaluation prompt, rendered and closed by ./required.md; undefined without a cell (nothing to read) or with memory off. */
+		/**
+		 * The memory section of an evaluation prompt: the robot's template or ./section.md, closed by
+		 * ./required.md. When the default section's library held nothing at session start (no index, no file
+		 * in global/ or suite/, no task reference; for a cell without a reference, no file under task_only/),
+		 * a notice replaces it: the planner would spend its first calls on reads that can only fail.
+		 * Undefined without a cell (nothing to read) or with memory off.
+		 */
 		section(): string | undefined {
 			if (!cell || profile === "off") return undefined;
+			if (emptySection)
+				return this.render(
+					"# Memory\nCell `{{recipe_tag}}`. No memory is available for this cell at session start. " +
+						"Skip memory reads and searches; proceed with the task. " +
+						"You write only to `{{output_dir}}/`, and you read nothing else on disk. " +
+						"In your `finish` summary, say that none matched.",
+				);
 			return this.render(`${(opts.prompt?.(profile) ?? SECTION).trim()}\n\n${REQUIRED}`, { task: "" });
 		},
 		/** Fill {{memory_dir}}, {{memory_inbox}}, {{memory_profile}}, {{output_dir}}, {{recipe_tag}}, {{reference_tag}} and `extra`. */
