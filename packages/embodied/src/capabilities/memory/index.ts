@@ -8,9 +8,18 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+	type Stats,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -119,62 +128,117 @@ const defaultHome = () => process.env.PI_EMBODIED_MEMORY || join(homedir(), ".pi
 // Access boundary and recipes (write_recipe_from_states)
 // ---------------------------------------------------------------------------
 
+/** The spaces pi's tools turn into a plain one in a path they are given (coding-agent/src/utils/paths.ts). */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** `input` as pi's tools read it (normalizePath, coding-agent/src/utils/paths.ts) against `cwd`: absolute, its links not looked at. */
+function written(input: string | undefined, cwd: string): string {
+	let p = (input || ".").replace(UNICODE_SPACES, " ");
+	if (p.startsWith("@")) p = p.slice(1);
+	if (p === "~") p = homedir();
+	else if (p.startsWith("~/") || (sep === "\\" && p.startsWith("~\\"))) p = join(homedir(), p.slice(2));
+	else if (p.startsWith("file://")) p = fileURLToPath(p);
+	return resolve(cwd, p);
+}
+
 /**
- * Canonical path: pi's tool path normalization, then symlinks resolved on the existing prefix,
- * dangling ones included (a write through them lands on their target). Throws on a symlink loop.
+ * Whether pi's read looks for `path`, when it is missing, under another spelling: a narrow no-break space
+ * before AM/PM, the NFD form, a curly apostrophe (resolveReadPath, coding-agent/src/core/tools/path-utils.ts).
+ */
+export const respelled = (path: string) => /'| (AM|PM)\./i.test(path) || path.normalize("NFD") !== path;
+
+/**
+ * Canonical path: pi's tool path normalization, then the path the system would open. Links are resolved
+ * one component at a time, as the system does: a ".." applies to where the links before it lead
+ * (fs.realpathSync folds it into the text first), and a dangling link is followed to its target (a write
+ * through it lands there). From the first component that does not exist the rest is taken as written; what
+ * exists is spelled as the system's realpath reports it (on macOS the name the volume stores, which is one
+ * file under several spellings). Throws where the system would open nothing: a link loop, a name below a
+ * file, a ".." behind a component that does not exist, and any component that cannot be looked at. The
+ * error names the path as written and carries the system's `code` and the `component` it came from.
  */
 export function canonicalPath(input: string | undefined, cwd: string): string {
-	let p = (input || ".").replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
-	if (p.startsWith("@")) p = p.slice(1);
-	if (p === "~" || p.startsWith("~/")) p = join(homedir(), p.slice(1));
-	if (p.startsWith("file://")) p = fileURLToPath(p);
-	let head = resolve(cwd, p);
-	const tail: string[] = [];
-	for (let hops = 0; hops <= 40; ) {
+	const path = written(input, cwd);
+	const lost = (code: string | undefined, component: string, what = "path does not resolve") =>
+		Object.assign(new Error(`${what}: ${path}`), { code, component });
+	/** The system's realpath of `at`, which the walk found to exist (a change since is no answer either). */
+	const real = (at: string) => {
 		try {
-			return join(realpathSync(head), ...tail);
-		} catch {}
-		let link: string | undefined;
+			return realpathSync.native(at);
+		} catch (e) {
+			throw lost((e as NodeJS.ErrnoException).code, at);
+		}
+	};
+	// A link's target is split as the system reads it (on Windows either separator).
+	const parts = (p: string) => p.split(sep === "/" ? sep : /[\\/]/);
+	let at = parse(path).root; // what is resolved so far: it exists and no link is left in it
+	let dir = true; // whether that is a directory
+	const todo = path.slice(at.length).split(sep);
+	for (let hops = 0; todo.length; ) {
+		const name = todo.shift() as string;
+		if (!dir) throw lost("ENOTDIR", at);
+		if (!name || name === ".") continue;
+		if (name === "..") {
+			at = dirname(at);
+			continue;
+		}
+		const next = join(at, name);
+		let entry: Stats;
 		try {
-			link = readlinkSync(head);
-		} catch {}
-		if (link !== undefined) {
-			head = resolve(dirname(head), link);
-			hops++;
-		} else if (dirname(head) === head) return resolve(cwd, p);
+			entry = lstatSync(next);
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			const rest = todo.filter((part) => part && part !== ".");
+			if (code !== "ENOENT" || rest.includes("..")) throw lost(code, next);
+			return join(real(at), [name, ...rest].join(sep));
+		}
+		if (!entry.isSymbolicLink()) {
+			at = next;
+			dir = entry.isDirectory();
+		} else if (++hops > 40) throw lost("ELOOP", next, "too many symbolic links");
 		else {
-			tail.unshift(basename(head));
-			head = dirname(head);
+			let target: string;
+			try {
+				target = readlinkSync(next);
+			} catch (e) {
+				throw lost((e as NodeJS.ErrnoException).code, next);
+			}
+			if (!target) throw lost("ENOENT", next);
+			// An absolute target starts again at its root (on Windows the root of its drive).
+			const root = parse(target).root;
+			if (root) at = parse(resolve(at, target)).root;
+			todo.unshift(...parts(target.slice(root.length)));
 		}
 	}
-	throw new Error(`too many symbolic links: ${input}`);
+	return real(at);
 }
 
 /**
  * Why `path` (canonical) may not be accessed, or undefined. Deny by default: only the published memory
  * (read), the cell's inbox and attempt archive (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
+ * The reason names `shown`, the path as it was asked: a refusal does not tell where a link leads or how a name is stored.
  */
-export function denied(path: string, access: Access, g: Guard): string | undefined {
+export function denied(path: string, access: Access, g: Guard, shown = path): string | undefined {
 	const inside = (base: string) => path === base || path.startsWith(base + sep);
 	if (access !== "write" && g.readable?.some(inside)) return undefined;
 	if (g.attempts && inside(g.attempts)) return undefined;
 	if (!inside(g.root)) {
-		if (inside(g.home)) return `access to another robot's memory is denied: ${path}`;
+		if (inside(g.home)) return `access to another robot's memory is denied: ${shown}`;
 		if (path === g.output && access === "read") return undefined;
 		const name = basename(path);
 		const own = name === g.tag || name.startsWith(`${g.tag}.`) || name.startsWith(`${g.tag}_`);
 		if (dirname(path) === g.output && own) return undefined;
-		return `only the memory and this cell's ${g.tag}.* / ${g.tag}_* files in ${g.output} are accessible: ${path}`;
+		return `only the memory and this cell's ${g.tag}.* / ${g.tag}_* files in ${g.output} are accessible: ${shown}`;
 	}
 	const parts = relative(g.root, path).split(sep).filter(Boolean);
 	const ownInbox = g.inbox !== undefined && parts[0] === "_internal" && parts[1] === "inbox" && parts[2] === g.inbox;
-	if (access === "write") return ownInbox ? undefined : `writing to memory is denied in this mode: ${path}`;
+	if (access === "write") return ownInbox ? undefined : `writing to memory is denied in this mode: ${shown}`;
 	if (!parts.length)
 		return access === "read"
 			? undefined
-			: `search global/, suite/ or task_only/ rather than the memory root: ${path}`;
+			: `search global/, suite/ or task_only/ rather than the memory root: ${shown}`;
 	if (READABLE.includes(parts[0]) || (parts.length === 1 && parts[0].endsWith(".md")) || ownInbox) return undefined;
-	return `reading this memory path is denied: ${path}`;
+	return `reading this memory path is denied: ${shown}`;
 }
 
 export type Call = { name: string; args: Record<string, unknown>; details: Details; isError: boolean };
@@ -263,9 +327,31 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		// dirs.memory is the local corpus; the hf profile always reads the synced published one.
 		const dir = hf ? "" : cfgDir(pi, "memory");
 		const out = cfgDir(pi, "memory_out") || ctx.sessionManager.getSessionDir();
-		home = canonicalPath(opts.home?.() || defaultHome(), ctx.cwd);
-		root = canonicalPath(dir || join(home, opts.robot ?? "libero"), ctx.cwd);
+		const robot = opts.robot ?? "libero";
+		// Nothing of an earlier session stays behind. Then each place as written: when one does not resolve
+		// (thrown below), a session that goes on without memory still names them.
+		home = root = outputDir = "";
+		outputDir = out ? written(out, ctx.cwd) : "";
+		home = written(opts.home?.() || defaultHome(), ctx.cwd);
+		root = written(dir || join(home, robot), ctx.cwd);
 		outputDir = out ? canonicalPath(out, ctx.cwd) : "";
+		home = canonicalPath(home, ctx.cwd);
+		root = canonicalPath(dir || join(home, robot), ctx.cwd);
+	}
+
+	/**
+	 * The directory the published corpus is synced into, which the sync names the corpus by: the root as it
+	 * resolved; or, where the volume stores this very directory under another spelling of the robot's name, the
+	 * robot's spelling (the same entry, not a link to it).
+	 */
+	function corpusDir(): string {
+		const alias = join(dirname(root), opts.robot ?? "libero");
+		try {
+			const a = lstatSync(alias, { bigint: true });
+			const r = lstatSync(root, { bigint: true });
+			if (alias !== root && a.isDirectory() && a.dev === r.dev && a.ino === r.ino) return alias;
+		} catch {}
+		return root;
 	}
 
 	/** Why this session cannot have memory (robot.ts refuses to start), else undefined. */
@@ -302,14 +388,23 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	});
 
 	async function establish(ctx: ExtensionContext) {
-		locate(ctx);
 		cell = opts.cell?.();
-		if (!cell) return;
-		if (!/^[\w.-]+$/.test(cell.tag) || /^\.+$/.test(cell.tag))
-			throw new Error(`invalid memory cell tag: ${cell.tag}`);
 		const explore = opts.explore?.() ?? false;
 		const explicit = str(pi.getFlag("memory-profile"));
 		const requested = explicit || (explore || opts.published === false ? "local" : "hf");
+		// This session's places, as its profile reads them (the hf profile has the synced corpus, never
+		// dirs.memory). A start refused below names its own, never an earlier session's. One that does not
+		// resolve stops a session that will use memory, not one without a cell or with memory off (the /memory
+		// command looks again and reports it).
+		let unresolved: (Error & { code?: string; component?: string }) | undefined;
+		try {
+			locate(ctx, cell !== undefined && requested === "hf");
+		} catch (e) {
+			unresolved = e as Error;
+		}
+		if (!cell) return;
+		if (!/^[\w.-]+$/.test(cell.tag) || /^\.+$/.test(cell.tag))
+			throw new Error(`invalid memory cell tag: ${cell.tag}`);
 		if (requested !== "hf" && requested !== "local" && requested !== "off")
 			throw new Error(`unknown --memory-profile ${requested}`);
 		if (explore && requested === "hf") throw new Error("--explore cannot be used with --memory-profile hf");
@@ -323,8 +418,13 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			profile = "off";
 			return;
 		}
+		if (unresolved)
+			throw new Error(
+				unresolved.component
+					? `${unresolved.message} (${unresolved.code} at ${unresolved.component})`
+					: unresolved.message,
+			);
 		profile = requested;
-		if (profile === "hf") locate(ctx, true);
 		guard = {
 			root,
 			home,
@@ -334,7 +434,7 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			attempts: explore && outputDir ? join(outputDir, "attempts", cell.tag) : undefined,
 		};
 		if (explore) return;
-		if (profile === "hf") await syncMemory(root, (m) => say(ctx, m, "warning"));
+		if (profile === "hf") await syncMemory(corpusDir(), (m) => say(ctx, m, "warning"));
 		// A run that asks for memory (a published corpus, --memory-profile, or dirs.memory) refuses to start
 		// without one: it would otherwise go on as a run without memory (the notice of `section()`, or a
 		// robot's own section naming files that do not exist) although memory was asked for.
@@ -354,13 +454,53 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		if (!g || ![g.root, g.home, g.output].every(isAbsolute) || !g.tag)
 			return { block: true, reason: "file access is disabled: the memory guard has no memory, output dir or cell" };
 		try {
-			const readable = (opts.readable?.() ?? []).filter(Boolean).map((d) => canonicalPath(d, ctx.cwd));
-			const reason = denied(
-				canonicalPath(str((event.input as unknown as { path?: unknown }).path), ctx.cwd),
-				access,
-				{ ...g, readable },
-			);
-			return reason ? { block: true, reason } : undefined;
+			// A read-only dir that does not resolve is not readable; it does not close everything else.
+			const readable = (opts.readable?.() ?? []).filter(Boolean).flatMap((d) => {
+				try {
+					return [canonicalPath(d, ctx.cwd)];
+				} catch {
+					return [];
+				}
+			});
+			const rules = { ...g, readable };
+			const input = event.input as unknown as { path?: unknown };
+			const asked = written(str(input.path), ctx.cwd);
+			let path: string;
+			try {
+				path = canonicalPath(str(input.path), ctx.cwd);
+			} catch (e) {
+				// Nothing opens there. Where the place as asked is refused anyway, or the walk stopped in a refused
+				// place (a link led there), the answer is that refusal, as for any other name there: it does not
+				// tell what exists outside the boundary.
+				const stopped = (e as { component?: string }).component;
+				return {
+					block: true,
+					reason:
+						denied(asked, access, rules) ??
+						(stopped === undefined ? undefined : denied(stopped, access, rules, asked)) ??
+						`file access denied: ${(e as Error).message}`,
+				};
+			}
+			// The decision is the opened file's. A refusal gives the rule of the place as asked (by its spelling)
+			// where that refuses too, so that a link at a refused place does not tell where it leads.
+			const reason = denied(path, access, rules, asked);
+			if (reason) return { block: true, reason: denied(asked, access, rules) ?? reason };
+			// The tool gets the path that was judged, so that it opens that file and no other: its own reading
+			// of the argument ("~", "@", a relative path, links) is done. Three things would still move it or
+			// hang it. The tools turn the unicode spaces of a path into plain ones; a pipe or a device waits for
+			// a peer; and `read` looks for a missing file under other spellings, which may be a link elsewhere.
+			if (path.search(UNICODE_SPACES) !== -1)
+				return { block: true, reason: `file access denied: ${asked} cannot be named` };
+			let entry: Stats | undefined;
+			try {
+				entry = lstatSync(path);
+			} catch {}
+			if (entry && !entry.isFile() && !entry.isDirectory())
+				return { block: true, reason: `file access denied: ${asked} is not a file or a directory` };
+			if (event.toolName === "read" && !entry && respelled(path))
+				return { block: true, reason: `no such file: ${asked}` };
+			input.path = path;
+			return undefined;
 		} catch (e) {
 			return { block: true, reason: `file access denied: ${(e as Error).message}` };
 		}
@@ -427,10 +567,11 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	pi.registerCommand("memory", {
 		description: "Memory corpus maintenance: sync | validate | index | merge <cell> [output-dir] [--solved]",
 		handler: async (args, ctx) => {
-			if (!root) locate(ctx);
+			// Without a cell nothing was established: look again, and report a place that does not resolve.
+			if (!cell || !root) locate(ctx);
 			const [sub, ...rest] = args.trim().split(/\s+/);
 			if (sub === "sync") {
-				await syncMemory(root, (m) => say(ctx, m, "warning"));
+				await syncMemory(corpusDir(), (m) => say(ctx, m, "warning"));
 				say(ctx, `memory: ${root}`);
 			} else if (sub === "validate") {
 				const problems = validateMemory(root);
