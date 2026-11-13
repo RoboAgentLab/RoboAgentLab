@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -16,7 +26,8 @@ const section = readFileSync(new URL("../src/capabilities/memory/section.md", im
 const required = readFileSync(new URL("../src/capabilities/memory/required.md", import.meta.url), "utf8").trim();
 
 function fixture(t: { after: (fn: () => void) => void }, options: Partial<MemoryOptions> = {}) {
-	const home = mkdtempSync(join(tmpdir(), "memory-section-"));
+	// The real path: the module names its directories that way, and the notice below is compared in full.
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "memory-section-")));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const root = join(home, "maniskill");
 	const flags: Record<string, unknown> = {};
@@ -39,8 +50,12 @@ function fixture(t: { after: (fn: () => void) => void }, options: Partial<Memory
 		hasUI: false,
 		sessionManager: { getSessionDir: () => home, getBranch: () => [] },
 	} as unknown as ExtensionContext;
-	return { root, flags, mem, start: () => hooks.get("session_start")?.({}, ctx) };
+	return { home, root, flags, mem, start: () => hooks.get("session_start")?.({}, ctx) };
 }
+
+/** The notice of a library that holds nothing, written out: the cell's own tag and the session's output dir. */
+const notice = (f: { home: string }) =>
+	`# Memory\nCell \`${tag}\`. No memory is available for this cell at session start. Skip memory reads and searches; proceed with the task. You write only to \`${f.home}/\`, and you read nothing else on disk. In your \`finish\` summary, say that none matched.`;
 
 // "tiers a merge left empty": mergeMemory creates every tier before it looks at the inbox, so an
 // exploration that published nothing leaves these directories and no file.
@@ -61,13 +76,7 @@ for (const layout of [
 			for (const tier of MERGED_EMPTY) mkdirSync(join(f.root, tier), { recursive: true });
 		await f.start();
 		assert.equal(f.mem.configError(), undefined);
-		const text = f.mem.section() ?? "";
-		assert.match(text, /No memory is available for this cell at session start/);
-		assert.match(text, /Skip memory reads and searches/);
-		// The notice names the output dir, whose temp path may itself contain "suite/" and the like.
-		const named = text.replaceAll(f.mem.render("{{output_dir}}"), "<output>");
-		assert.doesNotMatch(named, /MEMORY\.md|global\/|suite\/|task_only\/|Reading memory is a required step/);
-		assert.match(text, /In your `finish` summary, say that none matched/);
+		assert.equal(f.mem.section(), notice(f));
 		assert.deepEqual(f.mem.tools, ["read", "ls", "grep", "find", "write"]);
 	});
 }
@@ -76,15 +85,17 @@ test(
 	"one subdirectory that cannot be listed does not empty its tier",
 	{ skip: process.getuid?.() === 0 },
 	async (t) => {
-		// Root lists any directory, so the case cannot be built for it. The two names swap roles: whatever order
-		// the file system lists a directory in, the locked one comes before the leaf in one of the two libraries.
+		// Root lists any directory, so the case cannot be built for it. The leaf sits in a sibling directory, so
+		// that a walk cannot find it without going past the locked one; and the two names swap roles: whatever
+		// order a directory is listed in, the locked one comes first in one of the two libraries.
 		for (const locked of ["a", "b"]) {
 			const f = fixture(t);
 			const tier = join(f.root, "global");
 			mkdirSync(tier, { recursive: true });
-			for (const name of ["a", "b"])
-				if (name === locked) mkdirSync(join(tier, name), { mode: 0o000 });
-				else writeFileSync(join(tier, name), "");
+			for (const name of ["a", "b"]) {
+				mkdirSync(join(tier, name), name === locked ? { mode: 0o000 } : {});
+				if (name !== locked) writeFileSync(join(tier, name, "leaf.md"), "");
+			}
 			try {
 				await f.start();
 				assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }), `locked ${locked}`);
@@ -97,7 +108,8 @@ test(
 );
 
 test("a library behind a linked directory is not announced as empty, nor refused as missing", async (t) => {
-	const outside = mkdtempSync(join(tmpdir(), "memory-section-outside-"));
+	// The real path: the links below name it, and a relative one would be read from where each link lies.
+	const outside = realpathSync(mkdtempSync(join(tmpdir(), "memory-section-outside-")));
 	t.after(() => rmSync(outside, { recursive: true, force: true }));
 	mkdirSync(join(outside, "notes"));
 	mkdirSync(join(outside, "empty"));
@@ -112,12 +124,20 @@ test("a library behind a linked directory is not announced as empty, nor refused
 			},
 		],
 		[
-			"links that hold no leaf: two back into the tier, one to an empty directory, one to nothing, one to a file",
+			"a linked directory whose target goes through another link, then up",
+			true,
+			(root) => {
+				mkdirSync(join(root, "suite"), { recursive: true });
+				symlinkSync(join(outside, "empty"), join(root, "suite", "hop"));
+				// Written out, because join() would fold "hop/.." away. The system reads it as <outside>/notes.
+				symlinkSync("hop/../notes", join(root, "suite", "shared"));
+			},
+		],
+		[
+			"links that hold no leaf: one to an empty directory, one to nothing, one to a file",
 			false,
 			(root) => {
-				mkdirSync(join(root, "global", "a"), { recursive: true });
-				symlinkSync(join(root, "global"), join(root, "global", "a", "up"));
-				symlinkSync(join(root, "global", "a"), join(root, "global", "again"));
+				mkdirSync(join(root, "global"), { recursive: true });
 				symlinkSync(join(outside, "empty"), join(root, "global", "empty"));
 				symlinkSync(join(outside, "gone.md"), join(root, "global", "gone.md"));
 				symlinkSync(join(outside, "notes", "leaf.md"), join(root, "global", "leaf.md"));
@@ -131,7 +151,7 @@ test("a library behind a linked directory is not announced as empty, nor refused
 		await f.start();
 		assert.equal(f.mem.configError(), undefined, layout);
 		if (holds) assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }), layout);
-		else assert.match(f.mem.section() ?? "", /No memory is available for this cell at session start/, layout);
+		else assert.equal(f.mem.section(), notice(f), layout);
 		// The start check of a run that asked for local memory.
 		const asked = fixture(t);
 		asked.flags["memory-profile"] = "local";
@@ -142,6 +162,33 @@ test("a library behind a linked directory is not announced as empty, nor refused
 	}
 });
 
+test("links that lead back into a tier end the walk", (t) => {
+	// In a child with a time limit: a walk that does not know where it has been does not return, and nothing
+	// in this process could stop it. Five ways round, so that the system's limit on the links in one path does
+	// not end such a walk within the time either.
+	const home = realpathSync(mkdtempSync(join(tmpdir(), "memory-section-loops-")));
+	t.after(() => rmSync(home, { recursive: true, force: true }));
+	const tiers = ["no leaf", "a leaf past the links"].map((name) => {
+		const tier = join(home, name);
+		mkdirSync(join(tier, "a"), { recursive: true });
+		symlinkSync(tier, join(tier, "a", "up"));
+		symlinkSync(join(tier, "a"), join(tier, "again"));
+		for (const back of ["b", "c", "d"]) symlinkSync(tier, join(tier, back));
+		return tier;
+	});
+	mkdirSync(join(tiers[1], "z"));
+	writeFileSync(join(tiers[1], "z", "leaf.md"), "");
+	const corpus = new URL("../src/capabilities/memory/corpus.ts", import.meta.url).href;
+	const walk =
+		"import(process.argv[1]).then((m) => console.log(JSON.stringify(process.argv.slice(2).map((d) => m.hasFiles(d)))))";
+	const r = spawnSync(process.execPath, ["--experimental-strip-types", "-e", walk, corpus, ...tiers], {
+		encoding: "utf8",
+		timeout: 30_000,
+		killSignal: "SIGKILL",
+	});
+	assert.equal(r.stdout.trim(), "[false,true]", r.error?.message ?? r.stderr);
+});
+
 for (const path of [
 	"MEMORY.md",
 	"global/leaf.md",
@@ -149,7 +196,7 @@ for (const path of [
 	`task_only/${reference}.json`,
 	`task_only/${reference}_recipe.jsonl`,
 ]) {
-	test(`default memory section is unchanged when the library holds only ${path}`, async (t) => {
+	test(`the default section is rendered in full when the library holds only ${path}`, async (t) => {
 		const f = fixture(t);
 		const target = join(f.root, path);
 		mkdirSync(dirname(target), { recursive: true });
@@ -164,7 +211,7 @@ test("memory availability is captured at session start and refreshed for the nex
 	const f = fixture(t);
 	await f.start();
 	const absent = f.mem.section();
-	assert.match(absent ?? "", /No memory is available/);
+	assert.equal(absent, notice(f));
 	mkdirSync(f.root);
 	writeFileSync(join(f.root, "MEMORY.md"), "# Memory");
 	assert.equal(f.mem.section(), absent);
@@ -180,13 +227,32 @@ test("a cell without a reference has no task pair to name: any task_only file is
 	const f = fixture(t, { cell: () => ({ tag, reference: "" }) });
 	mkdirSync(join(f.root, "task_only"), { recursive: true });
 	await f.start();
-	assert.match(f.mem.section() ?? "", /No memory is available for this cell at session start/);
+	assert.equal(f.mem.section(), notice(f));
 	writeFileSync(join(f.root, "task_only", `${tag}.json`), "{}");
 	await f.start();
 	assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
 });
 
-test("custom templates, memory off and sessions without a cell keep their existing behavior", async (t) => {
+test("a robot on the published corpus gets the notice when its synced library holds nothing", async (t) => {
+	// Offline, the sync returns without the network and the library is what is on disk.
+	const offline = process.env.HF_HUB_OFFLINE;
+	process.env.HF_HUB_OFFLINE = "1";
+	t.after(() => {
+		if (offline === undefined) delete process.env.HF_HUB_OFFLINE;
+		else process.env.HF_HUB_OFFLINE = offline;
+	});
+	const f = fixture(t, { published: true });
+	await f.start();
+	assert.equal(f.mem.profile, "hf");
+	assert.equal(f.mem.configError(), undefined);
+	assert.equal(f.mem.section(), notice(f));
+	mkdirSync(f.root);
+	writeFileSync(join(f.root, "MEMORY.md"), "# Memory");
+	await f.start();
+	assert.equal(f.mem.section(), f.mem.render(`${section}\n\n${required}`, { task: "" }));
+});
+
+test("a robot's own template is rendered and closed by required.md whatever the library holds; memory off and a session without a cell have no section", async (t) => {
 	const custom = fixture(t, { prompt: () => "Read {{memory_dir}}/custom.md." });
 	await custom.start();
 	assert.equal(custom.mem.section(), custom.mem.render(`Read {{memory_dir}}/custom.md.\n\n${required}`));

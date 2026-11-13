@@ -633,7 +633,7 @@ test("the evaluation prompt carries memory's section once, at SYSTEM.md's {{memo
 	assert.match(prompt, /Before your first motion, read `[^`]+\/MEMORY\.md`/);
 	assert.equal(prompt.split("Reading memory is a required step before your first robot action").length, 2);
 	assert.doesNotMatch(prompt, /\{\{\w+\}\}/);
-	// No library (an empty memory home): the notice stands in the same place and asks for no read.
+	// No library (an empty memory home): the notice stands in for the section, once, and asks for no read.
 	const home = mkdtempSync(join(tmpdir(), "robodojo-memory-home-"));
 	t.after(() => rmSync(home, { recursive: true, force: true }));
 	const hostHome = process.env.PI_EMBODIED_MEMORY;
@@ -646,5 +646,8 @@ test("the evaluation prompt carries memory's section once, at SYSTEM.md's {{memo
 	const empty = (await bare.emit("before_agent_start", { systemPrompt: "" }))?.systemPrompt as string;
 	assert.match(empty, /# Memory\nCell `\w+`\. No memory is available for this cell at session start\./);
 	assert.equal(empty.split("# Memory\n").length, 2);
-	assert.doesNotMatch(empty, /MEMORY\.md|Reading memory is a required step|\{\{\w+\}\}/);
+	// The notice names the output dir, whose temp path may itself contain "MEMORY.md".
+	const out = /You write only to `([^`]+)\/`/.exec(empty)?.[1];
+	assert.ok(out);
+	assert.doesNotMatch(empty.replaceAll(out, "<output>"), /MEMORY\.md|Reading memory is a required step|\{\{\w+\}\}/);
 });
