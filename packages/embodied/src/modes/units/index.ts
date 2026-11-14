@@ -750,6 +750,12 @@ export function units(
 			...(params.plan ? { plan: params.plan.map(unsymbol) } : {}),
 		};
 		delete run.note;
+		// GUMI (../../capabilities/gumi, through the units handle) and ./verifier.ts run act's body with these flags. The
+		// schema offers neither, and pi passes a tool the arguments it does not declare: a model's operator would skip the
+		// agent-side assists and run past the stage cap and a custom vocabulary's terminal unit, and its retreat would
+		// make any move one that LIBERO and robosuite still run after their success signal.
+		delete run.operator;
+		delete run.retreat;
 		const r = await actAndSave(run, signal);
 		const first = r.content.find((c) => c.type === "image");
 		if (first?.type === "image") lastFrame = first;
@@ -809,6 +815,14 @@ export function units(
 			retreat?: boolean;
 		};
 		const { unit, arm } = p;
+		// `arm` keys the per-arm state (the turn guards, the stage steps, the gripper's commanded state): only the
+		// robot's own arms, since pi also passes a one-arm robot's act an `arm` its schema does not offer.
+		if (arm !== undefined && !armNames.includes(arm))
+			throw new Error(
+				armNames.length
+					? `act: unknown arm ${arm} (${armNames.join(", ")})`
+					: "act: this robot has one arm; omit `arm`",
+			);
 		// No wrist view: a `target_in_wrist` sent anyway (a model trained on wrist robots) is ignored, not refused.
 		const inWrist = wristView ? p.target_in_wrist : undefined;
 		// A human's unit (GUMI teleop) runs as pressed: the agent-side assists would override the operator
@@ -1312,6 +1326,18 @@ export function units(
 			done: Type.Optional(Type.Boolean({ description: "The current stage's DONE WHEN is visible" })),
 		}),
 		async ({ stages: next, done }, signal) => {
+			// A stage counts its own arm's units and those that name none (countStep), and with recovery a GRASP stage's
+			// done check reads its arm's gripper. So on the arm's units a stage names one of the robot's arms or none (no
+			// `arm`, or ""): on two arms another name would count neither arm's units and never reach the cap, and on one
+			// arm, where act takes no `arm`, a GRASP stage that named one could never be done. A robot's own vocabulary
+			// keys nothing by arm: its act ignores an `arm`, and a stage's arm only shows in the stage line.
+			for (const s of next ?? [])
+				if (!custom && s.arm && !armNames.includes(s.arm))
+					throw new Error(
+						armNames.length
+							? `plan: unknown arm ${s.arm} (${armNames.join(", ")}); omit it for a stage of either arm`
+							: "plan: this robot has one arm; omit a stage's `arm`",
+					);
 			// stage_control: a GRASP stage is done only on a measured hold (plugins/recovery after_step's
 			// unverified_grasp): otherwise the stage restarts and a closed empty gripper reopens.
 			const current = stages[stage];
