@@ -843,6 +843,7 @@ async function session(
 		},
 		getFlag: (name: string) => registered[name],
 		registerTool: (tool: any) => tools.set(tool.name, tool),
+		getAllTools: () => [...tools.values()],
 		setActiveTools: (names: string[]) => {
 			active = names;
 		},

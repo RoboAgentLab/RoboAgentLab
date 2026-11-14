@@ -31,6 +31,7 @@ export function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		registerCommand: () => {},
 		registerProvider: () => {},
 		registerMessageRenderer: () => {},

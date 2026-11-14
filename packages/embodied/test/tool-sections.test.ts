@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { SEARCH_TOOLS } from "../src/capabilities/memory/index.ts";
 import { GEOMETRY_TOOLS } from "../src/primitives/geometry.ts";
 import { VLA_ADAPTERS } from "../src/primitives/vla-adapters.ts";
 import { defineRobot, toolSections } from "../src/robot.ts";
@@ -38,7 +39,10 @@ function fakePi(exclude: string[] = [], preset: Record<string, string> = {}) {
 			flags[name] = preset[name] ?? o.default;
 		},
 		getFlag: (name: string) => flags[name],
-		registerTool: (t: { name: string }) => tools.push(t.name),
+		// Memory's grep and find are pi's own tools (../src/capabilities/memory), not the robot's.
+		registerTool: (t: { name: string }) => {
+			if (!SEARCH_TOOLS.includes(t.name)) tools.push(t.name);
+		},
 		registerCommand: () => {},
 		registerProvider: () => {},
 		registerMessageRenderer: () => {},

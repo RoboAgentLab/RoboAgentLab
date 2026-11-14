@@ -215,6 +215,7 @@ export async function mmSession(
 		},
 		getFlag: (n: string) => registered[n],
 		registerTool: (tool: any) => tools.set(tool.name, tool),
+		getAllTools: () => [...tools.values()],
 		setActiveTools: (names: string[]) => {
 			active = names;
 		},

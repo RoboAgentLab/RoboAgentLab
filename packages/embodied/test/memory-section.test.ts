@@ -36,6 +36,8 @@ function fixture(t: { after: (fn: () => void) => void }, options: Partial<Memory
 		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => hooks.set(name, handler),
 		registerFlag: () => {},
 		registerCommand: () => {},
+		registerTool: () => {},
+		getAllTools: () => [],
 		getFlag: (name: string) => flags[name],
 	} as unknown as ExtensionAPI;
 	const mem = memory(pi, {

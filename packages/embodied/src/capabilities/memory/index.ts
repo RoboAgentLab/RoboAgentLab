@@ -21,7 +21,13 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import {
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { dir as cfgDir } from "../../infra/config.ts";
 import { branchProviders, plannerOf } from "../../planner/kind.ts";
@@ -33,6 +39,8 @@ const READABLE = ["global", "suite", "task_only", "results"];
 const SECTION = readFileSync(new URL("./section.md", import.meta.url), "utf8").trim();
 /** What closes a memory section that names files, the robot's own too: reading memory is required and reported. */
 const REQUIRED = readFileSync(new URL("./required.md", import.meta.url), "utf8").trim();
+/** pi's tools that memory registers again with ignore files off (searchTools): pi's tools, not a robot's. */
+export const SEARCH_TOOLS: readonly string[] = ["grep", "find"];
 const ACCESS: Record<string, Access> = {
 	read: "read",
 	ls: "read",
@@ -303,6 +311,26 @@ function say(ctx: ExtensionContext, text: string, level: "info" | "warning" | "e
 	else console.error(`[memory] ${text}`);
 }
 
+type SearchTool = ReturnType<typeof createGrepToolDefinition> | ReturnType<typeof createFindToolDefinition>;
+
+/**
+ * pi's grep and find with readIgnoreFiles off, inactive until a robot activates them; undefined on a pi whose
+ * factories ignore the option (they build the same tool with it as without). ripgrep and fd would otherwise
+ * open .gitignore, .ignore, .rgignore and .fdignore in, below and above the searched place, .git/info/exclude,
+ * the global excludes files and git's config files, which the guard does not judge: a pipe there makes the
+ * search wait for ever, and a link there to a file elsewhere hides the names its lines match and puts its
+ * lines that are not valid globs in the error text.
+ */
+function searchTools(): SearchTool[] | undefined {
+	const cwd = process.cwd();
+	const both = [
+		[createGrepToolDefinition(cwd, { readIgnoreFiles: false }), createGrepToolDefinition(cwd)],
+		[createFindToolDefinition(cwd, { readIgnoreFiles: false }), createFindToolDefinition(cwd)],
+	] as const;
+	if (both.some(([off, on]) => off.description === on.description)) return undefined;
+	return both.map(([off]) => ({ ...off, defaultActive: false }));
+}
+
 export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	pi.registerFlag("memory-profile", {
 		type: "string",
@@ -313,6 +341,11 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		default: false,
 		description: "Merge the inbox after exploration",
 	});
+	// Where a guard can be (a cell), the planner's searches are pi's grep and find reading no ignore files
+	// (searchTools), registered under pi's names and active only where a robot activates them. On a pi
+	// without the option there are none, and a session with memory does not start (establish).
+	const searches = opts.cell ? searchTools() : [];
+	for (const t of searches ?? []) pi.registerTool(t);
 	let root = "";
 	let home = "";
 	let outputDir = "";
@@ -418,6 +451,21 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 			profile = "off";
 			return;
 		}
+		if (!searches)
+			throw new Error(
+				"this pi's grep or find reads ignore files the memory guard does not judge: rebuild pi (npm run build), whose grep and find take readIgnoreFiles",
+			);
+		// pi runs an SDK host's grep or find over memory's, and one an extension loaded before the robot registered
+		// (at its session_start, which ran before this one). The guard tells memory's by its description (pi's tool
+		// with readIgnoreFiles off) and would refuse every other's search (tool_call), so such a session does not start.
+		const others = searches.flatMap((s) => {
+			const t = pi.getAllTools().find((x) => x.name === s.name);
+			return t && t.description !== s.description ? [`${s.name} (${t.sourceInfo.path})`] : [];
+		});
+		if (others.length)
+			throw new Error(
+				`this session's ${others.join(" and ")} ${others.length > 1 ? "are" : "is"} not the memory guard's (pi's grep and find without ignore files, by their descriptions): load the robot first, and pass no grep or find as SDK customTools`,
+			);
 		if (unresolved)
 			throw new Error(
 				unresolved.component
@@ -453,6 +501,15 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 		const g = guard;
 		if (!g || ![g.root, g.home, g.output].every(isAbsolute) || !g.tag)
 			return { block: true, reason: "file access is disabled: the memory guard has no memory, output dir or cell" };
+		// The search that runs carries memory's description (pi's tool with readIgnoreFiles off): not a grep or find
+		// registered under the name since the start (pi runs the first extension's over later ones). The refusal starts
+		// "file access is disabled", which replay's NOT_RUN reads as a call that never ran.
+		const search = searches?.find((t) => t.name === event.toolName);
+		if (search && pi.getAllTools().find((t) => t.name === search.name)?.description !== search.description)
+			return {
+				block: true,
+				reason: `file access is disabled: the session's ${search.name} is not the memory guard's, which reads no ignore files`,
+			};
 		try {
 			// A read-only dir that does not resolve is not readable; it does not close everything else.
 			const readable = (opts.readable?.() ?? []).filter(Boolean).flatMap((d) => {

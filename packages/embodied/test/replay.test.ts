@@ -169,6 +169,23 @@ test("loadRecording follows the leaf's branch, drops errored replies and calls t
 	assert.deepEqual(taskDiff({ robot: "arm", seed: "1" }, { robot: "arm", seed: 2 }), ["seed: 1 -> 2"]);
 });
 
+test("the memory guard's refusal of a grep or find that is not its own is a call that never ran", () => {
+	const rec = loadRecording(
+		sessionOf([
+			{
+				content: [call("grep", { pattern: "x", path: "." }), call("view", {})],
+				errors: {
+					grep: "file access is disabled: the session's grep is not the memory guard's, which reads no ignore files",
+				},
+			},
+		]),
+	);
+	assert.deepEqual(
+		rec.turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]),
+		[[["view"], ["grep"]]],
+	);
+});
+
 async function start(p: ReturnType<typeof fakePi>) {
 	await p.emit("session_start");
 	await p.emit("before_agent_start");

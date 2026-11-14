@@ -28,6 +28,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/capabilities/memory/corpus.ts";
 import { canonicalPath, denied, memory, recipe, respelled } from "../src/capabilities/memory/index.ts";
+import { loadRecording } from "../src/capabilities/replay/index.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
 const leaf = (meta: string, body: string) => `---\n${meta}\n---\n${body}`;
@@ -227,6 +228,8 @@ async function guarded(
 		...(opts.profile ? { "memory-profile": opts.profile } : {}),
 	});
 	const tools = new Map<string, any>();
+	/** Names the session runs another tool under (an SDK host's, another extension's), with its source. */
+	const replaced = new Map<string, string>();
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
 		on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
@@ -234,6 +237,19 @@ async function guarded(
 		registerCommand: (name: string, spec: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
 			commands.set(name, spec),
 		registerTool: (t: any) => tools.set(t.name, t),
+		// What the session runs under each name, as pi lists it (new objects): memory's registered tools, or another.
+		getAllTools: () =>
+			[...tools.values()].map((t) => ({
+				name: t.name,
+				description: replaced.has(t.name) ? "Another search." : t.description,
+				parameters: t.parameters,
+				sourceInfo: {
+					path: replaced.get(t.name) ?? "<memory>",
+					source: "test",
+					scope: "temporary",
+					origin: "top-level",
+				},
+			})),
 		getFlag: (name: string) => flags[name],
 	} as unknown as ExtensionAPI;
 	const cell = opts.cell;
@@ -263,7 +279,7 @@ async function guarded(
 		told.home = otherHome;
 		await hooks.get("session_start")?.({}, ctx);
 	};
-	return { base, home, run, call, handed, tools, mem, command, again };
+	return { base, home, run, call, handed, tools, replaced, mem, command, again };
 }
 
 const FILE_TOOLS = ["read", "ls", "grep", "find", "write", "edit"];
@@ -1349,9 +1365,10 @@ test("the audit is a write_audit call: the model's fields plus the runtime's fac
 	const written = JSON.parse(readFileSync(path, "utf8"));
 	assert.deepEqual(written, { ...params, ...facts });
 	assert.equal(written.seed, 7);
-	// Without the audit option nothing is registered and the tool list is the file tools.
+	// Without the audit option memory registers only pi's grep and find again (ignore files off), and the
+	// tool list is the file tools.
 	const plain = await guarded({ cell: "goal_t3_s7" });
-	assert.equal(plain.tools.size, 0);
+	assert.deepEqual([...plain.tools.keys()], ["grep", "find"]);
 	assert.deepEqual(plain.mem.tools, ["read", "ls", "grep", "find", "write"]);
 });
 
@@ -1380,6 +1397,8 @@ test("a robot without a published corpus defaults to its local memory, empty or 
 			on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
 			registerFlag: () => {},
 			registerCommand: () => {},
+			registerTool: () => {},
+			getAllTools: () => [],
 			getFlag: (name: string) => flags[name],
 		} as unknown as ExtensionAPI;
 		const m = memory(pi, {
@@ -1415,13 +1434,16 @@ test("a start refused after its guard was drawn up leaves the file tools closed"
 
 test("memory mounted without a cell option leaves the file tools to pi", async () => {
 	const hooks = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const registered: string[] = [];
 	const pi = {
 		on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
 		registerFlag: () => {},
 		registerCommand: () => {},
+		registerTool: (t: { name: string }) => registered.push(t.name),
 		getFlag: () => undefined,
 	} as unknown as ExtensionAPI;
 	memory(pi, {});
+	assert.deepEqual(registered, [], "pi's own grep and find stay: no guard, no search of memory's");
 	const ctx = { cwd: tmpdir(), hasUI: false, sessionManager: { getSessionDir: () => "", getBranch: () => [] } };
 	await hooks.get("session_start")?.({}, ctx);
 	for (const tool of FILE_TOOLS)
@@ -1430,3 +1452,286 @@ test("memory mounted without a cell option leaves the file tools to pi", async (
 			undefined,
 		);
 });
+
+/** The names ripgrep and fd read ignore rules from, in a searched directory, below it and above it. */
+const IGNORE_NAMES = [".gitignore", ".ignore", ".rgignore", ".fdignore"];
+/** Whether pi can run one of `names` without downloading it: in its bin dir or on PATH, where pi looks. */
+function available(...names: string[]) {
+	const bin = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "bin");
+	return names.some(
+		(n) => existsSync(join(bin, n)) || spawnSync("sh", ["-c", `command -v ${n}`], { stdio: "ignore" }).status === 0,
+	);
+}
+/** memory's two searches, each run where its binary is: what it is asked and what it reports for files that hold "hello". */
+const SEARCHES = [
+	{
+		tool: "grep",
+		skip: !available("rg") && "needs ripgrep",
+		input: (path: string) => ({ pattern: "hello", path }),
+		found: (names: string[]) => names.map((n) => `${n}:1: hello`),
+	},
+	{
+		tool: "find",
+		skip: !available("fd", "fdfind") && "needs fd",
+		input: (path: string) => ({ pattern: "*.md", path }),
+		found: (names: string[]) => names,
+	},
+] as const;
+const resultLines = (text: string) =>
+	text
+		.split("\n")
+		.filter((l) => l && !l.startsWith("["))
+		.sort();
+
+/** The guard's decision on a search, then the search with the tool memory registered: its text. */
+async function search(
+	g: Awaited<ReturnType<typeof guarded>>,
+	toolName: string,
+	input: { pattern: string; path: string },
+) {
+	const blocked = g.call(toolName, input.path, input);
+	assert.equal(blocked, undefined, `${toolName} refused: ${blocked?.reason}`);
+	const r = await g.tools.get(toolName).execute("s", input, AbortSignal.timeout(15_000), undefined, { cwd: g.run });
+	return (r.content as { text?: string }[]).map((c) => c.text ?? "").join("\n");
+}
+
+/** HOME (and with it git's and fd's global files) is `home` for the rest of test `t`. */
+function useHome(t: { after: (fn: () => void) => void }, home: string) {
+	const env = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+	t.after(() => {
+		for (const [k, v] of Object.entries(env))
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+	});
+	process.env.HOME = home;
+	delete process.env.XDG_CONFIG_HOME;
+}
+
+/** Whether `dir` or a directory above it holds a .git: pi's find then searches as in a git repository. */
+function inRepo(dir: string): boolean {
+	for (let d = realpathSync(dir); ; d = dirname(d)) {
+		if (existsSync(join(d, ".git"))) return true;
+		if (dirname(d) === d) return false;
+	}
+}
+
+for (const s of SEARCHES)
+	for (const repo of [true, false])
+		test(
+			`${s.tool} reads no ignore files: a pipe under an ignore name in a tier, below or above it, or as git's config, hangs no search (${repo ? "in" : "outside"} a git repository)`,
+			{ skip: s.skip || (!repo && inRepo(tmpdir()) && `a .git above ${tmpdir()}`) },
+			async (t) => {
+				const g = await guarded({ cell: "goal_t3_s7" });
+				t.after(() => rmSync(g.base, { recursive: true, force: true }));
+				const tier = join(g.home, "libero", "global");
+				mkdirSync(join(tier, "sub"));
+				writeFileSync(join(tier, "note.md"), "hello\n");
+				writeFileSync(join(tier, "sub", "deep.md"), "hello\n");
+				const pipe = (path: string) => assert.equal(spawnSync("mkfifo", [path]).status, 0);
+				for (const dir of [g.base, g.home, join(g.home, "libero"), tier, join(tier, "sub")])
+					for (const name of IGNORE_NAMES) pipe(join(dir, name));
+				// A git repository around the library (the default library is in none), and git's config files, which a
+				// search reads for the global excludes.
+				if (repo) {
+					mkdirSync(join(g.base, ".git", "info"), { recursive: true });
+					pipe(join(g.base, ".git", "info", "exclude"));
+				}
+				const home = join(g.base, "home");
+				mkdirSync(join(home, ".config", "git"), { recursive: true });
+				pipe(join(home, ".gitconfig"));
+				pipe(join(home, ".config", "git", "config"));
+				useHome(t, home);
+				assert.deepEqual(resultLines(await search(g, s.tool, s.input(tier))), s.found(["note.md", "sub/deep.md"]));
+			},
+		);
+
+for (const s of SEARCHES)
+	test(
+		`${s.tool} reads no ignore files: a link under an ignore name in or above the tier, or as a global excludes file, to a file elsewhere hides nothing and shows none of its lines`,
+		{ skip: s.skip },
+		async (t) => {
+			const g = await guarded({ cell: "goal_t3_s7" });
+			t.after(() => rmSync(g.base, { recursive: true, force: true }));
+			const tier = join(g.home, "libero", "global");
+			writeFileSync(join(tier, "note.md"), "hello\n");
+			// Elsewhere: a rule that would hide the note, and a line that is no valid glob (ripgrep quotes those).
+			const rules = join(g.base, "elsewhere.txt");
+			writeFileSync(rules, "note.md\nSECRET{\n");
+			mkdirSync(join(g.base, ".git"));
+			const home = join(g.base, "home");
+			mkdirSync(join(home, ".config", "git"), { recursive: true });
+			mkdirSync(join(home, ".config", "fd"), { recursive: true });
+			for (const link of [
+				join(tier, ".ignore"),
+				join(tier, ".rgignore"),
+				join(g.home, "libero", ".gitignore"),
+				join(g.home, ".fdignore"),
+				join(g.base, ".gitignore"),
+				join(home, ".config", "git", "ignore"),
+				join(home, ".config", "fd", "ignore"),
+			])
+				symlinkSync(rules, link);
+			useHome(t, home);
+			const out = await search(g, s.tool, s.input(tier));
+			assert.deepEqual(resultLines(out), s.found(["note.md"]));
+			assert.doesNotMatch(out, /SECRET/);
+		},
+	);
+
+test("a session whose grep or find carries another description than memory's does not start; one put under the name since is refused, a call replay skips", async (t) => {
+	const g = await guarded({ cell: "goal_t3_s7", start: false });
+	t.after(() => rmSync(g.base, { recursive: true, force: true }));
+	// memory's: pi's tools with ignore files off, inactive until a robot activates them.
+	assert.deepEqual(
+		[...g.tools.values()].map((d) => [d.name, d.defaultActive, d.description.includes("gitignore")]),
+		[
+			["grep", false, false],
+			["find", false, false],
+		],
+	);
+	// The SDK host's grep, or the find of an extension loaded before the robot (its session_start ran first).
+	const problem = (name: string, source: string) =>
+		`this session's ${name} (${source}) is not the memory guard's (pi's grep and find without ignore files, by their descriptions): load the robot first, and pass no grep or find as SDK customTools`;
+	for (const [name, source] of [
+		["grep", "<sdk:grep>"],
+		["find", "/ext/earlier.ts"],
+	]) {
+		g.replaced.clear();
+		g.replaced.set(name, source);
+		await g.again(g.home);
+		assert.equal(g.mem.configError(), problem(name, source));
+	}
+	g.replaced.set("grep", "<sdk:grep>");
+	await g.again(g.home);
+	assert.match(
+		g.mem.configError() ?? "",
+		/^this session's grep \(<sdk:grep>\) and find \(\/ext\/earlier\.ts\) are not /,
+	);
+	g.replaced.clear();
+	await g.again(g.home);
+	assert.equal(g.mem.configError(), undefined);
+	const tier = join(g.home, "libero", "global");
+	for (const name of ["grep", "find"]) {
+		assert.equal(g.call(name, tier), undefined);
+		// Put under the name since the start (an earlier extension's, which pi runs over memory's): refused per call.
+		g.replaced.set(name, "/ext/earlier.ts");
+		const reason = g.call(name, tier)?.reason;
+		assert.equal(
+			reason,
+			`file access is disabled: the session's ${name} is not the memory guard's, which reads no ignore files`,
+		);
+		g.replaced.clear();
+		// --replay reads it as a call that never ran (replay's NOT_RUN), so it sends the next recorded call on.
+		const recorded = join(g.base, `${name}-recorded.jsonl`);
+		const entry = (id: string, parentId: string | null, message: unknown) =>
+			JSON.stringify({ type: "message", id, parentId, message });
+		writeFileSync(
+			recorded,
+			[
+				JSON.stringify({ type: "session", version: 3, id: "s", cwd: "/" }),
+				entry("a", null, {
+					role: "assistant",
+					stopReason: "toolUse",
+					content: [{ type: "toolCall", id: "c", name, arguments: { pattern: "x", path: tier } }],
+				}),
+				entry("b", "a", {
+					role: "toolResult",
+					toolCallId: "c",
+					toolName: name,
+					isError: true,
+					content: [{ type: "text", text: reason }],
+				}),
+			].join("\n"),
+		);
+		assert.deepEqual(
+			loadRecording(recorded).turns.map((t) => [t.calls.length, t.blocked.map((b) => b.name)]),
+			[[0, [name]]],
+		);
+	}
+});
+
+test("a session without memory starts beside another grep and find: none of memory's is active there", async (t) => {
+	const g = await guarded({ cell: "goal_t3_s7", start: false, profile: "off", optional: true, explore: false });
+	t.after(() => rmSync(g.base, { recursive: true, force: true }));
+	g.replaced.set("grep", "<sdk:grep>");
+	g.replaced.set("find", "<sdk:find>");
+	await g.again(g.home);
+	assert.equal(g.mem.configError(), undefined);
+	assert.deepEqual(g.mem.tools, []);
+});
+
+for (const dropped of [["Grep", "Find"], ["Grep"], ["Find"]])
+	test(`on a pi whose ${dropped.join(" and ").toLowerCase()} ${dropped.length > 1 ? "ignore" : "ignores"} the option, no session with memory starts`, () => {
+		// Such a pi, made by a resolve hook: its factories drop readIgnoreFiles.
+		const dir = realpathSync(mkdtempSync(join(tmpdir(), "old-pi-")));
+		const real = import.meta.resolve("@earendil-works/pi-coding-agent");
+		const stub = pathToFileURL(join(dir, "stub.mjs")).href;
+		writeFileSync(
+			join(dir, "stub.mjs"),
+			[
+				`export * from ${JSON.stringify(real)};`,
+				...dropped.map(
+					(n) =>
+						`import { create${n}ToolDefinition as ${n} } from ${JSON.stringify(real)};\nexport const create${n}ToolDefinition = (cwd, o) => ${n}(cwd, { ...o, readIgnoreFiles: true });`,
+				),
+			].join("\n"),
+		);
+		writeFileSync(
+			join(dir, "hooks.mjs"),
+			`import { registerHooks } from "node:module";
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier === "@earendil-works/pi-coding-agent" && context.parentURL !== ${JSON.stringify(stub)})
+			return { url: ${JSON.stringify(stub)}, shortCircuit: true };
+		return next(specifier, context);
+	},
+});
+`,
+		);
+		const here = (p: string) => JSON.stringify(new URL(p, import.meta.url).href);
+		writeFileSync(
+			join(dir, "probe.ts"),
+			`import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { memory } from ${here("../src/capabilities/memory/index.ts")};
+import { deployFlags } from ${here("./helpers/deployment.ts")};
+const home = join(${JSON.stringify(dir)}, "memory");
+const run = join(${JSON.stringify(dir)}, "run");
+mkdirSync(join(home, "libero", "global"), { recursive: true });
+writeFileSync(join(home, "libero", "MEMORY.md"), "# memory\\n");
+mkdirSync(run);
+const flags = deployFlags({ "output-dir": run });
+const hooks = new Map();
+const registered = [];
+const pi = { on: (n, f) => hooks.set(n, f), registerFlag: () => {}, registerCommand: () => {}, registerTool: (t) => registered.push(t.name), getAllTools: () => [], getFlag: (n) => flags[n] };
+const mem = memory(pi, { home: () => home, cell: () => ({ tag: "goal_t3_s7", reference: "goal_t3_s7" }), explore: () => true });
+const ctx = { cwd: run, hasUI: false, sessionManager: { getSessionDir: () => "", getBranch: () => [] } };
+await hooks.get("session_start")({}, ctx);
+const call = (toolName) => hooks.get("tool_call")({ type: "tool_call", toolName, toolCallId: "t", input: { path: join(home, "libero", "global") } }, ctx)?.reason ?? null;
+console.log(JSON.stringify({ registered, problem: mem.configError(), grep: call("grep"), find: call("find") }));
+`,
+		);
+		try {
+			const r = spawnSync(
+				process.execPath,
+				[
+					"--experimental-strip-types",
+					"--import",
+					pathToFileURL(join(dir, "hooks.mjs")).href,
+					join(dir, "probe.ts"),
+				],
+				{ encoding: "utf8", timeout: 60_000 },
+			);
+			assert.equal(r.status, 0, r.stderr);
+			const disabled = "file access is disabled: the memory guard has no memory, output dir or cell";
+			assert.deepEqual(JSON.parse(r.stdout.trim().split("\n").at(-1) ?? ""), {
+				registered: [],
+				problem:
+					"this pi's grep or find reads ignore files the memory guard does not judge: rebuild pi (npm run build), whose grep and find take readIgnoreFiles",
+				grep: disabled,
+				find: disabled,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});

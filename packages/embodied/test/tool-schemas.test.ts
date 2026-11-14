@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SEARCH_TOOLS } from "../src/capabilities/memory/index.ts";
 import { MM_TOOL_SCHEMAS } from "../src/modes/motormind/index.ts";
 import { units } from "../src/modes/units/index.ts";
 import { geometryDefs } from "../src/primitives/geometry.ts";
@@ -91,7 +92,11 @@ function registered(load: (pi: ExtensionAPI) => unknown): Tool[] {
 			flags[name] = o.default;
 		},
 		getFlag: (name: string) => flags[name],
-		registerTool: (t: Tool) => tools.push({ name: t.name, description: t.description, parameters: t.parameters }),
+		// Memory's grep and find are pi's own tools (../src/capabilities/memory), not the robot's.
+		registerTool: (t: Tool) => {
+			if (!SEARCH_TOOLS.includes(t.name))
+				tools.push({ name: t.name, description: t.description, parameters: t.parameters });
+		},
 		registerCommand: () => {},
 		registerProvider: () => {},
 		registerMessageRenderer: () => {},
