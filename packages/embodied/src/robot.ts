@@ -58,6 +58,7 @@ import {
 } from "./planner/replay-thinking.ts";
 import {
 	available,
+	codeModeParams,
 	loadManifest,
 	type Manifest,
 	toolDescription,
@@ -509,6 +510,12 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const mem = spec.memory
 		? memory(pi, {
 				robot: name,
+				// A recipe line keeps a primitive's code-mode params too when their values fit: piper's and robosuite's tools
+				// pass them on in tool mode (robodojo's and robolab's set return_frames themselves).
+				params: (tool) => {
+					const e = manifestTool(tool);
+					return e ? codeModeParams(e, spec.vars?.() ?? {}) : {};
+				},
 				...spec.memory,
 				explore: spec.explore ? () => pi.getFlag("explore") === true : undefined,
 			})

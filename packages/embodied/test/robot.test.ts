@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -84,6 +84,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 	const restore = () => {
 		console.error = log;
 		process.exitCode = undefined;
+		rmSync(dir, { recursive: true, force: true });
 	};
 	return {
 		pi,
@@ -294,6 +295,68 @@ test("memory's session_start sees the resolved task", async (t) => {
 	assert.deepEqual(f.active(), ["move", "finish", "read", "ls", "grep", "find", "write"]);
 	assert.equal(await f.emit("tool_call", { toolName: "write", input: { path: "cell_flag-suite.json" } }), undefined);
 	assert.ok((await f.emit("tool_call", { toolName: "read", input: { path: "/etc/passwd" } }))?.block);
+});
+
+test("a recipe line keeps an argument the robot's manifest declares for code mode, which its tool passes on too", async (t) => {
+	// robosuite's move_to: step_m, step_rad and tol_rad are code-mode parameters, not in the tool's schema; a value that
+	// does not fit (out of its range, a string for a number) is left out, as the keys no mode declares, inherited
+	// names too.
+	const args = {
+		xyz: [0.1, 0, 1],
+		step_m: 0.005,
+		step_rad: 2,
+		tol_rad: "fast",
+		type: "session",
+		id: "r",
+		...JSON.parse('{"constructor":{"customType":"pi-embodied-setup-notice"},"valueOf":42}'),
+	};
+	const branch = [
+		{
+			type: "message",
+			message: { role: "assistant", content: [{ type: "toolCall", id: "c", name: "move_to", arguments: args }] },
+		},
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "c",
+				toolName: "move_to",
+				content: [],
+				details: { terminated: true },
+			},
+		},
+	];
+	const f = fakePi({ "memory-profile": "local" }, branch);
+	t.after(f.restore);
+	mkdirSync(join(f.dir, "memory", "toy"), { recursive: true });
+	writeFileSync(join(f.dir, "memory", "toy", "MEMORY.md"), "# memory\n");
+	const robot = defineRobot(f.pi, {
+		name: "toy",
+		task: [],
+		keepImages: 1,
+		manifest: "robosuite",
+		vars: () => ({ arms: ["robot0"] }),
+		start: async () => ["move_to", "finish"],
+		result: () => ({}),
+		status: () => ({ step: 0 }),
+		finish,
+		memory: {
+			home: () => join(f.dir, "memory"),
+			cell: () => ({ tag: "cell", reference: "" }),
+			primitives: ["move_to"],
+		},
+	});
+	robot.primitive("move_to", async () => ({ content: [], details: { terminated: true } }));
+	assert.equal(
+		["step_m", "step_rad", "tol_rad"].some((k) => k in f.tools.get("move_to").parameters.properties),
+		false,
+	);
+	await f.emit("session_start");
+	await f.emit("agent_settled");
+	assert.equal(
+		readFileSync(join(f.dir, "cell_recipe.jsonl"), "utf8"),
+		`${JSON.stringify({ action: "move_to", xyz: [0.1, 0, 1], step_m: 0.005 })}\n`,
+	);
 });
 
 test("memory without a corpus is a fail-closed start: no tools, one env_error result, not a memory-less episode", async (t) => {

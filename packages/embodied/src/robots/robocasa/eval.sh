@@ -114,18 +114,12 @@ if [ "$mode" = robocasa365 ]; then
 	unset RLDX_RESET_SEED
 
 	record365() { # <dir> <exit code> <split> <task> <scene> <elapsed s>: write result.json (robocasa365 schema)
-		node --input-type=module -e '
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+		node "$here/../../scripts/robot-results.mjs" "$1" | node --input-type=module -e '
+import { readFileSync, writeFileSync } from "node:fs";
 const [dir, code, table, split, task, scene, elapsed, model, thinking, turns, limit, units, stateless, privileged, fallbackModel, fallbackAfter, fallbackRetry, codeMode, codeApi, codeOracle] = process.argv.slice(1);
 const t = JSON.parse(readFileSync(table, "utf8")).tasks.find((t) => t.name === task);
-const results = [];
-for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
-	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
-		if (!line.includes("\"robot_result\"")) continue;
-		const e = JSON.parse(line);
-		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
-	}
-}
+// The robot_result entries of the session files pi wrote in the cell dir (../../scripts/robot-results.mjs).
+const results = JSON.parse(readFileSync(0, "utf8"));
 // An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
 // file without an assistant message: the result line the robot prints on stderr is the result.
 if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))
@@ -313,18 +307,12 @@ config=("$model" "$thinking" "$turns" "$units" "$stateless" "$privileged" "$anch
 export PI_EMBODIED_MEMORY_REVISION=${PI_EMBODIED_MEMORY_REVISION:-$(protocol m.dependencies.task_memory.revision)}
 
 record() { # <dir> <exit code> <split> <task> <seed> <cell timeout> <elapsed s>: write result.json
-	node --input-type=module -e '
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+	node "$here/../../scripts/robot-results.mjs" "$1" | node --input-type=module -e '
+import { readFileSync, writeFileSync } from "node:fs";
 const [dir, code, manifest, split, task, seed, limit, elapsed, model, thinking, turns, units, stateless, privileged, anchor, vdm, vdmModel, vdmWrist, fallbackModel, fallbackAfter, fallbackRetry, approval, maxToolCalls, maxTokens, codeMode, codeApi, codeOracle, vdmVideo] = process.argv.slice(1);
 const m = JSON.parse(readFileSync(manifest, "utf8"));
-const results = [];
-for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
-	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
-		if (!line.includes("\"robot_result\"")) continue;
-		const e = JSON.parse(line);
-		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
-	}
-}
+// The robot_result entries of the session files pi wrote in the cell dir (../../scripts/robot-results.mjs).
+const results = JSON.parse(readFileSync(0, "utf8"));
 // An oracle run (--code-oracle) or a VLA-alone run (--vla-alone) asks no model, and pi writes no session
 // file without an assistant message: the result line the robot prints on stderr is the result.
 if (!results.length && ((codeOracle && codeMode !== "false") || process.env.VLA_ALONE))

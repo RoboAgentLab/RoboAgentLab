@@ -5,7 +5,8 @@
  *     --surface tools|code --out <dir> [--robot R] [--vars arms=left,right,...] [--tools a,b] \
  *     [--code-api high|low|...] [--task T] [--include-failures] [--dry-run] <session.jsonl | dir>...
  *
- * Reads pi session files (`.jsonl`, or directories searched for them) of runs a planner model made
+ * Reads pi session files (a `.jsonl` named, read as given, or the session files pi wrote below a directory, named
+ * `<time>_<id>.jsonl`: the report lists the other sessions a search passed over) of runs a planner model made
  * on a robot, keeps the successful ones (the `robot_result` entry claims success and reports no
  * env or planner error; `--include-failures` keeps every run) and writes one sample per teacher
  * step in LLaMA-Factory's Alpaca layout, as Show-Harness's rollouts_to_alpaca.py writes the units
@@ -29,6 +30,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { hasSessionHeader, isSessionFile } from "../../infra/session-files.ts";
 import {
 	loadManifest,
 	type Manifest,
@@ -65,13 +67,25 @@ type Message = {
 	isError?: boolean;
 };
 
-/** Every `.jsonl` under `root` (itself when it is one), sorted. */
-export function findSessions(root: string): string[] {
-	if (statSync(root).isFile()) return [root];
-	return readdirSync(root)
+/**
+ * The session files under `root`, sorted: `root` itself when it is a file (read as given), else every session file
+ * pi wrote below it; and apart, the sessions the search passed over: `.jsonl` files that begin with a session header
+ * but are not ones pi wrote there (../../infra/session-files.ts: an exported, renamed or linked session).
+ */
+export function findSessions(root: string): { sessions: string[]; other: string[] } {
+	if (statSync(root).isFile()) return { sessions: [root], other: [] };
+	const found: { sessions: string[]; other: string[] } = { sessions: [], other: [] };
+	for (const p of readdirSync(root)
 		.map((d) => join(root, d))
-		.sort()
-		.flatMap((p) => (statSync(p).isDirectory() ? findSessions(p) : p.endsWith(".jsonl") ? [p] : []));
+		.sort()) {
+		if (statSync(p).isDirectory()) {
+			const below = findSessions(p);
+			found.sessions.push(...below.sessions);
+			found.other.push(...below.other);
+		} else if (isSessionFile(p)) found.sessions.push(p);
+		else if (p.endsWith(".jsonl") && hasSessionHeader(p)) found.other.push(p);
+	}
+	return found;
 }
 
 /** The session's custom entries of `type`, oldest first. */
@@ -256,6 +270,10 @@ export function sessionCodeApi(entries: SessionEntry[], m: Manifest, vars: Vars,
 	return { tier, api: renderPrimitives(prims) || "(none)" };
 }
 
+/** What the report says of a session a directory search passed over. */
+const PASSED_OVER =
+	"not a session file pi wrote (a regular file <time>_<session id>.jsonl, with that id in its first line): name the file to read it";
+
 export function convert(o: {
 	surface: "tools" | "code";
 	sessions: string[];
@@ -276,7 +294,8 @@ export function convert(o: {
 	const samples: Sample[] = [];
 	const report: { session: string; samples: number; skipped?: string }[] = [];
 	const dry = o["dry-run"] === true;
-	for (const file of o.sessions.flatMap(findSessions)) {
+	const found = o.sessions.map(findSessions);
+	for (const file of found.flatMap((f) => f.sessions)) {
 		const entries = parseSessionEntries(readFileSync(file, "utf8")) as SessionEntry[];
 		const who = taskText(entries);
 		const robot = o.robot ?? who.robot;
@@ -306,6 +325,7 @@ export function convert(o: {
 		report.push({ session: file, samples: mine.length });
 		samples.push(...mine);
 	}
+	for (const file of found.flatMap((f) => f.other)) report.push({ session: file, samples: 0, skipped: PASSED_OVER });
 	if (!dry) {
 		mkdirSync(o.out, { recursive: true });
 		writeFileSync(join(o.out, "sft.json"), `${JSON.stringify(samples, null, 1)}\n`);
@@ -336,7 +356,7 @@ if (process.argv[1] && resolve(process.argv[1]) === new URL(import.meta.url).pat
 	const surface = values.surface;
 	if ((surface !== "tools" && surface !== "code") || !positionals.length || (!values.out && !values["dry-run"])) {
 		console.error(
-			"usage: sessions_to_sft.ts --surface tools|code --out <dir> [--robot R] [--vars k=v;k=a,b] [--tools a,b] [--code-api tier] [--task T] [--include-failures] [--dry-run] <session.jsonl | dir>...",
+			"usage: sessions_to_sft.ts --surface tools|code --out <dir> [--robot R] [--vars k=v;k=a,b] [--tools a,b] [--code-api tier] [--task T] [--include-failures] [--dry-run] <session.jsonl | dir (the <time>_<id>.jsonl session files below it)>...",
 		);
 		process.exit(2);
 	}

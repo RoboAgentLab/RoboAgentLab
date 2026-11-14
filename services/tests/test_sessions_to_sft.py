@@ -132,12 +132,22 @@ def test_dry_run_counts_the_teacher_steps(tmp_path: Path, surface: str):
         pytest.skip(
             "the checkout's node_modules are not installed (npm ci --ignore-scripts)"
         )
-    good = tmp_path / "good.jsonl"
-    good.write_text("".join(json.dumps(e) + "\n" for e in session()), encoding="utf-8")
-    bad = tmp_path / "bad.jsonl"
-    bad.write_text(
-        "".join(json.dumps(e) + "\n" for e in session("failure")), encoding="utf-8"
+
+    # Session files as pi writes them: its name, its header with that id first (a directory is
+    # searched for these only, packages/embodied/src/infra/session-files.ts).
+    def write(name: str, entries: list[dict]) -> None:
+        header = {"type": "session", "version": 3, "id": name.split("_", 1)[1][:-6]}
+        lines = [header, *entries]
+        (tmp_path / name).write_text(
+            "".join(json.dumps(e) + "\n" for e in lines), encoding="utf-8"
+        )
+
+    good, bad = (
+        "2026-01-01T00-00-01-000Z_good.jsonl",
+        "2026-01-01T00-00-00-000Z_bad.jsonl",
     )
+    write(good, session())
+    write(bad, session("failure"))
     out = subprocess.run(
         [
             sys.executable,
@@ -162,6 +172,6 @@ def test_dry_run_counts_the_teacher_steps(tmp_path: Path, surface: str):
     assert report["surface"] == surface
     assert report["samples"] == (2 if surface == "tools" else 1)
     by_name = {Path(s["session"]).name: s for s in report["sessions"]}
-    assert by_name["bad.jsonl"]["skipped"] == "not a successful run"
-    assert by_name["good.jsonl"]["samples"] == report["samples"]
+    assert by_name[bad]["skipped"] == "not a successful run"
+    assert by_name[good]["samples"] == report["samples"]
     assert not (tmp_path / "sft.json").exists()

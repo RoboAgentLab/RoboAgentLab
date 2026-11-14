@@ -231,6 +231,15 @@ export function toolSchema(e: ManifestEntry, vars: Vars = {}) {
 	return Type.Object(props);
 }
 
+/** The schemas of the entry's params that exist only outside tool mode (`modes` without "tool": a program's), by name. */
+export function codeModeParams(e: ManifestEntry, vars: Vars = {}): Record<string, TSchema> {
+	return Object.fromEntries(
+		Object.entries(e.params ?? {}).flatMap(([k, p]) =>
+			p.modes && !p.modes.includes("tool") && !dropped(p, vars) ? [[k, paramSchema(p, vars)]] : [],
+		),
+	);
+}
+
 export const toolDescription = (e: ManifestEntry, vars: Vars = {}) => fill(e.doc.tool ?? "", vars);
 
 /** Whether the run has every capability the entry requires. */

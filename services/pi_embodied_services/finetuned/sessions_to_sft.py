@@ -16,7 +16,7 @@
 
     python -m pi_embodied_services.finetuned.sessions_to_sft --surface tools|code --out <dir> \\
         [--robot R] [--vars "arms=left,right;max_move=0.2"] [--tools a,b] [--code-api tier] \\
-        [--task T] [--include-failures] [--dry-run] <session.jsonl | dir>...
+        [--task T] [--include-failures] [--dry-run] <session.jsonl | dir (the <time>_<id>.jsonl session files below it)>...
 
 Runs ``packages/embodied/src/modes/finetuned/sessions_to_sft.ts`` under node (as
 ``lerobot_to_rollouts.py`` runs ``transform.ts``): the prompt of every sample is rendered by the

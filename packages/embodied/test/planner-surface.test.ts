@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -25,6 +25,7 @@ import {
 import { loadManifest, toolEntry, toolSchema } from "../src/primitives/manifest.ts";
 import { PRIMITIVES_EVENT, type PrimitivesHandle } from "../src/robot.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { SESSION_HEADER } from "./helpers/session.ts";
 
 // The toy robot's primitive manifest (./fixtures/manifests/toy.json): move_to (high, tool and code), segment (ts).
 process.env.PI_EMBODIED_MANIFESTS = new URL("./fixtures/manifests/", import.meta.url).pathname;
@@ -786,7 +787,7 @@ test("flash-generate writes a unit sequence (the successful act calls) and a pro
 	assert.throws(() => sessionUnits(unsolved), /did not solve/);
 });
 
-test("sessions_to_sft renders the provider's prompts for the teacher's tool calls and programs; --dry-run counts", () => {
+test("sessions_to_sft renders the provider's prompts for the teacher's tool calls and programs; --dry-run counts", (t) => {
 	const entries = session();
 	const stored: string[] = [];
 	const image = (step: number, i: number) => {
@@ -834,22 +835,41 @@ test("sessions_to_sft renders the provider's prompts for the teacher's tool call
 	assert.match(code[1].instruction, /\nLast report: \{"ran":0\}\n/);
 	// The CLI path over a session file, dry and for real.
 	const dir = mkdtempSync(join(tmpdir(), "sft-"));
-	writeFileSync(join(dir, "good.jsonl"), entries.map((e) => `${JSON.stringify(e)}\n`).join(""));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	// Session files as pi writes them (../src/infra/session-files.ts): a directory is searched for these only.
+	const write = (name: string, e: SessionEntry[]) =>
+		writeFileSync(
+			join(dir, name),
+			[SESSION_HEADER, ...e.map((x) => JSON.stringify(x))].map((l) => `${l}\n`).join(""),
+		);
+	const good = "2026-01-01T00-00-01-000Z_s.jsonl";
+	write(good, entries);
+	write("2026-01-01T00-00-00-000Z_s.jsonl", session({ claimed: "failure" }));
+	// Below a cell's dir, files pi did not write as sessions there: a successful run's copy and another id in pi's name
+	// (reported, not read), and the recipe and the cell's notes (no session's shape: not reported).
+	mkdirSync(join(dir, "cell"));
+	for (const name of ["cell_copy.jsonl", "2026-01-01T00-00-02-000Z_other.jsonl"]) write(join("cell", name), entries);
 	writeFileSync(
-		join(dir, "bad.jsonl"),
-		session({ claimed: "failure" })
-			.map((e) => `${JSON.stringify(e)}\n`)
-			.join(""),
+		join(dir, "cell", "cell_recipe.jsonl"),
+		`${JSON.stringify({ action: "move_to", xyz: [0.1, 0.2, 0.3] })}\n`,
 	);
+	// A file shaped as a session but no .jsonl is not reported either.
+	writeFileSync(join(dir, "cell", "cell.json"), `${SESSION_HEADER}\n`);
 	const dry = convert({ surface: "code", sessions: [dir], out: join(dir, "out"), "dry-run": true });
 	assert.deepEqual(
-		[dry.out, dry.samples, dry.sessions.map((s) => [s.samples, s.skipped ?? null])],
+		[dry.out, dry.samples, dry.sessions.map((s) => [basename(s.session), s.samples, s.skipped ?? null])],
 		[
 			null,
 			2,
 			[
-				[0, "not a successful run"],
-				[2, null],
+				["2026-01-01T00-00-00-000Z_s.jsonl", 0, "not a successful run"],
+				[good, 2, null],
+				// Reported, not read: the sessions the search passed over, below the directory too.
+				...["2026-01-01T00-00-02-000Z_other.jsonl", "cell_copy.jsonl"].map((n) => [
+					n,
+					0,
+					"not a session file pi wrote (a regular file <time>_<session id>.jsonl, with that id in its first line): name the file to read it",
+				]),
 			],
 		],
 	);
@@ -863,7 +883,7 @@ test("sessions_to_sft renders the provider's prompts for the teacher's tool call
 	assert.equal(both.samples, 4);
 	const real = convert({
 		surface: "tools",
-		sessions: [join(dir, "good.jsonl")],
+		sessions: [join(dir, good)],
 		out: join(dir, "out"),
 		tools: "move_to",
 	});

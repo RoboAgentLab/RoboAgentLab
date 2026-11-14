@@ -93,7 +93,10 @@ def main(argv: list[str] | None = None) -> int:
         "or VeRL RL task prompts (verl-rl)",
     )
     planner.add_argument(
-        "runs", type=Path, nargs="+", help="eval output dirs (searched recursively)"
+        "runs",
+        type=Path,
+        nargs="+",
+        help="eval output dirs, searched recursively for the session files pi wrote (regular files <time>_<id>.jsonl; sessions under other names are listed as sessions_passed_over), or session files named",
     )
     planner.add_argument("--output", type=Path, required=True)
     planner.add_argument(

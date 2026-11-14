@@ -16,6 +16,7 @@ import {
 	parseAttached,
 	registerGraspFlags,
 } from "../src/primitives/grasp.ts";
+import { loadManifest } from "../src/primitives/manifest.ts";
 import dualFranka from "../src/robots/dual_franka/index.ts";
 import franka from "../src/robots/franka/index.ts";
 import libero, {
@@ -421,7 +422,11 @@ test("a solved LIBERO recipe keeps its execute_grasp / execute_place steps", () 
 		call("2", "execute_place", { place_id: "p5" }),
 		result("2", "execute_place", { result: {}, terminated: true }),
 	];
-	assert.deepEqual(recipe(entries as never, new Set(RECIPE_PRIMITIVES)), [
+	// The arguments each tool declares, as LIBERO's manifest declares them.
+	const m = loadManifest("libero");
+	const declared = (tool: string, key: string) =>
+		Object.keys(m.primitives.find((e) => e.name === tool)?.params ?? {}).includes(key);
+	assert.deepEqual(recipe(entries as never, new Set(RECIPE_PRIMITIVES), declared), [
 		{ action: "execute_grasp", grasp_id: "g2" },
 		{ action: "execute_place", place_id: "p5" },
 	]);

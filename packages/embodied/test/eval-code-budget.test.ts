@@ -8,6 +8,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 /** Run eval.sh twice into one out dir with a fake pi that records `flags` as the robot's result (undefined: a result written before the key existed). */
 function twice(robot: string, positional: string[], flags: string | undefined, first: string[], second: string[]) {
@@ -28,7 +29,7 @@ function twice(robot: string, positional: string[], flags: string | undefined, f
 	});
 	writeFileSync(
 		pi,
-		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' > "$dir/s.jsonl"\n`,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${SESSION_HEADER}' > "$dir/${SESSION_FILE}"\necho '${entry}' >> "$dir/${SESSION_FILE}"\n`,
 	);
 	chmodSync(pi, 0o755);
 	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;
