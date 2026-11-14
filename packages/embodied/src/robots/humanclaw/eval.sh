@@ -157,16 +157,11 @@ for key in $list; do
 		--humanclaw-output "$dir/rollout" "Solve the task." $($metrics && echo --humanclaw-metrics) \
 		$($video && echo --humanclaw-video) "${pass[@]}" </dev/null >"$dir/stdout.log" 2>"$dir/stderr.log"
 	code=$?
-	node --input-type=module -e '
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+	node "$here/../../scripts/robot-results.mjs" "$dir" | node --input-type=module -e '
+import { readFileSync, writeFileSync } from "node:fs";
 const [dir, code, config, mode, preset, model] = process.argv.slice(1);
-const results = [];
-for (const f of readdirSync(dir).filter((f) => f.endsWith(".jsonl")))
-	for (const line of readFileSync(`${dir}/${f}`, "utf8").split("\n")) {
-		if (!line.includes("\"robot_result\"")) continue;
-		const e = JSON.parse(line);
-		if (e.type === "custom" && e.customType === "robot_result") results.push(e.data);
-	}
+// The robot_result entries of the session files pi wrote in the cell dir (../../scripts/robot-results.mjs).
+const results = JSON.parse(readFileSync(0, "utf8"));
 const last = results.length === 1 ? results[0] : undefined;
 const status = results.length > 1 ? "duplicate_result" : !last ? (Number(code) ? "env_error" : "missing")
 	: last.env_error ? "env_error" : last.planner_error ? "planner_error"

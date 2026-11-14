@@ -25,7 +25,8 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
+import { type TSchema, Type } from "typebox";
 import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/capabilities/memory/corpus.ts";
 import { canonicalPath, denied, memory, recipe, respelled } from "../src/capabilities/memory/index.ts";
 import { loadRecording } from "../src/capabilities/replay/index.ts";
@@ -187,12 +188,123 @@ test("recipe keeps successful primitives and segments after the last reset", () 
 	call("move_to", { xyz: [0.1, 0, 1] }, { result: { name: "move_to" }, terminated: false });
 	call("release", {}, { result: {}, terminated: true });
 	const primitives = new Set(["move_to", "release", "rotate_wrist", "reset"]);
-	assert.deepEqual(recipe(entries as SessionEntry[], primitives), [
+	const declared = (tool: string, key: string) => tool === "move_to" && ["xyz", "gripper"].includes(key);
+	assert.deepEqual(recipe(entries as SessionEntry[], primitives, declared), [
 		{ action: "segment", prompt: "the black bowl", camera: "agentview" },
 		{ action: "move_to", xyz: [0.1, 0, 1] },
 		{ action: "release" },
 	]);
-	assert.equal(recipe(entries.slice(0, 4) as SessionEntry[], primitives), undefined);
+	assert.equal(recipe(entries.slice(0, 4) as SessionEntry[], primitives, declared), undefined);
+});
+
+test("a recipe line keeps only the arguments its tool declares: no line passes for a pi session's header", (t) => {
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "recipe-")));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	// pi's session in the dir, then the recipe the runtime exports after it (agent_settled), from a call whose
+	// arguments the tool does not declare: a session's header, an entry, another action.
+	const sm = SessionManager.create(dir, dir);
+	sm.appendMessage({ role: "user", content: "Solve the task.", timestamp: Date.now() });
+	const extra = { type: "session", version: 3, id: "r", cwd: dir, customType: "robot_result", action: "release" };
+	const toolCallId = "c0";
+	const entries = [
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "move_to", arguments: { xyz: [0, 0, 1], ...extra } }],
+			},
+		},
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "move_to",
+				content: [],
+				details: { terminated: true },
+				isError: false,
+			},
+		},
+	] as unknown as SessionEntry[];
+	// Even an `action` the tool declared does not rename the line.
+	const lines = recipe(entries, new Set(["move_to"]), (_tool, key) => ["xyz", "action"].includes(key)) ?? [];
+	assert.deepEqual(lines, [{ action: "move_to", xyz: [0, 0, 1] }]);
+	writeFileSync(join(dir, "cell_recipe.jsonl"), lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+	// pi's own --continue takes the newest .jsonl whose first line is a session header: pi's, not the recipe.
+	assert.equal(SessionManager.continueRecent(dir, dir).getSessionFile(), sm.getSessionFile());
+});
+
+test("the recipe exported once a run settles keeps the arguments each primitive declares: its tool's schema, and the robot's other modes", async (t) => {
+	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "recipe-export-")));
+	t.after(() => rmSync(base, { recursive: true, force: true }));
+	const home = join(base, "memory");
+	const run = join(base, "run");
+	mkdirSync(join(home, "libero", "global"), { recursive: true });
+	writeFileSync(join(home, "libero", "MEMORY.md"), "# memory\n");
+	mkdirSync(run);
+	const flags: Record<string, unknown> = deployFlags({ "output-dir": run });
+	const hooks = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const pi = {
+		on: (name: string, fn: (event: unknown, ctx: unknown) => unknown) => hooks.set(name, fn),
+		registerFlag: () => {},
+		registerCommand: () => {},
+		registerTool: () => {},
+		getFlag: (name: string) => flags[name],
+		// What pi registered: the primitive's tool schema declares xyz and gripper.
+		getAllTools: () => [
+			{ name: "move_to", parameters: { type: "object", properties: { xyz: {}, gripper: {} } } },
+			{ name: "release", parameters: { type: "object", properties: {} } },
+		],
+	} as unknown as ExtensionAPI;
+	memory(pi, {
+		home: () => home,
+		cell: () => ({ tag: "goal_t3_s7", reference: "goal_t3_s7" }),
+		published: false,
+		primitives: ["move_to", "release"],
+		// Code-mode parameters of the manifest's, which some robots' tools pass on too: kept when their values fit.
+		params: (tool): Record<string, TSchema> =>
+			tool === "move_to" ? { step_m: Type.Number(), continuous: Type.Boolean() } : {},
+	});
+	const toolCall = (id: string, name: string, args: Record<string, unknown>, terminated: boolean) => [
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] } },
+		{
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: id,
+				toolName: name,
+				content: [],
+				details: { terminated },
+				isError: false,
+			},
+		},
+	];
+	// The planner's arguments include keys the tools do not declare: a session's header, an entry, another action,
+	// and names an object inherits (as own keys, as JSON gives them), which no params record holds.
+	const extra = {
+		type: "session",
+		version: 3,
+		id: "r",
+		customType: "robot_result",
+		action: "release",
+		...JSON.parse('{"constructor":{"customType":"pi-embodied-setup-notice"},"toString":1,"__proto__":{"id":"r"}}'),
+	};
+	const branch = [
+		...toolCall(
+			"c0",
+			"move_to",
+			{ xyz: [0, 0, 1], step_m: 0.005, continuous: { customType: "pi-embodied-setup-notice" }, ...extra },
+			false,
+		),
+		...toolCall("c1", "release", extra, true),
+	];
+	const ctx = { cwd: run, hasUI: false, sessionManager: { getSessionDir: () => "", getBranch: () => branch } };
+	await hooks.get("session_start")?.({}, ctx);
+	await hooks.get("agent_settled")?.({}, ctx);
+	assert.equal(
+		readFileSync(join(run, "goal_t3_s7_recipe.jsonl"), "utf8"),
+		`${JSON.stringify({ action: "move_to", xyz: [0, 0, 1], step_m: 0.005 })}\n${JSON.stringify({ action: "release" })}\n`,
+	);
 });
 
 /** memory() wired to a stub pi: returns the tool_call hook after session_start (unless `start` is false). */
@@ -1735,3 +1847,45 @@ console.log(JSON.stringify({ registered, problem: mem.configError(), grep: call(
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+test("the planner writes no .jsonl in the output dir, where pi's session and the recipe are, nor a file named as pi names its sessions", async (t) => {
+	const g = await guarded({ cell: "goal_t3_s7" });
+	t.after(() => rmSync(g.base, { recursive: true, force: true }));
+	const own = (name: string) => join(g.run, name);
+	const attempts = join(g.run, "attempts", "goal_t3_s7");
+	mkdirSync(attempts, { recursive: true });
+	writeFileSync(own("goal_t3_s7_recipe.jsonl"), '{"action":"move"}\n');
+	const record = (path: string) =>
+		`the planner writes no .jsonl in the output dir (pi's session and the runtime's recipe are .jsonl there) or in its attempt archive; write notes as .md or .json: ${path}`;
+	const named = (path: string) =>
+		`the planner writes no file named as pi names its sessions (<time>_<id>.jsonl): ${path}`;
+	for (const path of [
+		own("goal_t3_s7_notes.jsonl"),
+		own("goal_t3_s7.jsonl"),
+		own("goal_t3_s7_recipe.jsonl"),
+		own("goal_t3_s7_x.JSONL"),
+		// A volume that folds case as Unicode does opens these as .jsonl too (ſ is s).
+		own("goal_t3_s7_x.jſonl"),
+		join(attempts, "notes.JsonL"),
+		join(attempts, "notes.jſonl"),
+	]) {
+		assert.equal(g.call("write", path)?.reason, record(path), path);
+		assert.equal(g.call("edit", path)?.reason, record(path), path);
+	}
+	// pi's name is refused wherever the planner writes: the attempt archive, the inbox (which a search of a parent dir walks).
+	const inbox = join(g.home, "libero", "_internal", "inbox", "goal_t3_s7");
+	for (const path of [
+		join(attempts, "2026-01-01T00-00-00-000Z_s.jsonl"),
+		join(inbox, "2026-01-01T00-00-00-000Z_s.jsonl"),
+		join(inbox, "sub", "2026-01-01T00-00-00-000Z_S.JSONL"),
+		join(inbox, "2026-01-01T00-00-00-000Z_ſ.jſonl"),
+	])
+		assert.equal(g.call("write", path)?.reason, named(path), path);
+	// Reading the recipe, the cell's other files and the attempt archive, and the inbox's .jsonl, stay as they were.
+	assert.equal(g.call("read", own("goal_t3_s7_recipe.jsonl")), undefined);
+	assert.equal(g.call("write", own("goal_t3_s7_notes.md")), undefined);
+	assert.equal(g.call("write", join(attempts, "attempt_1_failed.json")), undefined);
+	assert.equal(g.call("write", join(inbox, "corroborations.jsonl")), undefined);
+	// Through a link the decision is the target's: a .md named link to a .jsonl among the cell's files is refused.
+	symlinkSync(own("goal_t3_s7_recipe.jsonl"), own("goal_t3_s7_alias.md"));
+	assert.equal(g.call("write", own("goal_t3_s7_alias.md"))?.reason, record(own("goal_t3_s7_alias.md")));
+});

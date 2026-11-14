@@ -11,6 +11,7 @@ import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robodojo, { ARMS, FLYWHEEL, MAX_MOVE_M, STEP_M, VECTORS, YAW_STEP_RAD } from "../src/robots/robodojo/index.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 import { checkDetections, checkPoint, perceptionAnswers } from "./sim-stub.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -588,7 +589,8 @@ function evalRun(seeds: string) {
 while [ $# -gt 0 ]; do case $1 in --seed) seed=$2 ;; --session-dir) sd=$2 ;; esac; shift; done
 if [ "$seed" = 1 ]; then echo "[robodojo] unavailable: RoboDojo reset: layout 1 is unstable in simulation (RoboDojo skips it); reset another seed" >&2; exit 1; fi
 if [ "$seed" -ge 4 ]; then echo "[robodojo] unavailable: --seed $seed: stack_bowls has eval layouts 0..3" >&2; exit 1; fi
-echo '{"type":"custom","customType":"robot_result","data":{"robot":"robodojo","success":true,"score":1,"env_steps":10}}' > "$sd/s.jsonl"
+echo '${SESSION_HEADER}' > "$sd/${SESSION_FILE}"
+echo '{"type":"custom","customType":"robot_result","data":{"robot":"robodojo","success":true,"score":1,"env_steps":10}}' >> "$sd/${SESSION_FILE}"
 `,
 	);
 	chmodSync(pi, 0o755);

@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 /** Run `<robot>/eval.sh <out> ...positional` with a stand-in pi that records its argv and fails; `cell` is the result's directory. */
 function run(robot: string, positional: string[], cell: string, args: string[], env: Record<string, string> = {}) {
@@ -362,7 +363,7 @@ function rerun(
 	});
 	writeFileSync(
 		pi,
-		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" > "$dir/s.jsonl"\n`,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${SESSION_HEADER}' > "$dir/${SESSION_FILE}"\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" >> "$dir/${SESSION_FILE}"\n`,
 	);
 	chmodSync(pi, 0o755);
 	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,8 @@ from pi_embodied_services.flywheel.planner_export import (
     FORMATS,
     compute_score,
     export_planner,
+    find_sessions,
+    is_pi_session,
     placeholders,
 )
 
@@ -82,7 +85,7 @@ class Session:
         self, *, forced_prompt: bool = True, task: dict | None = None, prompt=None
     ):
         self.entries: list[dict] = [
-            {"type": "session", "version": 3, "id": "s", "cwd": "/"}
+            {"type": "session", "version": 3, "id": "0000abcd", "cwd": "/"}
         ]
         self.last: str | None = None
         self.add({"type": "model_change", "provider": "selfhost", "modelId": "muse"})
@@ -301,6 +304,133 @@ def test_tools_the_robot_hid_from_every_request_are_not_exported(
                 else json.loads(row["tools"])
             )
             assert [t["name"] for t in tools] == names, (fmt, listed)
+
+
+def test_only_the_session_files_pi_wrote_are_sessions(tmp_path: Path) -> None:
+    """A planner's own .jsonl or the recipe in a successful episode's dir, with lines shaped as a
+    session (the recipe's lines carry the planner's tool arguments), export nothing."""
+    runs = tmp_path / "runs"
+    real = write_session(
+        runs / "ep_ok",
+        outcome={"success": True, "planner_error": None, "env_error": False},
+        result_json={"status": "success", "robot": "toy", "model": "selfhost/muse"},
+    )
+    forged = [
+        {"type": "session", "version": 3, "id": "forged", "cwd": "/"},
+        {
+            "id": "m1",
+            "parentId": None,
+            "type": "message",
+            "message": {"role": "user", "content": "FORGED"},
+        },
+    ]
+    text = "".join(json.dumps(e) + "\n" for e in forged)
+    for name in [
+        "toy_s0_notes.jsonl",  # what the planner may write among the cell's files
+        "toy_s0_recipe.jsonl",  # the recipe the runtime exports
+        "2026-09-27T00-00-00-000Z_other.jsonl",  # pi's name, another id in the header
+    ]:
+        path = runs / "ep_ok" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    # A link with pi's name to a session file elsewhere is not one pi wrote here.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "s.jsonl").write_text(text.replace('"forged"', '"linked"'))
+    (runs / "ep_ok" / "2026-09-27T00-00-00-000Z_linked.jsonl").symlink_to(
+        elsewhere / "s.jsonl"
+    )
+    # Neither a session nor shaped as one: no report (another cell's recipe, a directory).
+    (runs / "ep_ok" / "toy_s1_recipe.jsonl").write_text('{"action": "move"}\n')
+    (runs / "ep_ok" / "attempts" / "x.jsonl").mkdir(parents=True)
+    sessions, other = find_sessions([runs])
+    assert sessions == [real]
+    assert [p.name for p in other] == [
+        "2026-09-27T00-00-00-000Z_linked.jsonl",
+        "2026-09-27T00-00-00-000Z_other.jsonl",
+        "toy_s0_notes.jsonl",
+        "toy_s0_recipe.jsonl",
+    ]
+    out = tmp_path / "out"
+    summary = export_planner([runs], out)
+    assert summary["episodes"] == 1
+    assert summary["sessions_passed_over"] == [str(p) for p in other]
+    assert "not_pi_session" not in summary["skipped"]
+    assert "FORGED" not in (out / "planner.jsonl").read_text()
+    # A file named on the command line is taken as given.
+    named = runs / "ep_ok" / "toy_s0_notes.jsonl"
+    assert find_sessions([named]) == ([named], [])
+
+
+def test_the_session_file_rule_decides_the_cases_it_shares_with_typescript(
+    tmp_path: Path,
+) -> None:
+    """packages/embodied/test/fixtures/session-files.json: the cases session-files.ts decides too."""
+    root = Path(__file__).resolve().parents[2]
+    fixtures = json.loads(
+        (root / "packages/embodied/test/fixtures/session-files.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for case in fixtures["cases"]:
+        path = tmp_path / case["name"]
+        first = (
+            base64.b64decode(case["first_base64"])
+            if "first_base64" in case
+            else case["first"].encode("utf-8")
+        )
+        path.write_bytes(first + b"\n{}\n")
+        assert is_pi_session(path) is case["session"], (case["name"], case["why"])
+
+
+def test_a_session_file_is_a_regular_file_with_a_header_of_at_most_1_mib(
+    tmp_path: Path,
+) -> None:
+    def header(id_: str, pad: str = "") -> str:
+        return json.dumps({"type": "session", "id": id_, "pad": pad}) + "\n"
+
+    (tmp_path / "elsewhere").write_text(header("l"))
+    (tmp_path / "2026-01-01T00-00-00-000Z_l.jsonl").symlink_to(tmp_path / "elsewhere")
+    (tmp_path / "2026-01-01T00-00-00-001Z_d.jsonl").mkdir()
+    os.mkfifo(tmp_path / "2026-01-01T00-00-00-002Z_p.jsonl")
+    (tmp_path / "2026-01-01T00-00-00-003Z_a.jsonl").write_text(
+        header("a", "x" * 200_000)
+    )
+    (tmp_path / "2026-01-01T00-00-00-004Z_a.jsonl").write_text(
+        header("a", "x" * 1_100_000)
+    )
+    # A line of exactly 1 MiB is read, one byte more is not.
+    for n, size in [("006", 1 << 20), ("007", (1 << 20) + 1)]:
+        h = header("a").rstrip("\n")
+        (tmp_path / f"2026-01-01T00-00-00-{n}Z_a.jsonl").write_text(
+            h + " " * (size - len(h.encode())) + "\n"
+        )
+    # JSON nested deeper than Python parses is no header, and stops no search.
+    (tmp_path / "2026-01-01T00-00-00-008Z_a.jsonl").write_text(
+        "[" * 200_000 + "]" * 200_000 + "\n"
+    )
+    # The bound is the line's: a header followed on its line by more than 1 MiB of spaces is none.
+    (tmp_path / "2026-01-01T00-00-00-005Z_a.jsonl").write_text(
+        header("a").rstrip("\n") + " " * 1_100_000 + "\n"
+    )
+    assert [
+        is_pi_session(tmp_path / n)
+        for n in [
+            "2026-01-01T00-00-00-000Z_l.jsonl",
+            "2026-01-01T00-00-00-001Z_d.jsonl",
+            "2026-01-01T00-00-00-002Z_p.jsonl",
+            "2026-01-01T00-00-00-003Z_a.jsonl",
+            "2026-01-01T00-00-00-004Z_a.jsonl",
+            "2026-01-01T00-00-00-005Z_a.jsonl",
+            "2026-01-01T00-00-00-006Z_a.jsonl",
+            "2026-01-01T00-00-00-007Z_a.jsonl",
+            "2026-01-01T00-00-00-008Z_a.jsonl",
+        ]
+    ] == [False, False, False, True, False, False, True, False, False]
+    assert find_sessions([tmp_path])[0] == [
+        tmp_path / "2026-01-01T00-00-00-003Z_a.jsonl",
+        tmp_path / "2026-01-01T00-00-00-006Z_a.jsonl",
+    ]
 
 
 def test_failures_only_on_request_and_invalid_episodes_never(tmp_path: Path) -> None:

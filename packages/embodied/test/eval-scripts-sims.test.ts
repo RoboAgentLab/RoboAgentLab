@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 /**
  * The eval.sh scripts of the four newer simulators (Robosuite, Metaworld, Genesis, BEHAVIOR) record
@@ -70,7 +71,7 @@ function rerun(
 	});
 	writeFileSync(
 		pi,
-		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" > "$dir/s.jsonl"\n`,
+		`#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${SESSION_HEADER}' > "$dir/${SESSION_FILE}"\necho '${entry}' | sed "s/@BUDGET@/$CODE_BUDGET_FLAGS/" >> "$dir/${SESSION_FILE}"\n`,
 	);
 	chmodSync(pi, 0o755);
 	const script = new URL(`../src/robots/${robot}/eval.sh`, import.meta.url).pathname;

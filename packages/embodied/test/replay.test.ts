@@ -81,7 +81,7 @@ function recordSession(finish = true) {
 		...t5.entries,
 		assistant("a6", t5.leaf, finish ? [call("finish", { status: "success", summary: "ok" })] : [call("view", {})]),
 	];
-	writeFileSync(join(dir, "2026-01-01_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 	writeFileSync(join(dir, "arm_recipe.jsonl"), `${JSON.stringify({ action: "view" })}\n`);
 	return dir;
 }
@@ -151,7 +151,7 @@ const results = (m: any, errors: Record<string, string> = {}) =>
 
 test("loadRecording follows the leaf's branch, drops errored replies and calls that never ran, and picks the session file in a dir", () => {
 	const rec = loadRecording(recordSession());
-	assert.match(rec.path, /2026-01-01_s\.jsonl$/);
+	assert.match(rec.path, /2026-01-01T00-00-00-000Z_s\.jsonl$/);
 	assert.deepEqual(rec.task, { robot: "arm", task: "3", seed: "1" });
 	assert.deepEqual(
 		rec.turns.map((t) => t.calls.map((c) => c.name)),
@@ -336,7 +336,7 @@ function sessionOf(turns: { content: unknown[]; stopReason?: string; errors?: Re
 		lines.push(...r.entries);
 		leaf = r.leaf;
 	});
-	writeFileSync(join(dir, "s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 	return dir;
 }
 

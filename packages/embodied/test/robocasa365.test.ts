@@ -11,6 +11,7 @@ import robocasa from "../src/robots/robocasa/index.ts";
 import { envId, loadTable, nearMatches, resolveCell } from "../src/robots/robocasa/tasks.ts";
 import { codeApiReply } from "./helpers/code-api.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 const SERVICES = new URL("../../../services", import.meta.url).pathname;
 const SCRIPT = new URL("../src/robots/robocasa/eval.sh", import.meta.url).pathname;
@@ -84,7 +85,7 @@ test("resolveCell checks the task, split and scene flags and names near matches"
 function evalSh(dir: string, positional: string[], args: string[], env: Record<string, string>, entry?: object) {
 	const pi = join(dir, "pi");
 	const body = entry
-		? `while [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${JSON.stringify({ type: "custom", customType: "robot_result", data: entry })}' > "$dir/s.jsonl"\n`
+		? `while [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; shift; done\necho '${SESSION_HEADER}' > "$dir/${SESSION_FILE}"\necho '${JSON.stringify({ type: "custom", customType: "robot_result", data: entry })}' >> "$dir/${SESSION_FILE}"\n`
 		: `printf '%s\\n' "$@" > "$(dirname "$0")/argv"\nexit 1\n`;
 	writeFileSync(pi, `#!/usr/bin/env bash\n${body}`);
 	chmodSync(pi, 0o755);

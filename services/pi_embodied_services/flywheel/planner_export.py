@@ -16,9 +16,10 @@
 verl_agent_reward, with the environment's success as the reward): full trajectories for SFT, or
 task prompts for RL.
 
-An episode is a directory holding a pi session file (``*.jsonl`` whose first line is the
-``session`` header), as eval.sh / eval-parallel.sh leave it, usually with ``result.json`` next to
-it. Its outcome is ``result.json``'s ``status`` (eval.sh's rule), or, without one, the session's
+An episode is a directory holding a pi session file (named ``<time>_<session id>.jsonl``, its
+first line the ``session`` header with that id; the episode's other ``.jsonl`` files, such as the
+recipe the runtime exports there, are not sessions), as eval.sh / eval-parallel.sh leave it, usually
+with ``result.json`` next to it. Its outcome is ``result.json``'s ``status`` (eval.sh's rule), or, without one, the session's
 ``robot_result`` entry judged by the same rule: ``env_error`` / ``planner_error`` are invalid,
 else ``success`` (``terminated`` for LIBERO) decides. Invalid, timed-out or unfinished episodes
 are never exported. Left out unless ``include`` names them: ``privileged`` runs (simulator
@@ -104,6 +105,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -140,22 +142,70 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _is_session(path: Path) -> bool:
+# pi's session file name (coding-agent session-manager.ts): "<ISO time, ':' and '.' as '-'>_<session id>.jsonl".
+SESSION_FILE_NAME = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}Z_([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\.jsonl"
+)
+_HEADER_BYTES = 1 << 20
+
+
+def _no_constant(name: str) -> None:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _header(path: Path) -> dict[str, Any] | None:
+    """The session header on the first line of a regular file (a link followed), read as
+    session-files.ts reads it: a first line longer than 1 MiB is none, undecodable bytes are
+    replaced, NaN is no JSON, and an integer is read as a float, as JavaScript reads it (Python's
+    int parser refuses one longer than 4300 digits). JSON nested deeper than Python parses is none
+    too (TypeScript parses it: the case the two rules tell apart, on a file only a person or a
+    program writes)."""
+    if not path.is_file():
+        return None
     try:
-        with path.open(encoding="utf-8") as f:
-            return json.loads(f.readline()).get("type") == "session"
-    except (OSError, ValueError, AttributeError):
-        return False
+        with path.open("rb") as f:
+            line = f.readline(_HEADER_BYTES + 1)
+        content = line[:-1] if line.endswith(b"\n") else line
+        if len(content) > _HEADER_BYTES:
+            return None
+        header = json.loads(
+            content.decode("utf-8", errors="replace"),
+            parse_constant=_no_constant,
+            parse_int=float,
+        )
+    except (OSError, ValueError, RecursionError):
+        return None
+    return (
+        header if isinstance(header, dict) and header.get("type") == "session" else None
+    )
 
 
-def find_sessions(roots: Iterable[Path]) -> list[Path]:
-    """Every pi session file below ``roots`` (sorted)."""
-    found: set[Path] = set()
-    for root in roots:
-        root = Path(root)
-        files = [root] if root.is_file() else root.rglob("*.jsonl")
-        found.update(p for p in files if _is_session(p))
-    return sorted(found)
+def is_pi_session(path: Path) -> bool:
+    """A session file pi wrote: a regular file (not a link) with pi's name whose first line is its
+    header with that id (packages/embodied/src/infra/session-files.ts, whose cases the tests share)."""
+    name = SESSION_FILE_NAME.fullmatch(path.name)
+    header = _header(path) if name and not path.is_symlink() else None
+    return header is not None and header.get("id") == name.group(1)
+
+
+def find_sessions(roots: Iterable[Path]) -> tuple[list[Path], list[Path]]:
+    """The session files under ``roots``, and apart the sessions a directory search passed over
+    (both sorted). A root that is a file is read as given when it is a session; below a directory
+    only the session files pi wrote are taken, so an exported, renamed or linked session there (a
+    ``.jsonl`` whose first line is a session header) is passed over and has to be named."""
+    sessions: set[Path] = set()
+    other: set[Path] = set()
+    for root in map(Path, roots):
+        if root.is_file():
+            if _header(root) is not None:
+                sessions.add(root)
+            continue
+        for path in root.rglob("*.jsonl"):
+            if is_pi_session(path):
+                sessions.add(path)
+            elif _header(path) is not None:
+                other.add(path)
+    return sorted(sessions), sorted(other)
 
 
 def branch(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -701,8 +751,8 @@ def export_planner(
     planners: Iterable[str] = MODEL_PLANNERS,
     name: str = "pi_embodied_planner",
 ) -> dict[str, Any]:
-    """Export the sessions below ``roots`` to ``output/planner.jsonl``; returns counts and skip
-    reasons. ``include`` opts into what is left out by default: ``privileged``, ``operator``,
+    """Export the sessions below ``roots`` to ``output/planner.jsonl``; returns counts, skip
+    reasons, and the sessions a directory search passed over (``sessions_passed_over``). ``include`` opts into what is left out by default: ``privileged``, ``operator``,
     ``explore_attempts`` (the attempts before an explore ``reset``). ``planners``: the planner
     types exported (``planner_type``; default the model types, ``MODEL_PLANNERS``; ``all`` takes
     every type).
@@ -719,7 +769,8 @@ def export_planner(
     rows: list[dict[str, Any]] = []
     skipped: dict[str, list[str]] = {}
     ids: set[str] = set()
-    for session in find_sessions(roots):
+    sessions, passed_over = find_sessions(roots)
+    for session in sessions:
         entries = branch(_read_jsonl(session))
         status, result = outcome(session, entries)
         # RL rows are prompts: any validly finished episode's task is one, whatever its outcome.
@@ -885,5 +936,7 @@ def export_planner(
         "failures": sum(1 for s in sources if not s["success"]),
         "images": sum(len(r["images"]) for r in rows),
         "skipped": {k: len(v) for k, v in sorted(skipped.items())},
+        # Sessions under other names, or linked: a directory search does not take them; named, they are read.
+        "sessions_passed_over": [str(p) for p in passed_over],
         "system_prompt_sources": sorted({s["system_prompt_source"] for s in sources}),
     }

@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 const SCRIPT = new URL("../src/robots/humanclaw/eval.sh", import.meta.url).pathname;
 const CELL = "sceneA_ep1_cup";
@@ -29,7 +30,7 @@ function run(out: string, args: string[], o: Options = {}) {
 	writeFileSync(
 		pi,
 		`#!/usr/bin/env bash\nok=null\nwhile [ $# -gt 0 ]; do [ "$1" = --session-dir ] && dir=$2; [ "$1" = --humanclaw-metrics ] && ok=true; shift; done\n` +
-			`[ "$ok" = true ] && echo '${entry("true")}' > "$dir/s.jsonl" || echo '${entry("null")}' > "$dir/s.jsonl"\n`,
+			`echo '${SESSION_HEADER}' > "$dir/${SESSION_FILE}"\n[ "$ok" = true ] && echo '${entry("true")}' >> "$dir/${SESSION_FILE}" || echo '${entry("null")}' >> "$dir/${SESSION_FILE}"\n`,
 	);
 	chmodSync(pi, 0o755);
 	const mode = o.mode ?? "pi";

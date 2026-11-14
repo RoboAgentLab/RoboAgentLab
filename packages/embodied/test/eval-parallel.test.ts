@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { acquire, release } from "../src/planner/api-gate.ts";
+import { SESSION_FILE, SESSION_HEADER } from "./helpers/session.ts";
 
 const RUNNER = new URL("../src/scripts/eval-parallel.sh", import.meta.url).pathname;
 
@@ -34,7 +35,8 @@ if [ "$seed" = 2 ] && [ -n "\${FAKE_HANG:-}" ] && [ -e "$FAKE_HANG" ]; then slee
 case ",\${FAKE_FAIL:-}," in *",$seed,"*) exit 1 ;; esac
 [ $((seed % 2)) = 0 ] && good=true
 params=""; [ -n "$trim" ] && params=',"params":{"image-trim-every":"'$trim'"},"params_default":{"image-trim-every":"0"}'
-echo '{"type":"custom","customType":"robot_result","data":{"success":'$good',"terminated":'$good',"claimed":"success","env_steps":1'$params'}}' >"$dir/s.jsonl"
+echo '${SESSION_HEADER}' >"$dir/${SESSION_FILE}"
+echo '{"type":"custom","customType":"robot_result","data":{"success":'$good',"terminated":'$good',"claimed":"success","env_steps":1'$params'}}' >>"$dir/${SESSION_FILE}"
 `;
 
 function sandbox() {

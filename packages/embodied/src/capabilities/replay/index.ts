@@ -33,8 +33,8 @@
  * The two stay separate providers for now.
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
 	type Api,
 	type AssistantMessage,
@@ -49,6 +49,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sessionFiles } from "../../infra/session-files.ts";
 import { TASK_ENTRY } from "../../robot.ts";
 
 type Json = Record<string, unknown>;
@@ -92,24 +93,17 @@ const brief = (s: string) => s.replace(/\s+/g, " ").slice(0, 300);
 /** The custom entry recording which session this run replays. */
 export const REPLAY_ENTRY = "replay_source";
 
-const isSession = (path: string) => {
-	try {
-		const first = readFileSync(path, "utf8").split("\n", 1)[0];
-		return (JSON.parse(first) as Json).type === "session";
-	} catch {
-		return false;
-	}
-};
-
-/** The session file at `path`, or the newest session file in the directory `path`. */
+/**
+ * The session file at `path`, or the newest session file pi wrote in the directory `path`
+ * (../../infra/session-files.ts: the cell's other .jsonl files there, the recipe among them, are not sessions).
+ */
 export function sessionFile(path: string): string {
 	if (!statSync(path).isDirectory()) return path;
-	const files = readdirSync(path)
-		.filter((f) => f.endsWith(".jsonl"))
-		.map((f) => join(path, f))
-		.filter(isSession)
-		.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-	if (!files.length) throw new Error(`no pi session file in ${path}`);
+	const files = sessionFiles(path).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+	if (!files.length)
+		throw new Error(
+			`no session file pi wrote in ${path} (a regular file <time>_<session id>.jsonl, with that id in its first line); a session saved under another name or linked is read when named`,
+		);
 	return files[0];
 }
 
@@ -195,7 +189,8 @@ const MODEL: Model<"replay"> = {
 export default function replay(pi: ExtensionAPI) {
 	pi.registerFlag("replay", {
 		type: "string",
-		description: "Recorded pi session (.jsonl, or a session dir: its newest session) for --model replay/session",
+		description:
+			"Recorded pi session for --model replay/session: a .jsonl, or a session dir (its newest session file pi wrote, <time>_<id>.jsonl)",
 	});
 
 	let recording: Recording | undefined;

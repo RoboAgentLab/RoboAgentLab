@@ -28,8 +28,10 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
+import { Value } from "typebox/value";
 import { dir as cfgDir } from "../../infra/config.ts";
+import { SESSION_FILE_NAME } from "../../infra/session-files.ts";
 import { branchProviders, plannerOf } from "../../planner/kind.ts";
 import { hasFiles, mergeMemory, rebuildIndex, str, validateMemory } from "./corpus.ts";
 import { syncMemory } from "./sync.ts";
@@ -74,6 +76,12 @@ export type MemoryOptions = {
 	cell?: () => { tag: string; reference: string } | undefined;
 	/** State-advancing tools that belong in a recipe (plus successful `segment` calls). */
 	primitives?: readonly string[];
+	/**
+	 * The arguments a primitive takes besides those its tool's schema declares, with their schemas: a robot's manifest
+	 * params of code mode (../../robot.ts), which some robots' tools pass on in tool mode too. A recipe line keeps
+	 * one when its value fits that schema.
+	 */
+	params?: (tool: string) => Readonly<Record<string, TSchema>>;
 	/**
 	 * The robot's memory section, as a template (`{{memory_dir}}` ...); default ./section.md: read the
 	 * corpus, then the cell's reference and recipe. ../../robot.ts puts it in every evaluation prompt: at
@@ -221,21 +229,37 @@ export function canonicalPath(input: string | undefined, cwd: string): string {
 	return real(at);
 }
 
+/** pi's session file name in any case, Unicode's folding included (ſ as s): a volume that folds case opens it so. */
+const PI_SESSION_NAME = new RegExp(SESSION_FILE_NAME.source, "iu");
+
 /**
  * Why `path` (canonical) may not be accessed, or undefined. Deny by default: only the published memory
- * (read), the cell's inbox and attempt archive (exploration) and the cell's files in the output dir (`<tag>*`) are reachable.
+ * (read), the cell's inbox and attempt archive (exploration) and the cell's files in the output dir (`<tag>*`) are reachable,
+ * and the planner writes no `.jsonl` in the output dir or the attempt archive, nor a file named as pi names its sessions.
  * The reason names `shown`, the path as it was asked: a refusal does not tell where a link leads or how a name is stored.
  */
 export function denied(path: string, access: Access, g: Guard, shown = path): string | undefined {
 	const inside = (base: string) => path === base || path.startsWith(base + sep);
+	// A directory search takes a file named as pi names its sessions for one, wherever it is (../../infra/session-files.ts).
+	if (access === "write" && PI_SESSION_NAME.test(basename(path)))
+		return `the planner writes no file named as pi names its sessions (<time>_<id>.jsonl): ${shown}`;
+	// A .jsonl among the cell's files (the output dir is pi's session dir by default) is taken by pi's own --continue,
+	// --resume and --session when its first line is a session header, and the setup notice reads every .jsonl there;
+	// the attempt archive below it falls under the same rule (the SFT and flywheel walks would list a session-shaped
+	// one among the sessions they passed over). The episode readers take only pi's session files
+	// (../../infra/session-files.ts).
+	const record = () =>
+		access === "write" && /\.jsonl$/iu.test(path)
+			? `the planner writes no .jsonl in the output dir (pi's session and the runtime's recipe are .jsonl there) or in its attempt archive; write notes as .md or .json: ${shown}`
+			: undefined;
 	if (access !== "write" && g.readable?.some(inside)) return undefined;
-	if (g.attempts && inside(g.attempts)) return undefined;
+	if (g.attempts && inside(g.attempts)) return record();
 	if (!inside(g.root)) {
 		if (inside(g.home)) return `access to another robot's memory is denied: ${shown}`;
 		if (path === g.output && access === "read") return undefined;
 		const name = basename(path);
 		const own = name === g.tag || name.startsWith(`${g.tag}.`) || name.startsWith(`${g.tag}_`);
-		if (dirname(path) === g.output && own) return undefined;
+		if (dirname(path) === g.output && own) return record();
 		return `only the memory and this cell's ${g.tag}.* / ${g.tag}_* files in ${g.output} are accessible: ${shown}`;
 	}
 	const parts = relative(g.root, path).split(sep).filter(Boolean);
@@ -275,11 +299,16 @@ export function toolCalls(entries: SessionEntry[]): Call[] {
  * The command sequence after the last successful `reset` if it reached `terminated`, else undefined.
  * Contract: an executed primitive's result carries `details.terminated` (boolean); a failed call is
  * `isError` or has `details.error` / `details.result.error` and is dropped. Lines are
- * `{"action": name, ...args}`, plus successful `segment` calls as `{action, prompt | point, camera}`.
+ * `{"action": name, ...the arguments it keeps}` (`keeps`: those its tool's schema declares, and the robot's
+ * code-mode params whose values fit), plus successful `segment` calls as `{action, prompt | point, camera}`. pi
+ * passes a tool undeclared arguments too; a line leaves them out, so that none makes it look like a pi session's
+ * header (`type`, `id`), and its `action` is the tool's name. An argument a robot's tool takes without declaring
+ * it is not recorded.
  */
 export function recipe(
 	entries: SessionEntry[],
 	primitives: ReadonlySet<string>,
+	keeps: (tool: string, key: string, value: unknown) => boolean,
 ): Record<string, unknown>[] | undefined {
 	const calls = toolCalls(entries);
 	const ok = (c: Call) => !c.isError && !c.details?.error && !c.details?.result?.error;
@@ -295,7 +324,10 @@ export function recipe(
 				ok(c) && (c.name === "segment" || (primitives.has(c.name) && typeof c.details?.terminated === "boolean")),
 		)
 		.map((c) => {
-			if (c.name !== "segment") return { action: c.name, ...c.args };
+			if (c.name !== "segment") {
+				const args = Object.entries(c.args).filter(([k, v]) => k !== "action" && keeps(c.name, k, v));
+				return { action: c.name, ...Object.fromEntries(args) };
+			}
 			const camera = c.details?.camera ?? c.args.camera ?? "agentview";
 			const prompt = str(c.args.prompt).trim();
 			return prompt ? { action: "segment", prompt, camera } : { action: "segment", point: c.args.point, camera };
@@ -577,7 +609,17 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!cell || !outputDir || profile === "off") return;
 		const branch = ctx.sessionManager.getBranch();
-		const commands = recipe(branch, new Set(opts.primitives ?? []));
+		// A primitive's arguments: the properties of its tool's schema (every embodied primitive's is a Type.Object), and
+		// those the robot declares for code mode when their values fit, in type and range (`params`: pi checks none of an
+		// undeclared key's). Only the record's own keys: `constructor` or `toString` would read an inherited function.
+		const schemas = new Map(
+			pi.getAllTools().map((t) => [t.name, Object.keys((t.parameters as { properties?: object }).properties ?? {})]),
+		);
+		const commands = recipe(branch, new Set(opts.primitives ?? []), (tool, key, value) => {
+			if (schemas.get(tool)?.includes(key)) return true;
+			const params = opts.params?.(tool) ?? {};
+			return Object.hasOwn(params, key) && Value.Check(params[key], value);
+		});
 		const path = join(outputDir, `${cell.tag}_recipe.jsonl`);
 		if (commands) {
 			mkdirSync(outputDir, { recursive: true });
