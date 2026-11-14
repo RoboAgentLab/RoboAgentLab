@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SEARCH_TOOLS } from "../src/capabilities/memory/index.ts";
 import { loadManifest, toolSchema, tools } from "../src/primitives/manifest.ts";
 import { codePrimitives } from "../src/primitives/registry.ts";
 import { SERVICES } from "../src/robot.ts";
@@ -75,7 +76,10 @@ for (const [robot, load] of Object.entries(LOADERS))
 				flags[name] = o.default;
 			},
 			getFlag: (name: string) => flags[name],
-			registerTool: (t: { name: string; description: string; parameters: unknown }) => registered.set(t.name, t),
+			// Memory's grep and find are pi's own tools (../src/capabilities/memory), not the robot's.
+			registerTool: (t: { name: string; description: string; parameters: unknown }) => {
+				if (!SEARCH_TOOLS.includes(t.name)) registered.set(t.name, t);
+			},
 			registerCommand: () => {},
 			registerProvider: () => {},
 			registerMessageRenderer: () => {},

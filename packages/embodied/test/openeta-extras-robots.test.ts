@@ -38,7 +38,7 @@ function stubPi(values: Record<string, unknown>, ui: Record<string, unknown> = {
 			active = names;
 		},
 		getActiveTools: () => active,
-		getAllTools: () => [...tools.keys()].map((name) => ({ name })),
+		getAllTools: () => [...tools.values()],
 		getThinkingLevel: () => "off",
 		appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },

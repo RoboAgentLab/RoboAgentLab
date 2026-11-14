@@ -34,6 +34,10 @@ jobs:
       - name: Extension and session export compatibility
         working-directory: packages/coding-agent
         run: node ../../node_modules/vitest/dist/cli.js --run test/trigger-compact-extension.test.ts test/export-jsonl-share.test.ts
+      # ripgrep and fd come from ./.github/actions/setup-node.
+      - name: Search tools without ignore files
+        working-directory: packages/coding-agent
+        run: node ../../node_modules/vitest/dist/cli.js --run test/search-ignore-files.test.ts
       - name: embodied tests
         working-directory: packages/embodied
         run: node --test --experimental-strip-types test/*.test.ts

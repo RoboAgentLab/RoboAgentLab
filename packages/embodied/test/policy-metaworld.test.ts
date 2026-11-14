@@ -89,6 +89,7 @@ function host(values: Record<string, unknown>, cwd: string) {
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		registerCommand: () => {},
 		setActiveTools: (names: string[]) => {
 			active = names;

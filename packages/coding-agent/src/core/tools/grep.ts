@@ -64,6 +64,14 @@ const defaultGrepOperations: GrepOperations = {
 export interface GrepToolOptions {
 	/** Custom operations for grep. Default: local filesystem plus ripgrep */
 	operations?: GrepOperations;
+	/**
+	 * Whether ripgrep reads ignore files: `.gitignore`, `.ignore` and `.rgignore` in, below and above the
+	 * searched path, `.git/info/exclude` (through a `.git` file, the gitdir and commondir it names), and
+	 * git's global excludes file (`core.excludesFile`, by default ~/.config/git/ignore), git's config files
+	 * included. Default: true. With false (`--no-ignore`) it opens none of them, and no ignore rule hides
+	 * a file under the path.
+	 */
+	readIgnoreFiles?: boolean;
 }
 
 export function createGrepToolDefinition(
@@ -71,11 +79,12 @@ export function createGrepToolDefinition(
 	options?: GrepToolOptions,
 ): ToolDefinition<typeof grepSchema, GrepToolDetails | undefined> {
 	const customOps = options?.operations;
+	const readIgnoreFiles = options?.readIgnoreFiles ?? true;
 	return {
 		name: "grep",
 		label: "grep",
-		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
-		promptSnippet: grepToolSystemPromptContribution.snippet,
+		description: `Search file contents for a pattern. Returns matching lines with file paths and line numbers. ${readIgnoreFiles ? "Respects .gitignore. " : ""}Output is truncated to ${DEFAULT_LIMIT} matches or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Long lines are truncated to ${GREP_MAX_LINE_LENGTH} chars.`,
+		promptSnippet: readIgnoreFiles ? grepToolSystemPromptContribution.snippet : "Search file contents for patterns",
 		parameters: grepSchema,
 		async execute(
 			_toolCallId,
@@ -161,6 +170,7 @@ export function createGrepToolDefinition(
 						// --no-config: the tool contract (literal, glob, limit, ...) must not depend on
 						// ambient user config like RIPGREP_CONFIG_PATH. Users can customize via bash or extensions.
 						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never", "--hidden"];
+						if (!readIgnoreFiles) args.push("--no-ignore");
 						if (ignoreCase) args.push("--ignore-case");
 						if (literal) args.push("--fixed-strings");
 						if (glob) args.push("--glob", glob);

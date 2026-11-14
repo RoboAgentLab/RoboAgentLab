@@ -31,6 +31,14 @@ Kept because they add functionality the fork needs; each is small and self-conta
   `packages/coding-agent/test/trigger-compact-extension.test.ts`.
 - **Session export for extensions** — `ctx.exportSession("jsonl" | "html", outputPath)` exports the current session
   branch as `/export` does and resolves to the written path (same files as above).
+- **Search tools without ignore files** — `packages/coding-agent/src/core/tools/grep.ts` and `find.ts`:
+  `GrepToolOptions.readIgnoreFiles` / `FindToolOptions.readIgnoreFiles` (default `true`). With `false` ripgrep and fd
+  get `--no-ignore` and open no ignore file (`.gitignore`, `.ignore`, `.rgignore`, `.fdignore` in, below and above the
+  searched path, `.git/info/exclude`, the global excludes files and git's config files), and neither the description
+  nor the prompt snippet says the tool respects `.gitignore` (the snippets are written out in both files). The embodied
+  memory guard registers both tools with it off, and refuses to start a session with memory on a pi without it or
+  where the session's grep or find carries another description (an SDK host's, an earlier extension's). Test:
+  `packages/coding-agent/test/search-ignore-files.test.ts`.
 - **Retry pattern** — `packages/ai/src/utils/retry.ts`: `expired while waiting for admission` (NInfer drops a
   request queued too long for KV-cache admission; mid-stream the SSE error carries only this text) is retried instead
   of ending the turn. Test: `packages/ai/test/retry.test.ts`.

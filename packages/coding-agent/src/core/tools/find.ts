@@ -64,6 +64,15 @@ const defaultFindOperations: FindOperations = {
 export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
 	operations?: FindOperations;
+	/**
+	 * Whether fd reads ignore files: `.gitignore`, `.ignore` and `.fdignore` in, below and above the
+	 * searched directory, `.git/info/exclude` (through a `.git` file, the gitdir and commondir it names),
+	 * git's global excludes file (`core.excludesFile`, by default ~/.config/git/ignore) and fd's own
+	 * (~/.config/fd/ignore), git's config files included. Default: true. With false (`--no-ignore`) it
+	 * opens none of them, and no ignore rule hides a file under the directory. Custom operations are not
+	 * affected.
+	 */
+	readIgnoreFiles?: boolean;
 }
 
 export function createFindToolDefinition(
@@ -71,11 +80,12 @@ export function createFindToolDefinition(
 	options?: FindToolOptions,
 ): ToolDefinition<typeof findSchema, FindToolDetails | undefined> {
 	const customOps = options?.operations;
+	const readIgnoreFiles = options?.readIgnoreFiles ?? true;
 	return {
 		name: "find",
 		label: "find",
-		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-		promptSnippet: findToolSystemPromptContribution.snippet,
+		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. ${readIgnoreFiles ? "Respects .gitignore. " : ""}Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
+		promptSnippet: readIgnoreFiles ? findToolSystemPromptContribution.snippet : "Find files by glob pattern",
 		parameters: findSchema,
 		async execute(
 			_toolCallId,
@@ -194,6 +204,7 @@ export function createFindToolDefinition(
 							if (parent === current) break;
 							current = parent;
 						}
+						if (!readIgnoreFiles) args.push("--no-ignore");
 						if (!insideGitRepo) args.push("--no-require-git");
 						args.push("--max-results", String(effectiveLimit));
 

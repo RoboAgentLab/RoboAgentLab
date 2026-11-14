@@ -52,6 +52,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getFlag: (name: string) => (name in values ? values[name] : flags[name]?.default),
 		registerTool: (t: Tool) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		registerCommand: () => {},
 		registerProvider: () => {},
 		registerMessageRenderer: () => {},

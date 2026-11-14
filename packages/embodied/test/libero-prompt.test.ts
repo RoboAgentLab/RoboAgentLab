@@ -34,6 +34,7 @@ function stubPi(values: Record<string, unknown>, cwd: string) {
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		setActiveTools: (names: string[]) => {
 			active = names.filter((n) => tools.has(n) || ["read", "ls", "grep", "find", "write"].includes(n));
 		},

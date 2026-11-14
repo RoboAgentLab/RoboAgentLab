@@ -31,6 +31,7 @@ test("LIBERO --env-url URL#token=HEX attaches with the token, like every robot's
 		},
 		getFlag: (n: string) => flags[n],
 		registerTool: () => {},
+		getAllTools: () => [],
 		registerCommand: () => {},
 		registerProvider: () => {},
 		registerMessageRenderer: () => {},

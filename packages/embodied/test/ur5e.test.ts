@@ -32,6 +32,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, hasUI = true) {
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		registerCommand: () => {},
 		setActiveTools: (names: string[]) => {
 			active = names;
