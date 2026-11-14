@@ -58,7 +58,9 @@ methods in `services/PROTOCOL.md` under "Env servers".
    gets a switch that says what, never where (`--detections`, `--grasp contact_graspnet`). Experiment
    parameters are flags; enums use `StringEnum` from `@earendil-works/pi-ai`.
 2. Call `defineRobot(pi, spec)` before registering anything else. The spec names the robot, its task
-   flags, `start` (bring the robot up and return the tools to activate; throwing fails closed),
+   flags, `start` (bring the robot up and return the tools to activate, `finish` included; with the
+   tools its modes and modules add, these are the only ones the planner can call, and `finish` hides
+   every other tool from the planner's requests; throwing fails closed),
    `result` (the outcome fields of `robot_result`), `status` (the dashboard's step and success),
    `finish`, and `prompt` (the robot's `SYSTEM.md`, `[tool:name]` blocks follow the active tools).
 3. In `start`, launch the env server with `robot.serve({python, args, cwd, env, log})` (or

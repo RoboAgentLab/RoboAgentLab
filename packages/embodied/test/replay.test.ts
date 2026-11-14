@@ -339,6 +339,23 @@ async function runBatch(p: ReturnType<typeof fakePi>, m: any, errors: Record<str
 	return { results: out, sent };
 }
 
+test("a call the robot's tool set refused never ran: it is skipped, not sent again; a tool failing with another's refusal ran", () => {
+	const dir = sessionOf([
+		{
+			content: [call("codemode", { code: "return 1" }), call("view", {}), call("relay", { tool: "codemode" })],
+			errors: {
+				codemode: "codemode is not one of the tools arm gives the planner.",
+				relay: "codemode is not one of the tools arm gives the planner.",
+			},
+		},
+	]);
+	const rec = loadRecording(dir);
+	assert.deepEqual(
+		rec.turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]),
+		[[["view", "relay"], ["codemode"]]],
+	);
+});
+
 test("a reply cut at the output token limit (or otherwise abnormal) has its calls skipped with a note", async () => {
 	const dir = sessionOf([
 		{ content: [call("view", {})] },

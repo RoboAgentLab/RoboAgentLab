@@ -33,6 +33,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 	const entries: { type: string; data: any }[] = [];
 	const events: { channel: string; data: any }[] = [];
 	const stderr: string[] = [];
+	const notified: string[] = [];
 	const providers: any[] = [];
 	let active: string[] = ["everything"];
 	let shutdown = false;
@@ -56,7 +57,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 	const ctx = {
 		hasUI: false,
 		cwd: dir,
-		ui: { notify: () => {} },
+		ui: { notify: (text: string, level: string) => notified.push(`${level}: ${text}`) },
 		shutdown: () => {
 			shutdown = true;
 		},
@@ -91,10 +92,16 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 		entries,
 		events,
 		stderr,
+		notified,
 		providers,
 		dir,
+		ctx,
 		restore,
 		active: () => active,
+		/** pi activating tools by itself (an MCP server's, a late registration): the base's code is not asked. */
+		self: (...names: string[]) => {
+			active = [...active, ...names];
+		},
 		stopped: () => shutdown,
 	};
 }
@@ -181,6 +188,92 @@ test("the task entry overrides the flags and is resolved before the robot starts
 	assert.deepEqual(g.entries[0], { type: TASK_ENTRY, data: { robot: "toy", suite: "cli", seed: "0" } });
 	// Every robot gets /robot-task and /robot-check from the base.
 	assert.deepEqual([...g.commands.keys()].sort(), ["embodied-config", "robot-check", "robot-task"]);
+});
+
+test("tools pi activates by itself are withdrawn at each run and turn, and their calls refused without ending the episode", async (t) => {
+	const f = fakePi({ "max-tool-calls": "1" });
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"]);
+	await f.emit("session_start");
+	f.self("codemode", "bash");
+	assert.deepEqual(f.pi.getActiveTools(), ["move", "finish"]);
+	await f.emit("before_agent_start", { prompt: "go", systemPrompt: "" });
+	await f.emit("agent_start");
+	assert.deepEqual(f.active(), ["move", "finish"]);
+	// finish hides from every request the declarations of the tools it did not grant (pi's prepareLoadout), active or not.
+	assert.deepEqual(
+		f.tools.get("finish").prepareLoadout({
+			registered: ["move", "codemode", "finish", "bash"].map((name) => ({ name })),
+		}),
+		{ hiddenDeclarations: ["codemode", "bash"] },
+	);
+	// A tool pi activates during the run: refused, without terminating; withdrawn after the turn.
+	f.self("late_tool");
+	assert.deepEqual(await f.emit("tool_call", { toolName: "late_tool", input: {} }), {
+		block: true,
+		reason: "late_tool is not one of the tools toy gives the planner.",
+	});
+	await f.emit("turn_end", { message: {}, toolResults: [] });
+	assert.deepEqual(f.active(), ["move", "finish"]);
+	// The operator is told at the run's start and after the turn that withdrew it, each tool once.
+	const told = [
+		"[toy] not offered to the planner (toy did not activate them): codemode, bash",
+		"[toy] not offered to the planner (toy did not activate them): late_tool",
+	];
+	assert.deepEqual(f.stderr, told);
+	f.self("codemode");
+	await f.emit("turn_end", { message: {}, toolResults: [] });
+	assert.deepEqual(f.stderr, told);
+	// In a batch that finishes, the refusal terminates like the robot's own tools.
+	await f.emit("message_end", assistant("late_tool", "finish"));
+	assert.equal((await f.emit("tool_call", { toolName: "late_tool", input: {} }))?.terminate, true);
+	await f.emit("message_end", assistant("move"));
+	// Refused calls spend no tool-call budget: the one call it allows still runs. Once the budget is spent,
+	// any call ends the episode, one of a tool not granted too.
+	assert.equal(await f.emit("tool_call", { toolName: "move", input: { n: 1 } }), undefined);
+	assert.deepEqual(await f.emit("tool_call", { toolName: "bash", input: { command: "ls" } }), {
+		block: true,
+		reason: "Planner tool_calls budget exhausted; the episode is over.",
+		terminate: true,
+	});
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "failure", summary: "" } }),
+		undefined,
+	);
+});
+
+test("the operator is told of the withdrawn tools no handler granted after all, in the UI when there is one, once a session", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"]);
+	// A module mounted after the base grants its tool in its own before_agent_start (../src/capabilities/policy).
+	f.pi.on("before_agent_start", () => {
+		f.pi.setActiveTools([...f.pi.getActiveTools(), "policy_goal"]);
+	});
+	f.ctx.hasUI = true;
+	for (const _ of [1, 2]) {
+		await f.emit("session_start");
+		f.self("policy_goal", "codemode");
+		await f.emit("before_agent_start", { prompt: "go", systemPrompt: "" });
+		await f.emit("agent_start");
+		assert.deepEqual(f.active(), ["move", "finish", "policy_goal"]);
+		f.self("codemode");
+		await f.emit("turn_end", { message: {}, toolResults: [] });
+	}
+	const told = "warning: toy: not offered to the planner (toy did not activate them): codemode";
+	assert.deepEqual(f.notified, [told, told]);
+	assert.deepEqual(f.stderr, []);
+});
+
+test("a robot that activates no finish has none: finish is refused like any tool not granted", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move"]);
+	await f.emit("session_start");
+	assert.deepEqual(await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }), {
+		block: true,
+		reason: "finish is not one of the tools toy gives the planner.",
+	});
 });
 
 test("memory's session_start sees the resolved task", async (t) => {
@@ -531,6 +624,28 @@ test("the prompt the planner saw is recorded at turn start, once per change and 
 	await f.emit("before_agent_start");
 	await f.emit("turn_start");
 	assert.equal(recorded().length, 3);
+});
+
+test("the prompt entry also lists the tools the planner's requests declare, not those pi activated by itself", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	toy(f.pi, async () => ["move", "finish"], { prompt: () => "Move the block." });
+	await f.emit("session_start");
+	await f.emit("before_agent_start");
+	f.self("codemode");
+	await f.emit("turn_start");
+	f.self("late_tool");
+	await f.emit("turn_start");
+	// A tool the robot grants during the run (a module's) changes them.
+	f.pi.setActiveTools([...f.pi.getActiveTools(), "policy_goal"]);
+	await f.emit("turn_start");
+	assert.deepEqual(
+		f.entries.filter((e) => e.type === SYSTEM_PROMPT_ENTRY).map((e) => e.data.tools),
+		[
+			["move", "finish"],
+			["move", "finish", "policy_goal"],
+		],
+	);
 });
 
 test("a robot without a prompt of its own records nothing", async (t) => {

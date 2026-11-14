@@ -36,7 +36,8 @@ removals applied; custom messages and branch summaries as user messages. It hold
 prompt the planner saw (the ``robot_system_prompt`` entry ../../packages/embodied/src/robot.ts writes, since
 pi sends a robot's forced prompt without recording it; sessions recorded before that entry
 existed fall back to the recorded system message, and ``system_prompt_source`` says which), the
-tools the transcript declared, user and extension messages, the assistant turns that completed
+tools the transcript declared (those the robot's entry lists, when it lists them: pi also records the
+declaration of a tool the robot's ``finish`` hides from every request), user and extension messages, the assistant turns that completed
 (errored or aborted ones were retried or ended the run, and thinking is dropped), and the tool
 results. For SFT, an explore session keeps only its last attempt: the prompt, then the result of
 the last successful ``reset`` (the restored scene) as a user turn, and what followed
@@ -270,14 +271,17 @@ def conversation(path: list[dict[str, Any]]) -> dict[str, Any]:
     system_sections: dict[str, str] = {}
     system_content: list[str] = []
     tools: dict[str, dict[str, Any]] = {}
-    forced = next(
+    entry = next(
         (
-            str((e.get("data") or {}).get("text", ""))
+            e.get("data") or {}
             for e in reversed(path)
             if e.get("type") == "custom" and e.get("customType") == SYSTEM_PROMPT_ENTRY
         ),
         None,
     )
+    forced = str(entry.get("text", "")) if entry is not None else None
+    # The tools the robot's requests declared; entries written before it listed them have none.
+    shown = entry.get("tools") if entry is not None else None
     messages: list[dict[str, Any]] = []
     for m in project(path):
         role = m.get("role")
@@ -337,7 +341,11 @@ def conversation(path: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "system": forced if forced is not None else recorded,
         "system_prompt_source": "robot_entry" if forced is not None else "session",
-        "tools": list(tools.values()),
+        "tools": [
+            t
+            for t in tools.values()
+            if not isinstance(shown, list) or t["name"] in shown
+        ],
         "messages": messages,
         "compacted": any(e.get("type") == "compaction" for e in path),
     }
