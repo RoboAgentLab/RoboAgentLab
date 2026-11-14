@@ -28,6 +28,7 @@ import { params, paramsError, trackFlags } from "./infra/params.ts";
 import { forgetUnresponsive, NdArray, type RpcClient, RpcUnavailable } from "./infra/rpc.ts";
 import { type ServiceOptions, shutdown, startService } from "./infra/service-process.ts";
 import { tiers, VLA_SKILLS } from "./infra/tiers.ts";
+import { ownToolSet } from "./infra/tool-set.ts";
 import { type CodeSpec, code } from "./modes/code/index.ts";
 import { type MotorMindSpec, motormind } from "./modes/motormind/index.ts";
 import { motormindProvider } from "./modes/motormind/provider.ts";
@@ -302,6 +303,11 @@ export type RobotSpec = {
  * - Startup, failing closed: every session starts with no active tools, and prompts and tool calls
  *   are refused until `start` succeeds. A failed start is shown in the UI, or without one printed
  *   to stderr as `[name] unavailable: ...` with exit code 1.
+ * - The tool set (./infra/tool-set.ts): the planner calls only the tools the base and its modules
+ *   activate; a call of any other tool is refused, calls from tools included. A tool pi activates by
+ *   itself (an MCP server's, `codemode`, one registered after the start, a `--tools` entry when a tool
+ *   registers) is declared in no request (`finish` hides it), deactivated at the start of every run
+ *   and after every turn, and named once to the operator.
  * - Finish rules: pi stops early only when every result in a batch terminates, so tools registered
  *   with `tool` terminate when their batch also calls `finish`. `finish`, or a spent --max-turns /
  *   --time-limit / --max-cost budget, ends the episode, after which only `finish` runs.
@@ -333,6 +339,8 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const { name } = spec;
 	// Flags the base and its modules register from here on are tracked too (a robot starts it earlier).
 	const tracked = trackFlags(pi);
+	// What the base and its modules activate is what the planner may call (the tool_call gate below).
+	const toolSet = ownToolSet(pi);
 	registerConfig(pi);
 	const manifest: Manifest | undefined = spec.manifest ? loadManifest(spec.manifest) : undefined;
 	// --tier / --preset (./infra/tiers.ts) read as the flags they expand to from here on.
@@ -914,12 +922,32 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	}
 
 	let recordedPrompt: string | undefined;
+	let recordedTools = "";
 	let forcing = false;
+	/** The tools pi activated by itself that the operator was told of this session. */
+	const told = new Set<string>();
+	/** Tools withdrawn since the operator was last told: a later handler may still grant one (a module's tool). */
+	let withdrawn: string[] = [];
 	pi.on("session_start", () => {
 		recordedPrompt = undefined;
+		recordedTools = "";
 		forcing = false;
+		told.clear();
+		withdrawn = [];
 	});
+	/** Names the tools withdrawn and still not granted, each once a session. */
+	function tell(ctx: ExtensionContext) {
+		const names = [...new Set(withdrawn)].filter((t) => !told.has(t) && !toolSet.granted(t));
+		withdrawn = [];
+		if (!names.length) return;
+		for (const t of names) told.add(t);
+		const text = `not offered to the planner (${name} did not activate them): ${names.join(", ")}`;
+		if (ctx.hasUI) ctx.ui.notify(`${name}: ${text}`, "warning");
+		else console.error(`[${name}] ${text}`);
+	}
 	pi.on("before_agent_start", (_event, ctx) => {
+		// What pi activated since the last run; the operator is told at agent_start, after the modules grant theirs.
+		withdrawn.push(...toolSet.withdraw());
 		if (started === undefined) {
 			started = Date.now();
 			// The budget is wall-clock: a hung model or tool call must not outlive it. Aborting stops the
@@ -965,14 +993,16 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		// OpenETA's closed-loop rules (./closed-loop.md) close every robot's prompt, in every mode.
 		return { systemPrompt: toolSections(`${systemPrompt}\n\n${CLOSED_LOOP}`, pi.getActiveTools()) };
 	});
-	// pi sends a forced prompt without recording it; the entry keeps what the planner saw
-	// (planner_export.py). Read at turn start, after every before_agent_start handler (explore's
-	// rewrite included) has run.
+	// pi sends a forced prompt without recording it; the entry keeps what the planner saw (planner_export.py): the
+	// prompt, and the tools its requests declare (pi's transcript also declares those `finish` hides). Read at turn
+	// start, after every before_agent_start handler (explore's rewrite included) has run.
 	pi.on("turn_start", (_event, ctx) => {
 		const text = forcing ? ctx.getSystemPrompt?.() : undefined;
-		if (text === undefined || text === recordedPrompt) return;
-		pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text });
+		const tools = pi.getActiveTools();
+		if (text === undefined || (text === recordedPrompt && tools.join() === recordedTools)) return;
+		pi.appendEntry(SYSTEM_PROMPT_ENTRY, { text, tools });
 		recordedPrompt = text;
+		recordedTools = tools.join();
 	});
 	pi.on("message_end", (event) => {
 		const m = event.message;
@@ -996,8 +1026,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 					: (m.errorMessage ?? "model error")
 				: leakedToolCall(m.content);
 	});
-	pi.on("turn_end", () => {
+	pi.on("turn_end", (_event, ctx) => {
 		turns++;
+		// What pi activated during the turn is deactivated too, so that later turns record no declaration of it.
+		withdrawn.push(...toolSet.withdraw());
+		tell(ctx);
 	});
 	// Side VLM calls (the units verifier and video_ref, ../vdm.ts) spend from the same budget.
 	pi.events.on(VLM_COST_EVENT, (usd) => {
@@ -1024,8 +1057,17 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		return `Planner ${outOfBudget} budget exhausted; the episode is over.`;
 	}
 	pi.on("tool_call", (event) => {
+		// Readiness and budgets first: a spent budget ends the episode on any call, one of a tool not granted too.
 		const reason = refusal(event.toolName);
 		if (reason !== undefined) return { block: true, reason, terminate: true };
+		// Then the grant, whatever pi made active (calls from tools included). Like the robot's own tools, the
+		// refusal terminates with a batch that finishes (the finish rules above).
+		if (!toolSet.granted(event.toolName))
+			return {
+				block: true,
+				reason: `${event.toolName} is not one of the tools ${name} gives the planner.`,
+				...(finishing ? { terminate: true } : {}),
+			};
 		if (event.toolName !== "finish") toolCalls++;
 		return undefined;
 	});
@@ -1201,6 +1243,7 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	}
 	pi.on("agent_start", (_event, ctx) => {
 		ran = true;
+		tell(ctx);
 		// The system prompt pi sends, after every extension's before_agent_start (exploration's included).
 		const prompt = ctx.getSystemPrompt?.();
 		if (typeof prompt === "string") {
@@ -1252,6 +1295,15 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		description: spec.finish.description,
 		parameters: spec.finish.parameters,
 		executionMode: "sequential",
+		// No request carries a tool the robot did not grant, however late pi activated it: pi asks the hooks of the
+		// active tools on every change of them, registrations included, and leaves the names given here out of every
+		// declaration and removal a request replays from the transcript, those of tools withdrawn since too. A tool pi
+		// activated runs its own hook while active (codemode's rewrites the other tools' descriptions, or in its "only"
+		// mode hides them); the gate refuses its calls. Every robot activates `finish` (pure modes add it, and every robot's start returns it); without it
+		// the gate still refuses such tools, but requests declare them.
+		prepareLoadout: (loadout) => ({
+			hiddenDeclarations: loadout.registered.flatMap((t) => (toolSet.granted(t.name) ? [] : [t.name])),
+		}),
 		async execute(_id, params) {
 			claimed = params as Claim;
 			ended = true;

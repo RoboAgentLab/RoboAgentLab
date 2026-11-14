@@ -20,6 +20,7 @@ function stubPi(values: Record<string, unknown> = {}, provider?: string) {
 			flags[name] = name in values ? values[name] : o.default;
 		},
 		getFlag: (name: string) => flags[name],
+		getActiveTools: () => [],
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 		events: { emit: () => {}, on: () => () => {} },
 	};

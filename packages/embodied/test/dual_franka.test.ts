@@ -201,7 +201,8 @@ function realRobotToy(f: ReturnType<typeof fakePi>, resets: string[]) {
 			prompt: () => "",
 			budget: { sessions: 1, attempts: 3 },
 		},
-		start: async () => ["move"],
+		// Like the real robots: `finish` is among the tools the start activates.
+		start: async () => ["move", "finish"],
 		result: () => ({}),
 		finish: {
 			description: "finish",

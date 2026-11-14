@@ -258,6 +258,51 @@ def test_sharegpt_export_of_a_success(tmp_path: Path) -> None:
     assert info["pi_embodied_planner"]["tags"]["function_tag"] == "function_call"
 
 
+def test_tools_the_robot_hid_from_every_request_are_not_exported(
+    tmp_path: Path,
+) -> None:
+    """pi records the declaration of a tool a prepareLoadout hook hides from every request (the robot's
+    finish hides those pi activated by itself); the robot's prompt entry lists the tools its requests
+    declared. An entry written before it listed them leaves the transcript's."""
+    hidden = {
+        "name": "mcp__fs__read_file",
+        "description": "Read a file.",
+        "parameters": {},
+    }
+    for listed, names in [
+        (["move_to", "finish"], ["move_to", "finish"]),
+        (None, ["move_to", "finish", "mcp__fs__read_file"]),
+    ]:
+        s = Session(forced_prompt=False)
+        # An earlier entry lists fewer tools (a module granted finish later): the last one counts.
+        s.add(
+            {
+                "type": "custom",
+                "customType": "robot_system_prompt",
+                "data": {"text": "You drive the toy arm.", "tools": ["move_to"]},
+            }
+        )
+        data = {
+            "text": "You drive the toy arm.",
+            **({"tools": listed} if listed else {}),
+        }
+        s.add({"type": "custom", "customType": "robot_system_prompt", "data": data})
+        s.msg({"role": "system", "content": "", "toolsAdded": [hidden]})
+        s.finish()
+        runs = tmp_path / f"runs-{listed is not None}"
+        s.write(runs / "ep", {"success": True}, {"status": "success"})
+        for fmt in ["sharegpt", "verl-rl"]:
+            out = tmp_path / f"out-{listed is not None}-{fmt}"
+            export_planner([runs], out, fmt=fmt)
+            [row] = rows(out)
+            tools = (
+                row["extra_info"]["tools"]
+                if fmt == "verl-rl"
+                else json.loads(row["tools"])
+            )
+            assert [t["name"] for t in tools] == names, (fmt, listed)
+
+
 def test_failures_only_on_request_and_invalid_episodes_never(tmp_path: Path) -> None:
     runs = tmp_path / "runs"
     write_session(

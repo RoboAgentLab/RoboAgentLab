@@ -62,8 +62,8 @@ export type Recording = { path: string; turns: Turn[]; task?: Json; finished: bo
 const SKIP = new Set(["write", "edit", "bash"]);
 /**
  * Error results of calls that never executed: pi's own (a block without a reason, an abort before the
- * call ran, an unknown tool) and the block reasons of the robot base (../robot.ts), the operator
- * (../operator.ts), ../gumi's stale drop, the units verifier and the memory guard.
+ * call ran, an unknown tool) and the block reasons of the robot base (../robot.ts; UNGRANTED below),
+ * the operator (../operator.ts), ../gumi's stale drop, the units verifier and the memory guard.
  */
 const NOT_RUN = [
 	/^Tool execution was blocked$/,
@@ -80,6 +80,11 @@ const NOT_RUN = [
 	/was not executed; decide again from the current observation\.$/,
 	/^file access (is disabled|denied)/,
 ];
+/**
+ * The robot base's refusal of a tool it did not grant, naming that tool. Only the refused call's own: a
+ * robot tool that called another (ctx.executeTool) and failed with the refusal's text did run.
+ */
+const UNGRANTED = /^(\S+) is not one of the tools \S+ gives the planner\.$/;
 const resultText = (m: { content: { type: string; text?: string }[] }) =>
 	m.content.flatMap((c) => (c.type === "text" && c.text ? [c.text] : [])).join(" ");
 const brief = (s: string) => s.replace(/\s+/g, " ").slice(0, 300);
@@ -145,7 +150,10 @@ export function loadRecording(path: string): Recording {
 					name: c.name,
 					reason: `the reply ended with stopReason "${abnormal}"${abnormal === "length" ? ", so its arguments may be truncated" : ""}`,
 				});
-			else if (error !== undefined && NOT_RUN.some((p) => p.test(error.trim())))
+			else if (
+				error !== undefined &&
+				(NOT_RUN.some((p) => p.test(error.trim())) || UNGRANTED.exec(error.trim())?.[1] === c.name)
+			)
 				blocked.push({ name: c.name, reason: brief(error) });
 			else calls.push({ name: c.name, arguments: c.arguments, ...(error !== undefined ? { error } : {}) });
 		}
