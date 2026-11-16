@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
 import robosuite, {
@@ -280,6 +281,11 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 	assert.ok(!s.active().includes("plan_place"), "plan_place requires AnyPlace (--anyplace)");
 	const r = await s.run("plan_grasp", { object: "red cube", camera: "wrist" });
 	assert.equal(r.details.active, "g1");
+	// plan_place's handler reads keep_tilt, which no manifest declares: no schema offers it, and the tool refuses it.
+	await assert.rejects(() => s.run("plan_place", { region: "bowl", grasp_id: "g1", keep_tilt: true }), {
+		message:
+			'plan_place has no argument "keep_tilt"; it takes region, region_mask_id, grasp_id, object_mask_id, camera.',
+	});
 	const call = env.calls.find((c) => c.method === "env.plan_grasp")!;
 	assert.deepEqual(call.kwargs, { object: "red cube", camera: "wrist", arm: "robot0" });
 	const prompt = (await s.emit("before_agent_start")).systemPrompt as string;
@@ -293,6 +299,48 @@ test("--contact-graspnet activates plan_grasp / plan_place / check_attached; pla
 	assert.ok(off.active().includes("move_to"));
 	assert.ok(!off.active().includes("plan_grasp"));
 	assert.doesNotMatch((await off.emit("before_agent_start")).systemPrompt as string, /plan_grasp/);
+});
+
+test("the motion tools take their own arguments only: a program's step sizes and the method's record never reach the server", async (t) => {
+	const env = await fakeRobosuite("Lift");
+	t.after(env.close);
+	const s = simPi({ "env-url": env.url, task: "Lift" });
+	robosuite(s.pi);
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const sent = () => env.calls.filter((c) => c.method.startsWith("env.move") || c.method === "env.set_gripper");
+	// As pi calls a tool: its validation keeps the keys the schema does not declare, then the robot's gate. step_m,
+	// step_rad and tol_rad are the manifest's code-mode parameters (a program's options); record is the method's own
+	// keyword. A tool call that carried them ran with them: a negative step_m moved away from the target.
+	for (const [name, args, stray] of [
+		["move_to", { xyz: [0, 0, 1.05], step_m: -0.05 }, '"step_m"'],
+		[
+			"move_delta",
+			{ delta_xyz: [0, 0, 0.05], step_rad: 99, tol_rad: -1, record: true },
+			'"step_rad" or "tol_rad" or "record"',
+		],
+		["set_gripper", { close: true, record: true }, '"record"'],
+	] as const) {
+		const tool = s.tools.get(name);
+		const input = validateToolArguments(tool, { type: "toolCall", id: "c", name, arguments: { ...args } });
+		assert.deepEqual(input, args, "pi's validation keeps them");
+		const gate = await s.emit("tool_call", { toolName: name, input });
+		assert.equal(gate?.block, true);
+		assert.match(gate.reason, new RegExp(`^${name} has no argument ${stray}; it takes `));
+		await assert.rejects(() => s.run(name, input), { message: gate.reason });
+	}
+	assert.deepEqual(sent(), [], "nothing reached the server");
+	// The tool's own arguments run as before, and on one arm the handler still answers `arm`.
+	assert.equal(
+		await s.emit("tool_call", { toolName: "move_to", input: { xyz: [0, 0, 1.05], tol_m: 0.01 } }),
+		undefined,
+	);
+	await s.run("move_to", { xyz: [0, 0, 1.05], tol_m: 0.01, arm: "robot0" });
+	assert.deepEqual(
+		sent().map((c) => [c.method, c.kwargs]),
+		[["env.move_to", { xyz: [0, 0, 1.05], tol_m: 0.01, arm: null }]],
+	);
+	await assert.rejects(() => s.run("move_to", { xyz: [0, 0, 1.05], arm: "robot1" }), /has one arm \(robot0\)/);
 });
 
 test("Wipe's sponge has no fingers: no grasp tools even with a backend", async (t) => {

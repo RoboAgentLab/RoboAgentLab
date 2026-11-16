@@ -273,6 +273,8 @@ export function graspTools(pi: ExtensionAPI, rig: GraspRig): GraspToolDef[] {
 						region_mask_id,
 						grasp_id: String(params.grasp_id),
 						...(params.object_mask_id ? { object_mask_id: String(params.object_mask_id) } : {}),
+						// No robot of this repo passes keep_tilt here: each has a manifest and no manifest declares it, so
+						// its tool neither offers nor takes it (../robot.ts). A robot without a manifest keeps the schema above.
 						...(params.keep_tilt ? { keep_tilt: true } : {}),
 					},
 					600_000,

@@ -84,6 +84,7 @@ function load(robot: (pi: ExtensionAPI) => void, values: Record<string, unknown>
 		},
 		getFlag: (name: string) => flags[name],
 		registerTool: (t: any) => tools.set(t.name, t),
+		getAllTools: () => [...tools.values()],
 		setActiveTools: (names: string[]) => {
 			active = names;
 		},
@@ -103,7 +104,15 @@ function load(robot: (pi: ExtensionAPI) => void, values: Record<string, unknown>
 	const ctx = {
 		hasUI: true,
 		cwd: dir,
-		ui: new Proxy({ notify: (msg: string) => errors.push(msg) }, { get: (t: any, k: string) => t[k] ?? (() => {}) }),
+		// Only errors: a robot's notices at start (a plugin its configuration turns off) do not mean the start failed.
+		ui: new Proxy(
+			{
+				notify: (msg: string, level?: string) => {
+					if (level === "error") errors.push(msg);
+				},
+			},
+			{ get: (t: any, k: string) => t[k] ?? (() => {}) },
+		),
 		shutdown: () => {},
 		abort: () => {},
 		sessionManager: {
@@ -124,7 +133,7 @@ function load(robot: (pi: ExtensionAPI) => void, values: Record<string, unknown>
 		assert.ok(active.includes(name), `${name} is not active: ${active.join(", ")}`);
 		return tools.get(name).execute(`e2e-${name}`, params, undefined, undefined, ctx);
 	};
-	return { emit, call, entries, status, errors, active: () => active, dir, mm: () => mm };
+	return { emit, call, tools, entries, status, errors, active: () => active, dir, mm: () => mm };
 }
 
 /** The services checkout this suite runs against. */
@@ -159,11 +168,14 @@ async function episode(robot: (pi: ExtensionAPI) => void, name: string, task: Re
 		const before = r.status.at(-1)?.step ?? 0;
 		await r.emit("before_agent_start", { prompt: "Solve the task.", systemPrompt: "" });
 		await r.emit("agent_start");
+		// act names an arm only where the robot has more than one (its schema then offers `arm`); a one-arm robot's act
+		// refuses the argument.
+		const arms = (r.tools.get("act")?.parameters.properties.arm?.enum ?? []) as string[];
 		const acted = await r.call(
 			"act",
 			name === "humanclaw"
 				? { unit: "WALK", param: "slow", target_visible: false }
-				: { unit: "MV_UP", ...(name === "maniskill" ? {} : { arm: "left" }) },
+				: { unit: "MV_UP", ...(arms.length ? { arm: arms[0] } : {}) },
 		);
 		assert.ok(!acted.isError, text(acted));
 		await r.emit("tool_execution_end", { toolName: "act" });

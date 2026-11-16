@@ -94,6 +94,16 @@ name the manifest does not declare throws. Describe it in the robot's `SYSTEM.md
 `[tool:push]...[/tool:push]`, and add it to the list `start` returns; a tool whose `requires` the
 run cannot meet is not activated.
 
+`run` can hand `params` on whole: every key in it is an argument the entry declares for tool mode.
+pi's validation keeps the keys a schema does not declare, so the robot base (`defineRobot`) checks
+them: it refuses a call that carries any other argument (the program-only `steps` above, a keyword
+of the method that no mode declares) before `run` sees it. One declared argument can reach `run`
+although the session's schema leaves it out: an enum over an empty list (`arm` on one arm, as in
+the example above; `camera` with no cameras). `run` still gets it, as it always did: refuse it or
+accept the one arm's name there, unless the method answers it. The MCP server, which has no `run`,
+refuses everything its schema does not offer, and leaves out a tool whose required parameter has an
+empty list: declare such a parameter `required` only when the method cannot run without it.
+
 A `ts` entry is a tool only: pi executes it (its schema comes from the manifest) and it never
 reaches a program: no `code` doc, no RPC method, never in `code.api`
 (`test_pi_side_tools_are_tool_mode_only_and_never_reach_code_api`). That is where the VLA and skill

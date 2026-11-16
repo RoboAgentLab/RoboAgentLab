@@ -12,6 +12,7 @@
 #   PI_EMBODIED_PRIVILEGED   1 / true for the simulator's ground truth
 #   PI_EMBODIED_CAPABILITIES a,b   what the env server was started with, when it serves no code.api
 #   PI_EMBODIED_VARS         "cameras=agentview,wrist;arms="   robot variables the manifest's enums need
+#                            (one arm: arms=; two arms name them, "arms=left,right": a call then picks one)
 #   PI_EMBODIED_TIMEOUT_MS   per-call RPC timeout
 #   PI_EMBODIED_NO_RESET     1: do not env.reset a simulator at start (a real arm is never reset at start: its reset tool is)
 # The operator gate on a real arm (the server's own, src/integrations/mcp/gate.ts; hosts' hooks are a second

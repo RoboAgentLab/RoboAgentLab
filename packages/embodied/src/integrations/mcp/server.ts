@@ -236,7 +236,9 @@ export function session(a: Args, c: Connected, o: Partial<SessionOptions> = {}):
 		log,
 		...o,
 	});
-	for (const l of s.leftOut) log(`tool ${l.name} left out: ${l.reason} (give --var)`);
+	// A reason that already says which --var to give is not followed by the general hint.
+	for (const l of s.leftOut)
+		log(`tool ${l.name} left out: ${l.reason}${l.reason.includes("give --var") ? "" : " (give --var)"}`);
 	log(s.gate.describe());
 	const warning = s.gate.warning();
 	if (warning) log(`WARNING: ${warning}`);

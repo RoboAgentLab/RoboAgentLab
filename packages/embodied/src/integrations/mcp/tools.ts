@@ -30,6 +30,7 @@ import type { Tool } from "@earendil-works/pi-mcp";
 import { rpcParams } from "../../primitives/arguments.ts";
 import {
 	available,
+	emptyList,
 	type Manifest,
 	type ManifestEntry,
 	type Tier,
@@ -109,13 +110,17 @@ export function capabilitiesFrom(
 /** A manifest tool as MCP lists it, with the entry it came from. */
 export type McpTool = { tool: Tool; entry: ManifestEntry };
 
-/** Why an entry was left out: an enum needs a robot variable `--var` did not give. */
+/**
+ * Why an entry was left out: an enum needs a robot variable `--var` did not give, or a required parameter's list
+ * is empty.
+ */
 export type LeftOut = { name: string; reason: string };
 
 /**
  * The MCP tools of `m` under `s`, filtered by `has` (the `requires` rule pi applies), their schemas
- * built with `vars`. An entry whose schema needs a variable `vars` lacks is left out and named in
- * `leftOut` (the server prints them), never exposed with a guessed enum.
+ * built with `vars`. An entry whose schema needs a variable `vars` lacks, or whose required parameter
+ * has an empty list, is left out and named in `leftOut` (the server prints them), never exposed with a
+ * guessed enum or without that parameter.
  */
 export function manifestTools(
 	m: Manifest,
@@ -128,6 +133,12 @@ export function manifestTools(
 	for (const entry of selectEntries(m, s)) {
 		if (!available(entry, has)) continue;
 		try {
+			// A required parameter over an empty list would be left out of the schema, and a call could not name it.
+			for (const [k, p] of Object.entries(rpcParams(entry))) {
+				const list = p.required ? emptyList(p, vars) : undefined;
+				if (list)
+					throw new Error(`${k} is required and --var ${list} is empty: give --var ${list}=<name>[,<name>]`);
+			}
 			// A TypeBox schema is JSON Schema with symbol-keyed kinds; serializing drops the symbols.
 			const inputSchema = JSON.parse(
 				JSON.stringify(toolSchema({ ...entry, params: rpcParams(entry) }, vars)),

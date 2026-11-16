@@ -180,9 +180,85 @@ test("tools/call forwards to the manifest's method with the validated kwargs; ba
 			const segment = (await mcp.listTools()).find((t) => t.name === "segment");
 			const props = Object.keys((segment?.inputSchema as { properties?: object }).properties ?? {});
 			assert.ok(props.includes("point") && !props.includes("step"), props.join(","));
+			// Given anyway, it is refused as pi's, and the failure names the tool once.
+			const stepped = await mcp.callTool("segment", { prompt: "bowl", step: 0 });
+			assert.equal(
+				stepped.content[0].type === "text" ? stepped.content[0].text : "",
+				"segment: step is pi's (its recorded states and image sizes), not the env server's",
+			);
 		} finally {
 			await close();
 		}
+	} finally {
+		env.close();
+	}
+});
+
+test("tools/call refuses an argument a manifest tool does not offer, and a built-in tool passes none on: a program's option or the method's own keyword never reaches the server", async () => {
+	useDeployment({});
+	const env = fakeEnv({ robot: "robosuite" });
+	const url = await env.listen();
+	try {
+		const a = parseArgs(["--robot", "robosuite", "--env", url, "--var", "arms=robot0,robot1"]);
+		const s = session(a, await connect(a));
+		const { c: mcp, close } = await client(s);
+		try {
+			const move = (await mcp.listTools()).find((t) => t.name === "move_to");
+			const offered = Object.keys((move?.inputSchema as { properties?: object }).properties ?? {});
+			assert.deepEqual(offered, ["xyz", "arm", "quat_xyzw", "rotvec", "gripper", "tol_m", "max_steps"]);
+			// robosuite's move_to: step_m, step_rad and tol_rad are code-mode parameters, record is in no manifest mode.
+			for (const [extra, named] of [
+				[{ step_m: -0.05 }, '"step_m"'],
+				[{ record: true }, '"record"'],
+				[{ tol_rad: 0.1, step_rad: 9 }, '"tol_rad" or "step_rad"'],
+				// `arm` is offered here: carried next to a stray name, no hint names it.
+				[{ arm: "robot0", record: true }, '"record"'],
+			] as const) {
+				const r = await mcp.callTool("move_to", { xyz: [0.5, 0, 1], ...extra });
+				assert.equal(r.isError, true);
+				assert.equal(
+					r.content[0].type === "text" ? r.content[0].text : "",
+					`move_to: no argument ${named}; it takes ${offered.join(", ")}`,
+				);
+			}
+			assert.ok(!env.calls.some((c) => c.method === "env.move_to"), "a refused call never reaches the server");
+			const ok = await mcp.callTool("move_to", { xyz: [0.5, 0, 1], arm: "robot0", tol_m: 0.01 });
+			assert.equal(ok.isError, undefined);
+			assert.deepEqual(env.calls.find((c) => c.method === "env.move_to")?.kwargs, {
+				xyz: [0.5, 0, 1],
+				arm: "robot0",
+				tol_m: 0.01,
+			});
+		} finally {
+			await close();
+		}
+		// A one-arm session's schema leaves `arm` out, and no handler stands before the method: `arm` is refused there
+		// like any other argument, and the refusal lists what that schema offers and says which list left `arm` out.
+		const one = parseArgs(["--robot", "robosuite", "--env", url, "--var", "arms="]);
+		const { c: mcp1, close: close1 } = await client(session(one, await connect(one)));
+		try {
+			const takes = "it takes xyz, quat_xyzw, rotvec, gripper, tol_m, max_steps";
+			for (const [extra, refusal] of [
+				[{ step_m: 0.01 }, `no argument "step_m"; ${takes}`],
+				[{ arm: "robot1" }, `no argument "arm"; ${takes}. arm is not offered while --var arms is empty`],
+			] as const) {
+				const r = await mcp1.callTool("move_to", { xyz: [0.5, 0, 1], ...extra });
+				assert.equal(r.content[0].type === "text" ? r.content[0].text : "", `move_to: ${refusal}`);
+			}
+			// A built-in tool passes none of its caller's other arguments on: each connect's own reset, then the tool's.
+			assert.equal((await mcp1.callTool("reset", { record: true, step_m: 1 })).isError, undefined);
+			assert.deepEqual(
+				env.calls.filter((c) => c.method === "env.reset").map((c) => c.kwargs),
+				[{}, {}, {}],
+			);
+			const sent = env.calls.length;
+			const fin = text(await mcp1.callTool("finish", { status: "success", summary: "done", terminated: true }));
+			assert.deepEqual([fin.claimed, fin.summary, "terminated" in fin], ["success", "done", false]);
+			assert.equal(env.calls.length, sent, "finish sends nothing");
+		} finally {
+			await close1();
+		}
+		assert.equal(env.calls.filter((c) => c.method === "env.move_to").length, 1, "only the one call that fit");
 	} finally {
 		env.close();
 	}
@@ -222,8 +298,11 @@ test("observe on RoboCasa: no get_observation; render_camera(camera_name, height
 		const s = session(a, await connect(a));
 		const { c: mcp, close } = await client(s);
 		try {
-			const o = await mcp.callTool("observe", {});
+			// A caller's other argument reaches neither the renders (the facade above refuses a keyword it does not
+			// take) nor get_state.
+			const o = await mcp.callTool("observe", { record: true });
 			assert.equal(o.isError, undefined, JSON.stringify(o.content[0]));
+			assert.deepEqual(env.calls.at(-1), { method: "env.get_state", kwargs: {}, token: undefined });
 			assert.equal(o.content.filter((c) => c.type === "image").length, 3);
 			assert.deepEqual(Object.keys(text(o)), ["agentview", "navview", "wrist", "state"]);
 			assert.deepEqual(text(o).state.eef_pos, [0.4, 0.5, 0.6]);
@@ -409,13 +488,15 @@ test("observe returns the cameras as image content; finish ends the episode; sto
 		const s = session(a, await connect(a));
 		const { c: mcp, close } = await client(s);
 		try {
-			const o = await mcp.callTool("observe", {});
+			// observe passes none of its caller's other arguments on, with a camera or without one.
+			const o = await mcp.callTool("observe", { record: true });
+			assert.deepEqual(env.calls.at(-1), { method: "env.get_observation", kwargs: {}, token: undefined });
 			assert.equal(o.content.filter((c) => c.type === "image").length, 2);
 			assert.deepEqual(text(o).eef_pos, [0.1, 0.2, 0.3]);
 			assert.deepEqual(text(o).agentview.rgb, { image: 1, shape: [4, 4, 3] });
 			// One camera: LIBERO's own path (robots/libero OBSERVATION): the facade's camera name and its 512 views,
 			// the frames segment/back_project/align_wrist take pixels of (the same size get_observation returns).
-			const one = await mcp.callTool("observe", { camera: "wrist" });
+			const one = await mcp.callTool("observe", { camera: "wrist", height: 64, record: true });
 			assert.equal(one.content.filter((c) => c.type === "image").length, 1);
 			assert.deepEqual(text(one).wrist, { image: 1, shape: [4, 4, 3] });
 			assert.deepEqual(env.calls.at(-1), {
@@ -621,6 +702,61 @@ test("--tier and --privileged select entries as pi's manifestTool does; a server
 
 		env.methods["code.api"] = () => ({ tier: null, manifest_digest: "0".repeat(64), available: [], digest: "x" });
 		await assert.rejects(connect(parseArgs(["--robot", "libero", "--env", url])), /runs manifest 000000000000/);
+	} finally {
+		env.close();
+	}
+});
+
+test("--var arms= on robodojo: the four tools that require an arm are left out of --list and tools/list, with the reason in left_out and the start-up log", async () => {
+	useDeployment({});
+	const needs = ["move_to", "move_delta", "rotate_delta", "set_gripper"];
+	const reason = "arm is required and --var arms is empty: give --var arms=<name>[,<name>]";
+	const left = needs.map((name) => ({ name, reason }));
+	const listed = listOnly(parseArgs(["--robot", "robodojo", "--list", "--var", "arms="]));
+	assert.deepEqual(listed.left_out, left);
+	for (const n of needs) assert.ok(!listed.tools.some((t) => t.name === n), `${n} is not listed`);
+	// An optional arm takes no tool out (robosuite on one arm); with the arms named nothing is left out.
+	assert.deepEqual(listOnly(parseArgs(["--robot", "robosuite", "--list", "--var", "arms="])).left_out, []);
+	assert.deepEqual(listOnly(parseArgs(["--robot", "robodojo", "--list", "--var", "arms=left,right"])).left_out, []);
+	const env = fakeEnv({ robot: "robodojo" });
+	const url = await env.listen();
+	/** The session, with what its start logged about tools left out. */
+	const started = async (...vars: string[]) => {
+		const a = parseArgs(["--robot", "robodojo", "--env", url, ...vars.flatMap((v) => ["--var", v])]);
+		const c = await connect(a);
+		const logged: string[] = [];
+		const error = console.error;
+		console.error = (line: string) => void logged.push(line);
+		try {
+			return { s: session(a, c), logged: logged.filter((l) => l.includes("left out")) };
+		} finally {
+			console.error = error;
+		}
+	};
+	try {
+		// The reason already says which --var to give: the log does not add the general hint to it, as it does to
+		// the reason of a variable that was not given at all.
+		const { s, logged } = await started("arms=", "cameras=head");
+		assert.deepEqual(
+			logged,
+			needs.map((n) => `[pi-embodied-mcp] tool ${n} left out: ${reason}`),
+		);
+		assert.ok(
+			(await started("arms=left,right")).logged.includes(
+				"[pi-embodied-mcp] tool detect left out: manifest enum {{cameras}}: no list variable (give --var)",
+			),
+		);
+		const { c: mcp, close } = await client(s);
+		try {
+			const names = (await mcp.listTools()).map((t) => t.name);
+			for (const n of needs) assert.ok(!names.includes(n), `${n} is not served`);
+			assert.ok(names.includes("go_home"), "go_home takes no arm and stays served");
+			assert.deepEqual(text(await mcp.callTool("robot_status", {})).left_out, left);
+			await assert.rejects(mcp.callTool("move_delta", { delta_xyz: [0, 0, 0.01] }), /Unknown tool/);
+			assert.ok(!env.calls.some((c) => c.method === "env.move_delta"));
+		} finally {
+			await close();
+		}
 	} finally {
 		env.close();
 	}

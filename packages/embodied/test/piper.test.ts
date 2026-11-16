@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { NdArray } from "../src/infra/rpc.ts";
@@ -184,6 +185,33 @@ test("pi checks no per-call limit itself: a motion goes to the server, which enf
 	assert.ok(!("reopen_empty" in f.tools.get("close_gripper").parameters.properties));
 	assert.ok(!f.tools.has("halt_arm"));
 	assert.match(f.tools.get("move_delta").description, /at most 0\.05 m per call/);
+});
+
+test("a program's option is no argument of a tool: frame, continuous and reopen_empty are refused before anything is sent", async (t) => {
+	const m = await mockServer({ dual: false, limits: { max_move_m: 0.02, max_yaw_rad: 0.1 } });
+	t.after(m.close);
+	const f = fakePi({ operator: true, task: "banana_handover", "env-url": m.url });
+	piper(f.pi);
+	f.confirms.push(true);
+	await start(f);
+	const sent = m.calls.length;
+	// As pi calls a tool: its validation keeps the keys the schema does not declare, then the robot's gate. The server's
+	// close_gripper(reopen_empty=False) would leave an empty close closed, and move_delta takes frame and continuous.
+	for (const [name, args, reason] of [
+		["close_gripper", { reopen_empty: false }, 'close_gripper has no argument "reopen_empty"; it takes none.'],
+		[
+			"move_delta",
+			{ delta_xyz: [0, 0, 0.01], frame: "heading", continuous: true },
+			'move_delta has no argument "frame" or "continuous"; it takes delta_xyz.',
+		],
+	] as const) {
+		const tool = f.tools.get(name);
+		const input = validateToolArguments(tool, { type: "toolCall", id: "c", name, arguments: { ...args } });
+		assert.deepEqual(input, args, "pi's validation keeps them");
+		assert.deepEqual(await f.emit("tool_call", { toolName: name, input }), { block: true, reason });
+		await assert.rejects(f.run(name, input), { message: reason });
+	}
+	assert.equal(m.calls.length, sent, "nothing reached the server");
 });
 
 test("an attached server must enforce pi's limits or tighter ones", async (t) => {

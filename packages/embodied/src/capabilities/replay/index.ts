@@ -15,15 +15,17 @@
  *
  * The calls are verbatim: results of this run never change them. Calls that never ran in the
  * recording are skipped with a note: those the robot base, the operator or ../gumi blocked (refused,
- * or dropped as stale after an operator takeover), and every call of a reply that did not end
- * normally (stopReason other than toolUse/stop: pi runs none of them; a reply cut at the output token
- * limit may carry truncated arguments); replayed, they would move the robot where the recorded run did
- * not. Calls to pi's workspace-writing tools (write, edit, bash) are skipped too: replayed, they would
- * rewrite the recorded run's files. A replayed call whose outcome diverges from the recording's ends
- * the replay at that call, even inside a multi-call turn (the rest of the turn is blocked unsent): one
- * that errors where the recorded one did not (the robot erred, broke, or stopped answering), or that
- * succeeds where the recorded one failed (the robot is now where the recording never went). An error
- * the recording also had is noted and the replay goes on.
+ * or dropped as stale after an operator takeover), those an earlier replay withheld (the recording is
+ * itself a replay's session), and every call of a reply that did not end normally (stopReason other
+ * than toolUse/stop: pi runs none of them; a reply cut at the output token limit may carry truncated
+ * arguments); replayed, they would move the robot where the recorded run did not. Calls to pi's
+ * workspace-writing tools (write, edit, bash) are skipped too: replayed, they would rewrite the
+ * recorded run's files. A replayed call whose outcome diverges from the recording's ends the replay at
+ * that call, even inside a multi-call turn (the rest of the turn is blocked unsent; every turn with a
+ * robot tool or finish runs one call at a time): one that errors where the recorded one did not (the
+ * robot erred, broke, stopped answering, or refuses the call now), or that succeeds where the recorded
+ * one failed (the robot is now where the recording never went). An error the recording also had is
+ * noted and the replay goes on.
  *
  * The task comes from the robot's usual flags; a warning goes to stderr when the recording's
  * `robot_task` entry differs from this run's.
@@ -50,6 +52,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sessionFiles } from "../../infra/session-files.ts";
+import { STRAY_REFUSAL } from "../../primitives/arguments.ts";
 import { TASK_ENTRY } from "../../robot.ts";
 
 type Json = Record<string, unknown>;
@@ -61,12 +64,17 @@ export type Recording = { path: string; turns: Turn[]; task?: Json; finished: bo
 
 /** pi's tools that change the workstation, not the robot. */
 const SKIP = new Set(["write", "edit", "bash"]);
+/** The replay's own refusal of the calls it withholds after a divergence, and the pattern that reads it back. */
+const withheld = (why: string) => `replay stopped (${why}); this recorded call was not sent`;
+const WITHHELD = /^replay stopped \([\s\S]*\); this recorded call was not sent$/;
 /**
  * Error results of calls that never executed: pi's own (a block without a reason, an abort before the
- * call ran, an unknown tool) and the block reasons of the robot base (../robot.ts; UNGRANTED below),
- * the operator (../operator.ts), ../gumi's stale drop, the units verifier and the memory guard.
+ * call ran, an unknown tool) and the block reasons of the robot base (../../robot.ts; UNGRANTED below,
+ * STRAY_REFUSAL), the operator (../operator.ts), ../gumi's stale drop, the units verifier, the memory
+ * guard and a replay.
  */
 const NOT_RUN = [
+	WITHHELD,
 	/^Tool execution was blocked$/,
 	/^Operation aborted$/,
 	/^Tool \S+ not found$/,
@@ -146,7 +154,8 @@ export function loadRecording(path: string): Recording {
 				});
 			else if (
 				error !== undefined &&
-				(NOT_RUN.some((p) => p.test(error.trim())) || UNGRANTED.exec(error.trim())?.[1] === c.name)
+				(NOT_RUN.some((p) => p.test(error.trim())) ||
+					[UNGRANTED, STRAY_REFUSAL].some((p) => p.exec(error.trim())?.[1] === c.name))
 			)
 				blocked.push({ name: c.name, reason: brief(error) });
 			else calls.push({ name: c.name, arguments: c.arguments, ...(error !== undefined ? { error } : {}) });
@@ -255,15 +264,17 @@ export default function replay(pi: ExtensionAPI) {
 
 	// A multi-call turn stops at its first diverging call: the rest of the batch is blocked unsent.
 	// Robot tools and finish are sequential, so pi runs such a batch one call at a time and this hook
-	// sees each result before the next call is prepared.
-	pi.on("tool_result", (event) => {
+	// sees each outcome before the next call is prepared. Every call ends here, also one another
+	// handler blocked (the robot's gate, the operator), which gets no tool_result.
+	pi.on("tool_execution_end", (event) => {
 		const e = emitted.find((x) => x.id === event.toolCallId);
 		if (!e || halt !== undefined) return;
-		halt = divergence(e, event.isError, resultText(event));
+		// An untyped tool's result may come without content.
+		halt = divergence(e, event.isError, resultText({ content: event.result?.content ?? [] }));
 	});
 	pi.on("tool_call", (event) => {
 		if (halt === undefined || !emitted.some((x) => x.id === event.toolCallId)) return;
-		return { block: true, reason: `replay stopped (${halt}); this recorded call was not sent` };
+		return { block: true, reason: withheld(halt) };
 	});
 
 	/**
