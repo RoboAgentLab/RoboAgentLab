@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -140,7 +141,7 @@ async function toyRobot(
 		rt?: UnitsSpec["rt"];
 		maxMove?: number;
 		chains?: boolean;
-		arms?: string[];
+		arms?: UnitsSpec["arms"];
 		viewSelect?: boolean;
 		/** The robot refuses the verifier's retreat (e.g. an episode that already ended). */
 		refuseRetreat?: boolean;
@@ -317,13 +318,202 @@ test("recovery reopens a GRASP that closed on nothing", async () => {
 		g.moves.map((m) => m.gripper),
 		["close"],
 	);
-	// A human's GRASP (GUMI teleop) stays closed even with the plugin on.
+	// A human's GRASP (GUMI teleop, through the units handle) stays closed even with the plugin on.
 	const h = await toyRobot({}, { onClose: () => 0.001 });
-	await h.run("act", { unit: "GRASP", operator: true });
+	await (h.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "GRASP", operator: true }, undefined);
 	assert.deepEqual(
 		h.moves.map((m) => m.gripper),
 		["close"],
 	);
+});
+
+/** The model's `act` call as pi makes it: validated against act's schema, which keeps the keys the schema does not declare. */
+async function modelCall(f: Pick<ReturnType<typeof fakePi>, "tools" | "run">, args: object) {
+	const act = f.tools.get("act");
+	return f.run("act", validateToolArguments(act, { type: "toolCall", id: "c", name: "act", arguments: { ...args } }));
+}
+
+test("the model's act takes neither the operator's nor the verifier's flag: pi passes arguments the schema does not offer", async () => {
+	const f = await toyRobot({}, { onClose: () => 0.001 });
+	const act = f.tools.get("act");
+	assert.deepEqual(
+		validateToolArguments(act, {
+			type: "toolCall",
+			id: "c",
+			name: "act",
+			arguments: { unit: "GRASP", operator: true },
+		}),
+		{
+			unit: "GRASP",
+			operator: true,
+		},
+	);
+	// The model's GRASP with the operator's flag, as a boolean or as any other value, is still the agent's: recovery
+	// reopens the empty close.
+	await modelCall(f, { unit: "GRASP", operator: true });
+	await modelCall(f, { unit: "GRASP", operator: "true" });
+	assert.deepEqual(
+		f.moves.map((m) => m.gripper),
+		["close", "open", "close", "open"],
+	);
+	// retreat marks the verifier's lift, which a robot runs after its success signal; the model's move is no such lift,
+	// with the flag as a boolean or as any other value.
+	const before = f.moves.length;
+	await modelCall(f, { unit: "MV_FWD", retreat: true });
+	await modelCall(f, { unit: "MV_FWD", retreat: "true" });
+	assert.deepEqual(
+		f.moves.slice(before).map((m) => m.retreat),
+		[undefined, undefined],
+	);
+	// The variable step is the agent's: the model's move with the flag takes it, the operator's the robot's step.
+	const v = await toyRobot({ "units-plugins": "variable_step", "units-coarse-step": "0.05" });
+	await modelCall(v, { unit: "MV_LEFT", operator: true });
+	await (v.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "MV_LEFT", operator: true }, undefined);
+	assert.deepEqual(
+		v.moves.map((m) => m.delta),
+		[
+			[0, -0.05, 0],
+			[0, -0.02, 0],
+		],
+	);
+	// Past the last stage's step cap the model's units do not run, with the flag or without; the operator's do.
+	const g = await toyRobot({ "units-stage-steps": "1" });
+	await g.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above the cube" }] });
+	await modelCall(g, { unit: "MV_LEFT" });
+	// This call finds the stage's cap used, and no stage after it.
+	await modelCall(g, { unit: "MV_LEFT" });
+	assert.equal((await modelCall(g, { unit: "MV_LEFT", operator: true })).details.stage_cap_exceeded, true);
+	assert.equal(g.moves.length, 1);
+	await (g.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "MV_LEFT", operator: true }, undefined);
+	assert.equal(g.moves.length, 2);
+	// A custom vocabulary: after its terminal unit the model's units do not run, with the flag or without; the
+	// operator's do.
+	const h = await humanoid();
+	await modelCall(h, { unit: "STOP" });
+	assert.match(head(await modelCall(h, { unit: "WALK", operator: true })), /the episode already ended/);
+	await (h.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "WALK", operator: true }, undefined);
+	assert.deepEqual(
+		h.ran.map(([u]) => u),
+		["STOP", "WALK"],
+	);
+	// And past its last stage's step cap.
+	const c = await humanoid({ "units-plugins": "plan,mem_text", "units-stage-steps": "1" });
+	await c.run("plan", { stages: [{ motion: "FIND", target: "chair", completion: "chair in view" }] });
+	await modelCall(c, { unit: "WALK" });
+	await modelCall(c, { unit: "WALK" });
+	assert.equal((await modelCall(c, { unit: "WALK", operator: true })).details.stage_cap_exceeded, true);
+	assert.equal(c.ran.length, 1);
+	await (c.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "WALK", operator: true }, undefined);
+	assert.equal(c.ran.length, 2);
+});
+
+test("on the arm's units act and plan take only the robot's own arms: a one-arm robot's act refuses `arm`, which would key fresh guards", async () => {
+	// pi passes a one-arm robot's act an `arm` its schema does not offer: a new name per call would start the turn
+	// guards and the stage steps from zero, with the gripper recorded as open.
+	const f = await toyRobot({ "units-plugins": "" }, { yaw: 0.15 });
+	assert.equal("arm" in f.tools.get("act").parameters.properties, false);
+	await assert.rejects(
+		modelCall(f, { unit: "ROTATE_CW", n: 10, arm: "a0" }),
+		/act: this robot has one arm; omit `arm`/,
+	);
+	// Any `arm`: an empty or null one too.
+	for (const arm of ["", null])
+		await assert.rejects(modelCall(f, { unit: "ROTATE_CW", arm }), /act: this robot has one arm; omit `arm`/);
+	for (let i = 0; i < 3; i++) await modelCall(f, { unit: "ROTATE_CW", n: 10 });
+	assert.equal(f.moves.length, 17, "the 150 deg accumulated-yaw cap holds");
+	await assert.rejects(modelCall(f, { unit: "ROTATE_CW", arm: "a1" }), /one arm/);
+	// The units handle (GUMI's path, which pi does not validate) is refused the same way.
+	await assert.rejects(
+		(f.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "ROTATE_CW", arm: "a2", operator: true }, undefined),
+		/act: this robot has one arm; omit `arm`/,
+	);
+	assert.equal(f.moves.length, 17);
+	// A plan stage names no arm on one arm either, whatever its motion: act takes none, so with recovery a GRASP stage
+	// that named one could never be done. "" names none, as before.
+	for (const motion of ["GRASP", "MOVE"])
+		await assert.rejects(
+			f.run("plan", { stages: [{ motion, target: "cube", completion: "done", arm: "left" }] }),
+			/plan: this robot has one arm; omit a stage's `arm`/,
+		);
+	await f.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "done", arm: "" }] });
+	// Two arms: act's schema names them, and a plan stage names one of them or none: no unit of either arm would count
+	// toward a stage of another name, so it would never reach its cap.
+	const g = await toyRobot({ "units-stage-steps": "1" }, { arms: ["left", "right"] });
+	await g.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above", arm: "left" }] });
+	const planned = head(await g.run("plan", {}));
+	await assert.rejects(
+		g.run("plan", {
+			stages: [
+				{ motion: "MOVE", target: "cube", completion: "above", arm: "right" },
+				{ motion: "PLACE", target: "bowl", completion: "in the bowl", arm: "both" },
+			],
+		}),
+		/plan: unknown arm both \(left, right\); omit it for a stage of either arm/,
+	);
+	await assert.rejects(
+		g.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above", arm: "Left" }] }),
+		/plan: unknown arm Left \(left, right\)/,
+	);
+	assert.equal(head(await g.run("plan", {})), planned, "a refused plan leaves the plan as it was");
+	await assert.rejects(g.run("act", { unit: "MV_LEFT", arm: "both" }), /act: unknown arm both \(left, right\)/);
+	for (const arm of ["both", "Left"])
+		await assert.rejects(
+			(g.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "MV_LEFT", arm, operator: true }, undefined),
+			new RegExp(`act: unknown arm ${arm} \\(left, right\\)`),
+		);
+	await g.run("act", { unit: "MV_LEFT", arm: "left" });
+	await g.run("act", { unit: "MV_LEFT", arm: "left" });
+	assert.equal((await g.run("act", { unit: "MV_LEFT", arm: "left" })).details.stage_cap_exceeded, true);
+	assert.equal(g.moves.length, 1);
+	// A stage arm of "" is a stage of either arm, as the stage code reads it: the right arm's unit counts toward it.
+	await g.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above", arm: "" }] });
+	await g.run("act", { unit: "MV_LEFT", arm: "right" });
+	assert.equal((await g.run("act", { unit: "MV_LEFT", arm: "right" })).details.ran, 0, "the stage used its cap");
+	assert.equal(g.moves.length, 2);
+	// A refused plan changes nothing with `done` either: the current GRASP stage, whose hold slipped, is not checked,
+	// so its gripper does not reopen.
+	const d = await toyRobot({}, { arms: ["left", "right"] });
+	await d.run("plan", {
+		stages: [
+			{ motion: "GRASP", target: "cube", completion: "held", arm: "left" },
+			{ motion: "LIFT", target: "cube", completion: "lifted", arm: "left" },
+		],
+	});
+	await d.run("act", { unit: "GRASP", arm: "left" });
+	d.setWidth(0.001);
+	const grasping = head(await d.run("plan", {}));
+	await assert.rejects(
+		d.run("plan", {
+			done: true,
+			stages: [{ motion: "PLACE", target: "bowl", completion: "in the bowl", arm: "both" }],
+		}),
+		/plan: unknown arm both/,
+	);
+	assert.equal(head(await d.run("plan", {})), grasping);
+	assert.deepEqual(
+		d.moves.map((m) => m.gripper),
+		["close"],
+	);
+	// A robot whose arms are a function: act and plan take the arms it gives, and no others.
+	const live = await toyRobot({}, { arms: () => ["left", "right"] });
+	await live.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above", arm: "left" }] });
+	await modelCall(live, { unit: "MV_LEFT", arm: "left" });
+	await assert.rejects(
+		live.run("plan", { stages: [{ motion: "MOVE", target: "cube", completion: "above", arm: "both" }] }),
+		/plan: unknown arm both \(left, right\)/,
+	);
+	await assert.rejects(live.run("act", { unit: "MV_LEFT", arm: "both" }), /act: unknown arm both \(left, right\)/);
+	assert.equal(live.moves.length, 1);
+	// A robot's own vocabulary keys nothing by arm: its act ignores an `arm` (its units count toward the stage's cap
+	// all the same, whatever arm they and the stage name), and a plan stage's arm only shows in the stage line.
+	const h = await humanoid({ "units-plugins": "plan,mem_text", "units-stage-steps": "1" });
+	await h.run("plan", { stages: [{ motion: "FIND", target: "chair", completion: "chair in view", arm: "left" }] });
+	assert.match(
+		head(await modelCall(h, { unit: "WALK", arm: "left" })),
+		/^units: WALK\(normal\) x1\n[\s\S]*\[FIND\] \(left arm\)[\s\S]*step 1 of 1/,
+	);
+	assert.equal((await modelCall(h, { unit: "WALK", arm: "right" })).details.ran, 0, "the stage used its cap");
+	assert.equal(h.ran.length, 1);
 });
 
 test("auto_release reopens a closed gripper whose object slipped out", async () => {
@@ -1372,8 +1562,8 @@ test("stage_control: a stage that used its step cap moves on; past the last stag
 	const refused = await f.run("act", { unit: "MV_UP" });
 	assert.equal(refused.details.stage_cap_exceeded, true);
 	assert.equal(f.moves.length, 6, "no unit runs past the last stage's cap");
-	// A human's unit still runs, and a new plan resumes the agent.
-	await f.run("act", { unit: "MV_UP", operator: true });
+	// A human's unit (GUMI, through the units handle) still runs, and a new plan resumes the agent.
+	await (f.emitted.get(UNITS_EVENT) as UnitsHandle).run({ unit: "MV_UP", operator: true }, undefined);
 	assert.equal(f.moves.length, 7);
 	await f.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "cube in the bowl" }] });
 	assert.match(head(await f.run("act", { unit: "MV_DOWN" })), /STAGE 3\/3 \[PLACE\].*step 1 of 3/);
