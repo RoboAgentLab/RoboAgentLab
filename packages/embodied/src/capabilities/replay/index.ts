@@ -14,18 +14,23 @@
  * episode at shutdown.
  *
  * The calls are verbatim: results of this run never change them. Calls that never ran in the
- * recording are skipped with a note: those the robot base, the operator or ../gumi blocked (refused,
- * or dropped as stale after an operator takeover), those an earlier replay withheld (the recording is
- * itself a replay's session), and every call of a reply that did not end normally (stopReason other
- * than toolUse/stop: pi runs none of them; a reply cut at the output token limit may carry truncated
- * arguments); replayed, they would move the robot where the recorded run did not. Calls to pi's
+ * recording are skipped with a note: those pi answered without entering their tool (a refusal by
+ * the robot base, the operator, ../gumi or any other extension's hook, arguments that did not parse
+ * or validate, an unknown tool, an abort before the call: pi times every tool it enters, and such a
+ * result has no time; a recording without pi's times, and a refusal a tool raised itself, are read
+ * by the texts of NOT_RUN below), those an earlier replay withheld (the recording is itself a
+ * replay's session), and every call of a reply that did not end normally (stopReason other than
+ * toolUse/stop: pi runs none of them; a reply cut at the output token limit may carry truncated
+ * arguments); replayed, they would move the robot where the recorded run did not. A call the
+ * recording holds no result for is skipped too: after an abort, a kill or a quit the recording
+ * does not say whether such a call started, or how far it ran. Calls to pi's
  * workspace-writing tools (write, edit, bash) are skipped too: replayed, they would rewrite the
- * recorded run's files. A replayed call whose outcome diverges from the recording's ends the replay at
- * that call, even inside a multi-call turn (the rest of the turn is blocked unsent; every turn with a
- * robot tool or finish runs one call at a time): one that errors where the recorded one did not (the
- * robot erred, broke, stopped answering, or refuses the call now), or that succeeds where the recorded
- * one failed (the robot is now where the recording never went). An error the recording also had is
- * noted and the replay goes on.
+ * recorded run's files. A replayed call whose outcome diverges from the recording's ends the replay
+ * at that call, even inside a multi-call turn (the rest of the turn is blocked unsent; every turn
+ * with a robot tool or finish runs one call at a time): one that errors where the recorded one did
+ * not (the robot erred, broke, stopped answering, or refuses the call now), or that succeeds where
+ * the recorded one failed (the robot is now where the recording never went). An error the recording
+ * also had is noted and the replay goes on.
  *
  * The task comes from the robot's usual flags; a warning goes to stderr when the recording's
  * `robot_task` entry differs from this run's.
@@ -58,8 +63,16 @@ import { TASK_ENTRY } from "../../robot.ts";
 type Json = Record<string, unknown>;
 /** A recorded call; `error` is its recorded error result, if it had one. */
 export type Call = { name: string; arguments: Json; error?: string };
-/** `blocked`: the turn's calls that never ran in the recording, with the reason they were blocked. */
-export type Turn = { text: string; thinking: string; calls: Call[]; blocked: { name: string; reason: string }[] };
+/**
+ * `blocked`: the turn's calls a replay does not send, with the reason: they never ran in the recording, or
+ * (`unfinished`) the recording holds no result for them.
+ */
+export type Turn = {
+	text: string;
+	thinking: string;
+	calls: Call[];
+	blocked: { name: string; reason: string; unfinished?: true }[];
+};
 export type Recording = { path: string; turns: Turn[]; task?: Json; finished: boolean };
 
 /** pi's tools that change the workstation, not the robot. */
@@ -68,10 +81,12 @@ const SKIP = new Set(["write", "edit", "bash"]);
 const withheld = (why: string) => `replay stopped (${why}); this recorded call was not sent`;
 const WITHHELD = /^replay stopped \([\s\S]*\); this recorded call was not sent$/;
 /**
- * Error results of calls that never executed: pi's own (a block without a reason, an abort before the
- * call ran, an unknown tool) and the block reasons of the robot base (../../robot.ts; UNGRANTED below,
- * STRAY_REFUSAL), the operator (../operator.ts), ../gumi's stale drop, the units verifier, the memory
- * guard and a replay.
+ * Error results of calls that never executed, by their text: pi's own (a block without a reason, an abort
+ * before the call ran, an unknown tool) and the block reasons of the robot base (../../robot.ts; UNGRANTED
+ * below, STRAY_REFUSAL), the operator (../operator.ts), ../gumi's stale drop, the units verifier, the memory
+ * guard and a replay. A recording with pi's times does not depend on this list for a call pi answered itself
+ * (neverEntered below); the texts read a recording without them and, in any recording, a refusal that a tool
+ * raised itself.
  */
 const NOT_RUN = [
 	WITHHELD,
@@ -94,9 +109,32 @@ const NOT_RUN = [
  * robot tool that called another (ctx.executeTool) and failed with the refusal's text did run.
  */
 const UNGRANTED = /^(\S+) is not one of the tools \S+ gives the planner\.$/;
+/** Whether the text of an error result says that call `c` never ran. */
+const refused = (c: ToolCall, text: string) =>
+	NOT_RUN.some((p) => p.test(text.trim())) ||
+	[UNGRANTED, STRAY_REFUSAL].some((p) => p.exec(text.trim())?.[1] === c.name);
 const resultText = (m: { content: { type: string; text?: string }[] }) =>
 	m.content.flatMap((c) => (c.type === "text" && c.text ? [c.text] : [])).join(" ");
+/** The text of a result that is no error, for a note; a content that does not read as a list of parts has none. */
+const said = (m: ToolResultMessage) => {
+	try {
+		return resultText(m);
+	} catch {
+		return "";
+	}
+};
 const brief = (s: string) => s.replace(/\s+/g, " ").slice(0, 300);
+
+/** Why a call the recording holds no result for is not sent. */
+const NO_RESULT = "the recording holds no result for it";
+/**
+ * Whether pi answered a recorded call itself, without entering its tool, by pi's own record: the call's
+ * arguments did not parse (pi stores `{}` and the parse error), or, in a recording with pi's times, its result
+ * has none (a hook's block or throw, arguments that failed validation, an unknown tool, an abort before the
+ * call: of a call, pi times its tool's execute() and nothing before it).
+ */
+const neverEntered = (c: ToolCall, r: ToolResultMessage, timed: boolean) =>
+	c.argumentsError !== undefined || (timed && typeof r.durationMs !== "number");
 
 /** The custom entry recording which session this run replays. */
 export const REPLAY_ENTRY = "replay_source";
@@ -127,10 +165,27 @@ export function loadRecording(path: string): Recording {
 	const branch: Json[] = [];
 	for (let e = entries.at(-1); e; e = typeof e.parentId === "string" ? byId.get(e.parentId) : undefined)
 		branch.unshift(e);
-	const results = new Map<string, ToolResultMessage>();
+	// A call's result is the one of its own turn: a result between its reply and the next one. An id that a
+	// later reply uses again does not lend its result to this call. pi writes a turn's results in the order of
+	// its calls, so calls of one reply that share an id (a server that sends none) take that id's results in turn.
+	const resultsOf = new Map<Json, Map<string, ToolResultMessage[]>>();
+	let own: Map<string, ToolResultMessage[]> | undefined;
+	// pi records how long a reply took and how long a tool's execute() ran (durationMs); an older pi recorded
+	// neither. In a recording with either, a result without a time is read as one pi made itself, without entering
+	// the tool.
+	let timed = false;
+	// The last result under each id on the branch. In a recording without times an error result is read by the texts
+	// alone: there a call whose result is an error is not sent when that result, or the last result under its id,
+	// is a listed refusal.
+	const last = new Map<string, ToolResultMessage>();
 	for (const e of branch) {
 		const m = e.type === "message" ? (e.message as Message) : undefined;
-		if (m?.role === "toolResult") results.set(m.toolCallId, m);
+		if (m?.role === "assistant") {
+			own = new Map();
+			resultsOf.set(e, own);
+		} else if (m?.role === "toolResult" && own) own.set(m.toolCallId, [...(own.get(m.toolCallId) ?? []), m]);
+		if (m?.role === "toolResult") last.set(m.toolCallId, m);
+		if ((m?.role === "assistant" || m?.role === "toolResult") && typeof m.durationMs === "number") timed = true;
 	}
 	const turns: Turn[] = [];
 	let task: Json | undefined;
@@ -141,23 +196,30 @@ export function loadRecording(path: string): Recording {
 		// pi runs the calls of a reply that ended normally only: an errored or aborted reply's calls never
 		// ran, and a reply cut at the output token limit ("length") has calls whose arguments may be truncated.
 		const abnormal = m.stopReason === "toolUse" || m.stopReason === "stop" ? undefined : m.stopReason;
+		const results = resultsOf.get(e);
 		const calls: Call[] = [];
 		const blocked: Turn["blocked"] = [];
+		const taken = new Map<string, number>();
 		for (const c of m.content) {
 			if (c.type !== "toolCall") continue;
-			const r = results.get(c.id);
+			const nth = taken.get(c.id) ?? 0;
+			taken.set(c.id, nth + 1);
+			const r = results?.get(c.id)?.[nth];
 			const error = r?.isError ? resultText(r) : undefined;
+			const end = timed ? undefined : last.get(c.id);
 			if (abnormal !== undefined)
 				blocked.push({
 					name: c.name,
 					reason: `the reply ended with stopReason "${abnormal}"${abnormal === "length" ? ", so its arguments may be truncated" : ""}`,
 				});
+			// No result: the recording does not say whether this call started, or how far it ran. Sent, it would count
+			// as a call that succeeded.
+			else if (!r) blocked.push({ name: c.name, reason: NO_RESULT, unfinished: true });
 			else if (
-				error !== undefined &&
-				(NOT_RUN.some((p) => p.test(error.trim())) ||
-					[UNGRANTED, STRAY_REFUSAL].some((p) => p.exec(error.trim())?.[1] === c.name))
+				neverEntered(c, r, timed) ||
+				(error !== undefined && (refused(c, error) || (end?.isError && refused(c, resultText(end)))))
 			)
-				blocked.push({ name: c.name, reason: brief(error) });
+				blocked.push({ name: c.name, reason: brief(error ?? said(r)).trim() || "its result says nothing" });
 			else calls.push({ name: c.name, arguments: c.arguments, ...(error !== undefined ? { error } : {}) });
 		}
 		if (!calls.length && !blocked.length) continue;
@@ -332,7 +394,8 @@ export default function replay(pi: ExtensionAPI) {
 		}
 		while (cursor < recording.turns.length) {
 			const turn = recording.turns[cursor++];
-			for (const b of turn.blocked) notes.push(`skipped ${b.name} (it never ran in the recording: ${b.reason})`);
+			for (const b of turn.blocked)
+				notes.push(`skipped ${b.name} (${b.unfinished ? b.reason : `it never ran in the recording: ${b.reason}`})`);
 			for (const c of turn.calls)
 				if (SKIP.has(c.name)) notes.push(`skipped ${c.name} (it would rewrite the recorded run's files)`);
 			const calls = turn.calls

@@ -17,7 +17,7 @@
  * its carry up to and including the next release.
  *
  * Verbatim replay (../replay, `replay/session`) is Flash without re-localization: a recording's
- * calls sent unchanged. The two are separate providers for now.
+ * calls that ran, sent unchanged. The two are separate providers for now.
  *
  * The replay is independent of the action surface: a plan file may hold the robot's tool-call plan
  * (A2, above: re-anchored by the robot's hook), an action-unit sequence (A1: `act` calls replayed
