@@ -442,6 +442,7 @@ def test_a_zero_driver_stamp_is_no_stamp_even_just_after_boot(monkeypatch):
 
 
 def test_v4l2_stamps_are_aged_on_the_clock_the_driver_uses(monkeypatch):
+    from pi_embodied_services.components.cameras import webcam
     from pi_embodied_services.components.cameras.webcam import (
         WebcamRGB,
         host_clocks,
@@ -466,7 +467,12 @@ def test_v4l2_stamps_are_aged_on_the_clock_the_driver_uses(monkeypatch):
     assert f.time_source == "backend" and 0.75 < f.age_s() < 1.5
     assert cam.describe()["stamp_clock"] == "realtime"
     cam.close()
-    # Stamps on a clock the host does not have are not used.
+    # Stamps on a clock the host does not have are not used. The host's clocks are fixed
+    # for this: a machine up for 42 s has a monotonic clock that this stamp is fresh on.
+    # Here it has been up for 52 s: 10 s is outside the 2 s that identify a clock and
+    # inside the 60 s a frame may be old, so only the identification leaves it unused.
+    clocks = {"monotonic": 52.0, "realtime": 1.79e9, "boottime": 52.0}
+    monkeypatch.setattr(webcam, "host_clocks", lambda: dict(clocks))
     cap = _FakeCap()
     _fake_cv2(monkeypatch, cap)
     cap.pos_ms = lambda: 42_000.0
