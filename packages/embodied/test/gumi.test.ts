@@ -1514,11 +1514,164 @@ test("gumi records a vocabulary's terminal STOP as the episode's last step; the 
 
 test("dashboard pad: only the arm's STOP is labelled Look; a vocabulary's terminal STOP is itself, with a Look button on /gumi/look (U2)", () => {
 	const page = readFileSync(new URL("../src/capabilities/dashboard/page.html", import.meta.url), "utf8");
-	assert.match(page, /const stopLooks = G\.vocabulary\.includes\("STOP"\) && !terminal\.includes\("STOP"\);/);
+	const expr = /const stopLooks = (.*);/.exec(page)?.[1];
+	assert.ok(expr, "page.html defines stopLooks");
+	const stopLooks = new Function("G", "terminal", `return ${expr};`) as (G: object, terminal: string[]) => boolean;
+	assert.equal(stopLooks({ vocabulary: ["STOP"] }, []), true);
+	assert.equal(stopLooks({ vocabulary: ["STOP"] }, ["STOP"]), false);
+	// A pair GUMI does not drive: its STOP step is refused, so its Look is the button on /gumi/look.
+	assert.equal(stopLooks({ vocabulary: ["STOP"], unsupported: "why" }, []), false);
 	assert.match(page, /unit === "STOP" && stopLooks \? T\.look : UNIT_LABEL\[unit\] \|\| unit/);
 	assert.match(page, /G\.look && !stopLooks/);
 	assert.match(page, /gumiPost\("\/gumi\/look", \{\}\)/);
 	assert.doesNotMatch(page, /unit === "STOP" \? T\.look/);
+});
+
+/** The page's own teleop script (its copy table, `$`, `el` and the GUMI section) on a minimal DOM. */
+function gumiPage() {
+	const page = readFileSync(new URL("../src/capabilities/dashboard/page.html", import.meta.url), "utf8");
+	const cut = (from: string, to: string) => {
+		const a = page.indexOf(from);
+		const b = page.indexOf(to, a);
+		assert.ok(a >= 0 && b > a, `page.html has ${from} ... ${to}`);
+		return page.slice(a, b);
+	};
+	type El = Record<string, any>;
+	const els = new Map<string, El>();
+	const make = (tag: string): El => {
+		const e: El = {
+			tag,
+			textContent: "",
+			children: [] as El[],
+			dataset: {},
+			hidden: false,
+			checked: true,
+			value: "",
+		};
+		e.append = (...c: El[]) => e.children.push(...c);
+		e.replaceChildren = (...c: El[]) => {
+			e.children = c;
+		};
+		e.select = () => {};
+		return e;
+	};
+	// Only the ids the page's own HTML has: the script would throw on any other in a browser.
+	const ids = new Set([...page.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+	const $ = (id: string) => {
+		assert.ok(ids.has(id), `page.html has an element with the id ${id}`);
+		return els.get(id) ?? (els.set(id, make(id)).get(id) as El);
+	};
+	const listeners = new Map<string, ((e: unknown) => void)[]>();
+	const document = {
+		getElementById: $,
+		createElement: make,
+		querySelector: () => null,
+		addEventListener: (name: string, fn: (e: unknown) => void) =>
+			listeners.set(name, [...(listeners.get(name) ?? []), fn]),
+	};
+	const posts: [string, unknown][] = [];
+	const post = async (path: string, body: unknown) => {
+		posts.push([path, body]);
+		return {};
+	};
+	const script = [
+		cut("const COPY = {", "const T = COPY["),
+		"const T = COPY.en;",
+		cut("const $ = (id)", "const short ="),
+		cut("// ---- GUMI teleop", "// ---- queued messages"),
+		"return renderGumi;",
+	].join("\n");
+	// No timer runs: a held key repeats through setInterval, which the page gets as a stub.
+	const renderGumi = new Function(
+		"document",
+		"window",
+		"post",
+		"confirm",
+		"CSS",
+		"setInterval",
+		"clearInterval",
+		script,
+	)(
+		document,
+		{ addEventListener: () => {} },
+		post,
+		() => true,
+		{ escape: (s: string) => s },
+		() => 1,
+		() => {},
+	) as (g: unknown) => void;
+	/** Press and release a key: whether the page took it. */
+	const key = async (code: string) => {
+		let taken = false;
+		const e = {
+			code,
+			target: {},
+			preventDefault: () => {
+				taken = true;
+			},
+		};
+		for (const name of ["keydown", "keyup"]) for (const fn of listeners.get(name) ?? []) fn(e);
+		// The request in flight ends before the next press.
+		await new Promise((r) => setImmediate(r));
+		return taken;
+	};
+	/** Each pad's texts: an arm's label and its buttons, or the lone Look button. */
+	const pads = () => $("tpPads").children.map((pad: El) => pad.children.map((b: El) => b.textContent));
+	return { renderGumi, $, posts, key, pads };
+}
+
+test("dashboard page: a pair GUMI drives has a pad per arm and its keys; a pair it does not drive has the reason, a Look button on /gumi/look, no pad and no key", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	const two = (arms: string[]): UnitsHandle => ({ ...robot.handle, arms, vocabulary: [...SINGLE, "STILL"] });
+	const p = gumiPage();
+	// The panel is hidden until the script shows it, as in the page's HTML.
+	p.$("teleop").hidden = true;
+	f.pi.events.emit(UNITS_EVENT, two(["left", "right"]));
+	p.renderGumi(g.state());
+	assert.equal(p.$("teleop").hidden, false);
+	const buttons = ["FWD", "BACK", "LEFT", "RIGHT", "UP", "DOWN", "Look", "GRASP", "RELEASE", "STILL"];
+	assert.deepEqual(p.pads(), [
+		["left arm", ...buttons],
+		["right arm", ...buttons],
+	]);
+	assert.match(p.$("tpStatus").textContent, /^left W\/S\/A\/D Q\/E/);
+	assert.equal(await p.key("KeyW"), true);
+	assert.deepEqual(p.posts.splice(0), [["/gumi/step", { left: "MV_FWD", right: "STILL" }]]);
+	assert.equal(await p.key("KeyI"), true);
+	assert.deepEqual(p.posts.splice(0), [["/gumi/step", { left: "STILL", right: "MV_FWD" }]]);
+	// The names of robosuite's two-arm tasks: the reason alone on the status line, once and without the key help.
+	f.pi.events.emit(UNITS_EVENT, two(["robot0", "robot1"]));
+	const why = "GUMI drives two arms named left and right, and this robot's are robot0, robot1";
+	// Hidden again, as a session that starts on such a pair finds it: the script shows the panel there too.
+	p.$("teleop").hidden = true;
+	p.renderGumi(g.state());
+	assert.equal(p.$("teleop").hidden, false);
+	assert.equal(p.$("tpStatus").textContent, why);
+	// No pad but the Look button, which asks the look route and not a STOP step; no key is taken.
+	assert.deepEqual(p.pads(), [["Look"]]);
+	p.$("tpPads").children[0].children[0].onclick();
+	await new Promise((r) => setImmediate(r));
+	assert.deepEqual(p.posts.splice(0), [["/gumi/look", {}]]);
+	for (const code of ["KeyW", "Space"]) assert.equal(await p.key(code), false, code);
+	assert.deepEqual(p.posts, []);
+	// A later message and the last step follow the reason, which stays.
+	g.control("take");
+	p.renderGumi(g.state());
+	assert.equal(p.$("tpStatus").textContent, `${why} · operator has the robot`);
+	await g.manual("move_to {}", result([3, 4], ["agentview", "wrist"]));
+	p.renderGumi(g.state());
+	assert.equal(p.$("tpStatus").textContent, `${why} · manual move_to {} · last: human move_to {}`);
+	// The pads follow the reason alone too: the same state without it draws the arm's pad again.
+	p.renderGumi({ ...g.state(), unsupported: undefined });
+	assert.deepEqual(
+		p.pads().map((pad: string[]) => pad[0]),
+		["arm"],
+	);
+	p.renderGumi(g.state());
+	assert.deepEqual(p.pads(), [["Look"]]);
 });
 
 test("observation reads the robot's JSON from details.robot_text when letters_blind dropped it from the content (U5)", () => {
@@ -1536,4 +1689,101 @@ test("observation reads the robot's JSON from details.robot_text when letters_bl
 		details: { robot_text: [JSON.stringify({ images: ["other"] })] },
 	});
 	assert.deepEqual(both?.labels, ["front"]);
+});
+
+test("gumi: two arms that are not named left and right are not driven: steps, rollouts, /gumi-replay and the VLM operator's run and step are refused with the reason; the look and the gate stay", async () => {
+	const root = mkdtempSync(join(tmpdir(), "gumi-"));
+	const f = fakePi({ "gumi-record": root, "gumi-operator": "session" }, [decision({ command: "MV_FWD" })]);
+	const g = gumi(f.pi);
+	const op = vlmOperator(f.pi, g, () => g.publish());
+	g.attachOperator(op);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	// The names of robosuite's two-arm tasks.
+	const two = (arms: string[]): UnitsHandle => ({ ...robot.handle, arms, vocabulary: [...SINGLE, "STILL"] });
+	f.pi.events.emit(UNITS_EVENT, two(["robot0", "robot1"]));
+	const why = "GUMI drives two arms named left and right, and this robot's are robot0, robot1";
+	assert.deepEqual([g.state().available, g.state().unsupported, g.state().message], [true, why, why]);
+	// Not driven as one arm either: the state keeps the one-arm list (the page draws no pad for it), and every
+	// form of a step is refused before it is parsed.
+	assert.deepEqual(g.state().arms, [ARM]);
+	for (const body of [{ command: "w" }, { command: "L:w R:i" }, { left: "MV_UP", right: "MV_UP" }, { units: "MV_UP" }])
+		await assert.rejects(g.step(body), { status: 409, message: why });
+	assert.throws(() => g.record("start"), { status: 409, message: why });
+	// The VLM operator refuses the request itself: no cycle, no rollout, no look, no model call.
+	const idle = op.state();
+	for (const action of ["step", "run"]) assert.throws(() => g.operator(action), { status: 409, message: why });
+	await op.idle();
+	assert.equal(f.asked.length, 0);
+	// Refused, not queued: its state is as it was, and what reads or stops still answers.
+	assert.deepEqual(op.state(), idle);
+	assert.deepEqual(g.operator("status"), { ok: true, operator: idle });
+	assert.equal(g.operator("pause").ok, true);
+	assert.throws(() => g.operator("dance"), { status: 422 });
+	// The replay refuses before it reads a recording.
+	const c = commandCtx({ ui: true, yes: true });
+	await f.commands.get("gumi-replay").handler(`${root} --pause 0`, c.c);
+	assert.deepEqual([c.notes, c.asked], [[`gumi-replay: ${why}`], []]);
+	assert.deepEqual(robot.calls, []);
+	// The agent's own act is not taken for a one-arm step: nothing is tracked.
+	assert.equal(await f.emit("tool_call", { toolName: "act", input: { unit: "GRASP", arm: "robot0" } }), undefined);
+	await f.emit("tool_result", { toolName: "act", input: { unit: "GRASP", arm: "robot0" }, ...result([1, 2], []) });
+	assert.deepEqual([g.state().last, g.state().closed], [null, { [ARM]: false }]);
+	// The look still reaches the robot, as the arm's STOP.
+	await g.look();
+	assert.deepEqual(robot.calls, [{ unit: "STOP" }]);
+	// The gate stays: the agent's robot call waits while the operator has the robot, and runs when handed back.
+	await f.emit("tool_execution_end", { toolName: "act" });
+	g.control("take");
+	assert.equal(g.state().mode, "human");
+	const waiting = pending(f, "act", { unit: "MV_UP", arm: "robot0" });
+	assert.equal(await waiting.held(), true);
+	g.control("release");
+	assert.equal(await waiting.decision, undefined);
+	// The session ends without a rollout to close.
+	await f.emit("session_shutdown");
+	assert.deepEqual(readdirSync(root), []);
+	// The next session's robot has arms GUMI names: the reason is gone and both are driven.
+	f.pi.events.emit(UNITS_EVENT, two(["left", "right"]));
+	assert.deepEqual([g.state().unsupported, g.state().message, g.state().arms], [undefined, "", ["left", "right"]]);
+	await g.step({ command: "L:w R:i" });
+	assert.deepEqual(robot.calls.at(-1), { unit: "MV_FWD", arm: "left", other: "MV_FWD", operator: true });
+
+	// Without --gumi-record the VLM operator has no rollout to open first: it is refused the same way.
+	const h = fakePi({ "gumi-operator": "session" }, [decision({ command: "MV_FWD" })]);
+	const g2 = gumi(h.pi);
+	const op2 = vlmOperator(h.pi, g2, () => g2.publish());
+	g2.attachOperator(op2);
+	const other = fakeRobot();
+	await h.emit("session_start");
+	h.pi.events.emit(UNITS_EVENT, { ...other.handle, arms: ["robot0", "robot1"] });
+	for (const action of ["step", "run"]) assert.throws(() => g2.operator(action), { status: 409, message: why });
+	assert.deepEqual([h.asked.length, other.calls], [0, []]);
+	// The order counts too: the left-hand keys are the first arm's.
+	h.pi.events.emit(UNITS_EVENT, { ...other.handle, arms: ["right", "left"] });
+	const swapped = "GUMI drives two arms named left and right, and this robot's are right, left";
+	assert.equal(g2.state().unsupported, swapped);
+	await assert.rejects(g2.step({ command: "L:w R:i" }), { status: 409, message: swapped });
+});
+
+test("gumi: the takeover gate works on a pair GUMI does not drive: the agent's call waits, is dropped as stale after the operator's manual call, and runs once the agent has seen the robot again", async () => {
+	const f = fakePi({});
+	const g = gumi(f.pi);
+	const robot = fakeRobot();
+	await f.emit("session_start");
+	f.pi.events.emit(UNITS_EVENT, { ...robot.handle, arms: ["robot0", "robot1"], vocabulary: [...SINGLE, "STILL"] });
+	f.setIdle(false);
+	await f.emit("agent_start");
+	g.control("take");
+	const call = pending(f, "act", { unit: "MV_UP", arm: "robot1" });
+	assert.equal(await call.held(), true);
+	await g.manual("move_to {}", result([3, 4], ["agentview", "wrist"]));
+	g.control("release");
+	assert.equal((await call.decision)?.block, true);
+	await f.emit("tool_execution_end", { toolName: "act" });
+	// A robot result after the operator's next call brings the agent up to date: its next call runs.
+	await g.manual("move_to {}", result([5, 6], ["agentview", "wrist"]));
+	await f.emit("tool_result", { toolName: "act", input: { unit: "STOP", arm: "robot0" }, ...result([7, 8], []) });
+	await f.emit("context", { messages: [] });
+	assert.equal(await f.emit("tool_call", { toolName: "act", input: { unit: "MV_UP", arm: "robot1" } }), undefined);
 });

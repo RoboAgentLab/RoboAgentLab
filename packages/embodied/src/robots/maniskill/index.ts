@@ -655,7 +655,10 @@ export default function maniskill(pi: ExtensionAPI) {
 	const text = () => (rig ? SCENE_TEXT.rig : arm().scene);
 	const wrist = () => rig || hasWrist(arm());
 	const gripping = () => rig || hasGripper(arm());
-	/** The --arm flag's arm, read at load (the `move_delta` schema, units' arms) before the robot starts. */
+	/**
+	 * The --arm flag's arm, for what is read before the robot starts (the `move_delta` schema, units' arms): the
+	 * default at load, the command line's once pi has set the flags.
+	 */
 	const flagRobot = (): ManiskillRobot | undefined => ROBOTS[String(pi.getFlag("arm") ?? "panda") as RobotId];
 	/** A two-arm robot's arm names (undefined: one arm). */
 	const arms = () => (rig ? undefined : arm().arms);
@@ -900,7 +903,8 @@ export default function maniskill(pi: ExtensionAPI) {
 				const r = flagRobot();
 				return !r || hasGripper(r);
 			},
-			// Two arms (panda_pair): `act` takes `arm`, read at load like the wrist view.
+			// Two arms (panda_pair): `act` takes `arm`. Read from --arm, which pi sets after the load: the session's start
+			// is the first reading that sees it.
 			get arms() {
 				return flagRobot()?.arms;
 			},

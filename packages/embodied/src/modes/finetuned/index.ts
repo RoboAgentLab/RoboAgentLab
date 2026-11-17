@@ -735,10 +735,19 @@ export default function finetuned(pi: ExtensionAPI) {
 		const armCount = units?.arms?.length ?? 0;
 		if (d && units && armCount !== 2)
 			return `--ft-prompt ${flag("ft-prompt")} drives two arms (one token per arm), and this robot has ${armCount || 1}`;
-		if (!d && armCount > 1)
-			return `this robot has two arms: the single-arm prompt ${flag("ft-prompt") || "v3"} cannot drive it; pass a dual prompt (${Object.keys(DUAL_PROMPTS).join(", ")})`;
+		// A dual prompt's tokens, images and act calls name the arms by side (SIDES).
+		if (d && units && units.arms.join() !== SIDES.join())
+			return `--ft-prompt ${flag("ft-prompt")} names its two arms ${SIDES.join(" and ")}, and this robot's are ${units.arms.join(", ")}; run it with a planner model instead`;
+		// The wrist before the two-arm advice: without one no prompt runs here, single or dual.
 		if (units?.wrist?.() === false)
 			return "the fine-tuned adapters read an agentview and a wrist image, and this robot configuration has no wrist camera; run it with a planner model instead";
+		// A dual prompt is advised only to a pair it names.
+		if (!d && armCount > 1)
+			return `this robot has two arms: the single-arm prompt ${flag("ft-prompt") || "v3"} cannot drive it${
+				units?.arms.join() === SIDES.join()
+					? `; pass a dual prompt (${Object.keys(DUAL_PROMPTS).join(", ")})`
+					: `, and the dual prompts name their arms ${SIDES.join(" and ")} (this robot's are ${units?.arms.join(", ")}); run it with a planner model instead`
+			}`;
 		const v = units?.views?.();
 		if (!v) return undefined;
 		const wrists = v.wrist === undefined ? [] : [v.wrist].flat();

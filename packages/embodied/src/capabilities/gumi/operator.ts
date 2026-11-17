@@ -434,6 +434,9 @@ export function vlmOperator(pi: ExtensionAPI, g: Gumi, publish: () => void) {
 			if (!enabled())
 				throw Object.assign(new Error("the VLM operator is off (--gumi-operator <model>)"), { status: 409 });
 			if (action === "status") return { ok: true, operator: state() };
+			// GUMI drives none of this robot's arms: the request itself is refused, like a step or a rollout.
+			const why = g.state().unsupported;
+			if (why && (action === "run" || action === "step")) throw Object.assign(new Error(why), { status: 409 });
 			if (action === "run") {
 				abortAction = false;
 				mode = "continuous";

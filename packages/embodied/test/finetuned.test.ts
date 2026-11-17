@@ -779,6 +779,84 @@ test("dual fine-tuned twice and chain: the request shapes of the scheme", async 
 	const two = fakePi({ "ft-prompt": "v4-piper" }, "piper_dual", ["act", "finish"], DUAL_UNITS);
 	await two.emit("session_start");
 	assert.match(two.warnings.join("\n"), /this robot has two arms/);
+	// A dual prompt names the arms by side (tokens, images, act's `arm`): two arms called otherwise are refused too.
+	const named = fakePi({ "ft-prompt": "v4-dual-once" }, "robosuite", ["act", "finish"], {
+		...DUAL_UNITS,
+		arms: ["robot0", "robot1"],
+		// robosuite's two-arm observation: the names are the reason given, not the cameras.
+		views: () => ({ views: 2, wrist: 1 }),
+	});
+	await named.emit("session_start");
+	assert.match(
+		named.warnings.join("\n"),
+		/--ft-prompt v4-dual-once names its two arms left and right, and this robot's are robot0, robot1/,
+	);
+});
+
+test("fine-tuned prompts on two arms: a dual prompt is advised only to a pair the dual prompts name, and a dual prompt's count and names are refused before the camera", async () => {
+	const start = async (flags: Record<string, string>, robot: string, units: Partial<UnitsHandle>) => {
+		const p = fakePi(flags, robot, ["act", "finish"], units);
+		await p.emit("session_start");
+		return p.warnings.join("\n");
+	};
+	// A pair the dual prompts name, with its wrist cameras: the advice, and every advised prompt starts there.
+	assert.match(
+		await start({ "ft-prompt": "v3" }, "piper_dual", DUAL_UNITS),
+		/cannot drive it; pass a dual prompt \(v4-dual-once, v4-dual-twice, v4-dual-chain\)$/,
+	);
+	for (const p of Object.keys(DUAL_PROMPTS))
+		assert.equal(await start({ "ft-prompt": p }, "piper_dual", DUAL_UNITS), "");
+	// A pair of other names (robosuite's two-arm tasks): no dual prompt starts there, so none is advised.
+	const other = await start({ "ft-prompt": "v3" }, "robosuite", { ...DUAL_UNITS, arms: ["robot0", "robot1"] });
+	assert.match(
+		other,
+		/the single-arm prompt v3 cannot drive it, and the dual prompts name their arms left and right \(this robot's are robot0, robot1\); run it with a planner model instead$/,
+	);
+	assert.doesNotMatch(other, /pass a dual prompt/);
+	// Two arms and no wrist camera (ManiSkill's panda_pair): no prompt runs there, and the camera is the reason given.
+	const blind = await start({ "ft-prompt": "v3" }, "maniskill", {
+		...DUAL_UNITS,
+		wrist: () => false,
+		views: () => ({ views: 1 }),
+	});
+	assert.match(blind, /this robot configuration has no wrist camera; run it with a planner model instead$/);
+	assert.doesNotMatch(blind, /pass a dual prompt/);
+	// With a dual prompt too, on the pair it names.
+	assert.match(
+		await start({ "ft-prompt": "v4-dual-once" }, "maniskill", {
+			...DUAL_UNITS,
+			wrist: () => false,
+			views: () => ({ views: 1 }),
+		}),
+		/this robot configuration has no wrist camera; run it with a planner model instead$/,
+	);
+	// A dual prompt's own refusals come before the camera: the arm count, then the names.
+	assert.match(
+		await start({ "ft-prompt": "v4-dual-once" }, "maniskill", {
+			arms: [],
+			vocabulary: [...UNITS],
+			wrist: () => false,
+		}),
+		/drives two arms \(one token per arm\), and this robot has 1$/,
+	);
+	assert.match(
+		await start({ "ft-prompt": "v4-dual-once" }, "robosuite", {
+			...DUAL_UNITS,
+			arms: ["robot0", "robot1"],
+			wrist: () => false,
+		}),
+		/names its two arms left and right, and this robot's are robot0, robot1; run it with a planner model instead$/,
+	);
+	// The order of the pair counts, as for GUMI: right, left is not the pair the dual prompts name.
+	const swapped = { ...DUAL_UNITS, arms: ["right", "left"] };
+	assert.match(
+		await start({ "ft-prompt": "v4-dual-once" }, "piper_dual", swapped),
+		/--ft-prompt v4-dual-once names its two arms left and right, and this robot's are right, left; run it with a planner model instead$/,
+	);
+	assert.match(
+		await start({ "ft-prompt": "v3" }, "piper_dual", swapped),
+		/cannot drive it, and the dual prompts name their arms left and right \(this robot's are right, left\); run it with a planner model instead$/,
+	);
 });
 
 const PLAN = [

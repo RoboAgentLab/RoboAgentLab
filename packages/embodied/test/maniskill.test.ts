@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { type TestContext, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NdArray } from "../src/infra/rpc.ts";
-import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import { ground, MOVE_UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
 import { loadManifest, toolSchema } from "../src/primitives/manifest.ts";
 import maniskill, {
 	calibrate,
@@ -239,6 +239,8 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, unknown> = {};
 	const tools = new Map<string, any>();
 	const entries: { type: string; data: any }[] = [];
+	/** The last value the robot published on each `pi.events` channel. */
+	const emitted = new Map<string, unknown>();
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -257,7 +259,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (channel: string, data: unknown) => emitted.set(channel, data), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		hasUI: false,
@@ -280,7 +282,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name).execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, active: () => active };
+	return { pi, flags, tools, entries, emitted, emit, run, active: () => active };
 }
 
 /** A fake ManiSkill env server (the wire protocol of ../src/rpc.ts) running `robot`, with or without a wrist view. */
@@ -554,6 +556,57 @@ test("--units on --arm panda_pair: act takes `arm` and drives that arm", async (
 	assert.deepEqual(
 		(move?.kwargs.delta_xyz as number[]).map((v) => Number(v.toFixed(4))),
 		[0, 0.02, 0],
+	);
+});
+
+test("--arm panda_pair set after the load, as pi sets flags: the units handle and the finish check know both arms", async (t) => {
+	const env = await fakeEnv("panda_pair", ROBOTS.panda_pair.setup, false, "TwoRobotPickCube-v1", ["left", "right"]);
+	t.after(env.close);
+	const s = stubPi();
+	maniskill(s.pi);
+	// pi sets a command line's flag values once every extension has loaded: the load saw every default.
+	assert.equal(s.flags.arm, "panda");
+	assert.ok(!("arm" in s.tools.get("act").parameters.properties));
+	Object.assign(s.flags, {
+		"env-url": env.url,
+		task: "TwoRobotPickCube-v1",
+		arm: "panda_pair",
+		units: "true",
+		"units-plugins": "recovery,auto_release,proprioception,plan,mem_text",
+	});
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	assert.deepEqual(s.tools.get("act").parameters.properties.arm.enum, ["left", "right"]);
+	assert.deepEqual((s.emitted.get(UNITS_EVENT) as UnitsHandle).arms, ["left", "right"]);
+	// --units-verify auto is on for two arms: a success claim under a placement plan while the left gripper holds
+	// is refused by that arm's name, before any lift.
+	await s.run("plan", {
+		stages: [{ motion: "PLACE", target: "plate", completion: "cube on the plate", arm: "left" }],
+	});
+	const grasp = await s.run("act", { unit: "GRASP", arm: "left" });
+	await s.emit("tool_result", { toolName: "act", content: grasp.content });
+	const lifts = () => env.calls.filter((c) => c.method === "env.move_delta").length;
+	const before = lifts();
+	const held = await s.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	assert.match(held.reason, /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+	assert.equal(lifts(), before);
+	// The task's hand-over: left has let go under its own RELEASE stage and right keeps holding. The claim passes
+	// the hold rule and reaches the check, which sends the left gripper's lift alone, under its name (this stub has
+	// no verifier model: the claim's own result is not asserted).
+	await s.run("plan", {
+		stages: [
+			{ motion: "RELEASE", target: "cube", completion: "left fingers open", arm: "left" },
+			{ motion: "HOLD", target: "cube", completion: "cube in the goal sphere", arm: "right" },
+		],
+	});
+	await s.run("act", { unit: "GRASP", arm: "right" });
+	await s.run("act", { unit: "RELEASE", arm: "left" });
+	const sent = lifts();
+	await s.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	const lifted = env.calls.filter((c) => c.method === "env.move_delta").slice(sent);
+	assert.deepEqual(
+		lifted.map((c) => c.kwargs.arm),
+		Array(5).fill("left"),
 	);
 });
 

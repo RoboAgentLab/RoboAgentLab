@@ -17,7 +17,7 @@ export const UNITS_EVENT = "pi-embodied:units";
 export type UnitsHandle = {
 	/** The agent's unit tool (`act`). */
 	tool: string;
-	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm. */
+	/** Arm names on a dual-arm robot (`act`'s `arm`), [] on one arm: this session's, as read at its start. */
 	arms: readonly string[];
 	/** Units `act` accepts (a robot's own vocabulary: its unit names). */
 	vocabulary: readonly string[];

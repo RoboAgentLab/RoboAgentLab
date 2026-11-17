@@ -7,6 +7,8 @@ import { test } from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { gumi } from "../src/capabilities/gumi/index.ts";
+import finetuned from "../src/modes/finetuned/index.ts";
 import {
 	type CustomUnit,
 	compensate,
@@ -22,6 +24,7 @@ import {
 	VERIFY_ENTRY,
 	VIDEO_REF_ENTRY,
 } from "../src/modes/units/index.ts";
+import { registerVerifier, verifierState } from "../src/modes/units/verifier.ts";
 import { parseVerdict, renderBrief, validateBrief } from "../src/modes/units/vlm.ts";
 import { defineRobot, RESULT_ENTRY } from "../src/robot.ts";
 import dualFranka from "../src/robots/dual_franka/index.ts";
@@ -46,6 +49,9 @@ function fakePi(
 	const tools = new Map<string, any>();
 	let active: string[] = [];
 	const emitted = new Map<string, unknown>();
+	const listeners = new Map<string, ((data: unknown) => void)[]>();
+	/** The provider an extension registered (the finetuned mode's). */
+	let provider: any;
 	const entries: { customType: string; data: any }[] = [];
 	/** The side model calls: the model and the user message. */
 	const asked: { model: string; content: any[] }[] = [];
@@ -58,6 +64,10 @@ function fakePi(
 		registerTool: (t: any) => tools.set(t.name, t),
 		getAllTools: () => [...tools.values()],
 		registerCommand: () => {},
+		registerProvider: (p: unknown) => {
+			provider = p;
+		},
+		sendUserMessage: () => {},
 		setActiveTools: (names: string[]) => {
 			active = names;
 		},
@@ -67,12 +77,22 @@ function fakePi(
 			branch.push({ type: "custom", customType, data });
 		},
 		getThinkingLevel: () => "low",
-		events: { emit: (channel: string, data: unknown) => emitted.set(channel, data), on: () => () => {} },
+		events: {
+			emit: (channel: string, data: unknown) => {
+				emitted.set(channel, data);
+				for (const fn of listeners.get(channel) ?? []) fn(data);
+			},
+			on: (channel: string, fn: (data: unknown) => void) => {
+				listeners.set(channel, [...(listeners.get(channel) ?? []), fn]);
+				return () => {};
+			},
+		},
 	} as unknown as ExtensionAPI;
 	const notes: string[] = [];
 	const dir = realpathSync(mkdtempSync(join(tmpdir(), "units-")));
 	const ctx = {
 		hasUI: true,
+		isIdle: () => true,
 		cwd: dir,
 		ui: {
 			notify: (m: string) => notes.push(m),
@@ -114,7 +134,21 @@ function fakePi(
 	const setFlag = (name: string, value: unknown) => {
 		flags[name] = value;
 	};
-	return { pi, emit, run, tools, notes, emitted, entries, asked, branch, setFlag, active: () => active };
+	return {
+		pi,
+		emit,
+		run,
+		tools,
+		notes,
+		emitted,
+		entries,
+		asked,
+		branch,
+		setFlag,
+		ctx,
+		provider: () => provider,
+		active: () => active,
+	};
 }
 
 const VECTORS: UnitsSpec["vectors"] = {
@@ -2076,4 +2110,266 @@ test("act says what ran: `executed` is the unit behind an mcq letter, `ran` the 
 	const over = await turned.run("act", { unit: "ROTATE_CW", n: 10 });
 	assert.match(head(over), /^units: ROTATE_CW not run: 0 of 10\n/);
 	assert.deepEqual([over.details.executed, over.details.ran], [undefined, 0]);
+});
+
+// ---- the session's arms: a robot that knows them only after the load (a function over its task, as robosuite's) ----
+
+const TWO = ["left", "right"];
+const publishedArms = (f: { emitted: Map<string, unknown> }) => [...(f.emitted.get(UNITS_EVENT) as UnitsHandle).arms];
+const actArms = (f: { tools: Map<string, any> }) => f.tools.get("act").parameters.properties.arm?.enum;
+
+test("the published handle names the session's arms: the ones act's schema names, whatever the load knew", async () => {
+	let arms: string[] | undefined;
+	const f = await toyRobot({}, { arms: () => arms });
+	assert.deepEqual([actArms(f), publishedArms(f)], [undefined, []]);
+	// Further session starts on the same load (stricter than pi, which rebuilds the runtime for a new session): a
+	// two-arm task, a one-arm task again, then two arms of other names.
+	for (const next of [TWO, undefined, ["robot0", "robot1"]]) {
+		arms = next;
+		await f.emit("session_start");
+		assert.deepEqual([actArms(f), publishedArms(f)], [next, next ?? []]);
+	}
+});
+
+test("the finish check reads the session's arms: it names the arm that still holds, lifts each open gripper by name and asks about both arms", async () => {
+	let arms: string[] | undefined;
+	const yes = '{"complete": true, "reason": "the cube is in the bowl"}';
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	const f = await toyRobot({}, { arms: () => arms, vlm: [yes, yes] });
+	arms = TWO;
+	await f.emit("session_start");
+	await f.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "cube in the bowl", arm: "left" }] });
+	const grasp = await f.run("act", { unit: "GRASP", arm: "left" });
+	await f.emit("tool_result", { toolName: "act", content: grasp.content });
+	// --units-verify auto is on for two arms: a success claim while the left gripper holds is refused, by name.
+	const held = await f.emit("tool_call", claim);
+	assert.equal(held?.block, true);
+	assert.match(held.reason, /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+	assert.deepEqual([f.asked.length, f.moves.length], [0, 1], "no verifier call and no lift while holding");
+	const refusal = f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data;
+	assert.deepEqual([refusal.refused, refusal.holding], ["holding", ["left"]]);
+	// Released: each open gripper lifts under its own name, left then right, and the prompt speaks of two arms.
+	await f.run("act", { unit: "RELEASE", arm: "left" });
+	let before = f.moves.length;
+	assert.equal(await f.emit("tool_call", claim), undefined);
+	assert.deepEqual(
+		f.moves.slice(before).map((m) => [m.arm, m.delta[2], m.retreat]),
+		[...Array(5).fill(["left", 0.02, true]), ...Array(5).fill(["right", 0.02, true])],
+	);
+	assert.match(f.asked[0].content[0].text, /Both robot arms have finished their plans\./);
+	assert.match(f.asked[0].content[0].text, /then the wrist views/);
+	// No placement plan and the right gripper closed: no refusal for holding, and only the left arm lifts.
+	await f.emit("session_start");
+	const hold = await f.run("act", { unit: "GRASP", arm: "right" });
+	await f.emit("tool_result", { toolName: "act", content: hold.content });
+	before = f.moves.length;
+	assert.equal(await f.emit("tool_call", claim), undefined);
+	assert.deepEqual(
+		f.moves.slice(before).map((m) => m.arm),
+		Array(5).fill("left"),
+	);
+	const retreat = f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data.retreat;
+	assert.deepEqual(
+		retreat.map((r: Record<string, unknown>) => [r.arm, Object.keys(r).filter((k) => k !== "arm")[0]]),
+		[
+			["left", "ran"],
+			["right", "skipped"],
+		],
+	);
+	// A one-arm session on the same load: auto leaves the check off there.
+	arms = undefined;
+	await f.emit("session_start");
+	await f.run("act", { unit: "GRASP" });
+	assert.equal(await f.emit("tool_call", claim), undefined);
+	assert.equal(f.asked.length, 2, "no third verifier call");
+	// Turned on there, it reads the one arm's gripper and names no arm.
+	f.setFlag("units-verify", "true");
+	await f.run("plan", { stages: [{ motion: "PLACE", target: "bowl", completion: "cube in the bowl" }] });
+	const one = await f.emit("tool_call", claim);
+	assert.match(one?.reason, /^finish refused: the gripper is still closed on the object\./);
+});
+
+test("the hold rule is per arm: a gripper must be open at a success claim only when a placement stage is that arm's, or names no arm", async () => {
+	const yes = '{"complete": true, "reason": "handed over"}';
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	/**
+	 * Both arms grasp under `stages`, `open` release and the first `done` stages are marked done, then the success
+	 * claim: the refusal, else the check's lifts.
+	 */
+	const claimed = async (stages: { motion: string; arm?: string }[], open: string[], done = 0) => {
+		const f = await toyRobot({}, { arms: TWO, vlm: [yes] });
+		await f.run("plan", { stages: stages.map((s) => ({ target: "hammer", completion: "visible", ...s })) });
+		for (const arm of TWO) await f.run("act", { unit: "GRASP", arm });
+		for (const arm of open) await f.run("act", { unit: "RELEASE", arm });
+		for (let i = 0; i < done; i++) await f.run("plan", { done: true });
+		const before = f.moves.length;
+		const r = await f.emit("tool_call", claim);
+		// A refusal's session entry lists the arms its text names.
+		const entry = f.entries.filter((e) => e.customType === VERIFY_ENTRY).at(-1)?.data;
+		if (r?.reason)
+			assert.ok(r.reason.includes(`(${entry.holding.join(", ")} arm)`), `${entry.holding} in ${r.reason}`);
+		return { reason: r?.reason as string | undefined, lifted: [...new Set(f.moves.slice(before).map((m) => m.arm))] };
+	};
+	const grasps = [
+		{ motion: "GRASP", arm: "left" },
+		{ motion: "GRASP", arm: "right" },
+	];
+	// A hand-over: left gives (its RELEASE stage), right receives and keeps holding. The claim reaches the check,
+	// which lifts the open gripper and leaves the closed one.
+	assert.deepEqual(await claimed([...grasps, { motion: "RELEASE", arm: "left" }], ["left"]), {
+		reason: undefined,
+		lifted: ["left"],
+	});
+	// The giver itself still closed: refused, by its name; so is the receiver once a PLACE stage is its own.
+	const giver = await claimed([...grasps, { motion: "RELEASE", arm: "left" }], ["right"]);
+	assert.match(giver.reason ?? "", /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+	const placing = await claimed(
+		[...grasps, { motion: "RELEASE", arm: "left" }, { motion: "PLACE", arm: "right" }],
+		["left"],
+	);
+	assert.match(placing.reason ?? "", /^finish refused: the gripper \(right arm\) is still closed on the object\./);
+	// Both still closed under the hand-over plan (the giver has not let go yet): only the giver is named.
+	const early = await claimed([...grasps, { motion: "RELEASE", arm: "left" }], []);
+	assert.match(early.reason ?? "", /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+	// Both closed, both with a placement stage of their own: both are named.
+	const both = await claimed([...grasps, { motion: "PLACE", arm: "left" }, { motion: "RETREAT", arm: "right" }], []);
+	assert.match(both.reason ?? "", /^finish refused: the gripper \(left, right arm\) is still closed on the object\./);
+	// A stage that names no arm is every arm's: the closed arm is refused, as before, and both are when both hold.
+	const unnamed = await claimed([{ motion: "GRASP" }, { motion: "RELEASE" }], ["left"]);
+	assert.match(unnamed.reason ?? "", /^finish refused: the gripper \(right arm\) is still closed on the object\./);
+	const every = await claimed([{ motion: "GRASP" }, { motion: "RELEASE" }], []);
+	assert.match(every.reason ?? "", /^finish refused: the gripper \(left, right arm\) is still closed on the object\./);
+	// No placement stage at all (a two-arm lift): both may hold, and nothing lifts.
+	assert.deepEqual(await claimed(grasps, []), { reason: undefined, lifted: [] });
+	// A stage name counts in any case, as the plan tool takes it.
+	const lower = await claimed([...grasps, { motion: "release", arm: "left" }], []);
+	assert.match(lower.reason ?? "", /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+	// The plan is read whole: a placement stage that is already marked done still counts.
+	const marked = await claimed([...grasps, { motion: "RELEASE", arm: "left" }], [], 3);
+	assert.match(marked.reason ?? "", /^finish refused: the gripper \(left arm\) is still closed on the object\./);
+});
+
+test("GUMI drives both arms of a robot that knows them only after the load: both arms and their keys in its state, L:/R: steps, every unit under its arm's name", async () => {
+	let arms: string[] | undefined;
+	const f = await toyRobot({}, { arms: () => arms });
+	const g = gumi(f.pi);
+	arms = TWO;
+	await f.emit("session_start");
+	assert.deepEqual(g.state().arms, TWO);
+	assert.deepEqual(g.state().keys.KeyI, ["right", "MV_FWD"], "the two-arm key table");
+	const before = f.moves.length;
+	const out = await g.step({ command: "L:w R:i" });
+	assert.equal(out.executed, 1);
+	assert.deepEqual(
+		f.moves.slice(before).map((m) => [m.arm, m.delta]),
+		[
+			["left", [0.02, 0, 0]],
+			["right", [0.02, 0, 0]],
+		],
+	);
+	await g.step({ command: "R:u" });
+	assert.equal(f.moves.at(-1)?.arm, "right", "a one-arm step names its arm");
+	await assert.rejects(g.step({ command: "w" }), /prefix every group with an arm/);
+	// robosuite's names: GUMI says that it does not drive them, and sends nothing.
+	arms = ["robot0", "robot1"];
+	await f.emit("session_start");
+	const sent = f.moves.length;
+	await assert.rejects(g.step({ command: "L:w R:i" }), {
+		message: "GUMI drives two arms named left and right, and this robot's are robot0, robot1",
+	});
+	assert.equal(f.moves.length, sent);
+	// The look stays, under the session's first arm.
+	await g.look();
+	assert.deepEqual(
+		f.moves.slice(sent).map((m) => [m.arm, m.delta]),
+		[["robot0", [0, 0, 0]]],
+	);
+});
+
+test("one finish check reads the arms once: the lifts and the prompt follow the list the holding test read", async () => {
+	const f = fakePi({}, ['{"complete": true, "reason": "handed over"}']);
+	let reads = 0;
+	let closed = false;
+	const lifted: (string | undefined)[] = [];
+	registerVerifier({
+		pi: f.pi,
+		check: verifierState(),
+		// A list that changes under the check: only the first reading names two arms.
+		arms: () => (reads++ ? [] : TWO),
+		wrist: () => true,
+		active: () => true,
+		verifying: () => true,
+		instruction: () => "hand the hammer over",
+		isClosed: () => closed,
+		placement: () => closed,
+		liftStep: () => 0.02,
+		act: async (p) => {
+			lifted.push(p.arm);
+			return { content: [{ type: "image", data: "m", mimeType: "image/png" }], details: {} };
+		},
+		replan: () => {},
+		planning: () => true,
+		save: () => {},
+	});
+	assert.equal(reads, 0, "not read before a check");
+	assert.equal(
+		await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } }),
+		undefined,
+	);
+	assert.deepEqual([reads, lifted], [1, ["left", "right"]]);
+	assert.match(f.asked[0].content[0].text, /Both robot arms have finished their plans\./);
+	// A refusal for holding words itself from the same reading.
+	reads = 0;
+	closed = true;
+	const held = await f.emit("tool_call", { toolName: "finish", input: { status: "success", summary: "" } });
+	assert.match(held.reason, /^finish refused: the gripper \(left, right arm\) is still closed/);
+	assert.equal(reads, 1);
+});
+
+test("the finetuned mode sees the session's arms: a dual prompt opens both of left and right, a single-arm prompt is refused, and a pair of other names is refused by name", async () => {
+	const first = async (prompt: string, names: string[], wrist = true) => {
+		let arms: string[] | undefined;
+		const f = await toyRobot({ "ft-prompt": prompt }, { arms: () => arms, ...(wrist ? {} : { wrist: () => false }) });
+		f.ctx.model.provider = "finetuned";
+		// Loaded after the robot, as its launchers do: its session_start runs once the robot started.
+		finetuned(f.pi);
+		arms = names;
+		await f.emit("session_start");
+		const p = f.provider();
+		const turn = await p.streamSimple(p.getModels()[0], { messages: [] }, {}).result();
+		return {
+			notices: f.notes.filter((n) => n.startsWith("finetuned:")),
+			calls: turn.content.filter((c: any) => c.type === "toolCall").map((c: any) => c.arguments),
+		};
+	};
+	const dual = await first("v4-dual-once", TWO);
+	assert.deepEqual(dual.notices, []);
+	assert.deepEqual(dual.calls, [{ unit: "RELEASE", arm: "left", other: "RELEASE" }]);
+	const single = await first("v3", TWO);
+	assert.match(single.notices.join("\n"), /this robot has two arms: the single-arm prompt v3 cannot drive it/);
+	assert.deepEqual(single.calls, [], "no act: not even the opening RELEASE");
+	// The dual prompts name the arms by side: a pair called otherwise is refused at the start, not at its first act.
+	const named = await first("v4-dual-once", ["robot0", "robot1"]);
+	assert.match(
+		named.notices.join("\n"),
+		/--ft-prompt v4-dual-once names its two arms left and right, and this robot's are robot0, robot1/,
+	);
+	assert.deepEqual(named.calls, []);
+	// The names reach the mode in the robot's own order: right, left is not the pair either.
+	const swapped = await first("v4-dual-once", ["right", "left"]);
+	assert.match(swapped.notices.join("\n"), /names its two arms left and right, and this robot's are right, left/);
+	assert.deepEqual(swapped.calls, []);
+	// A single-arm prompt there is told why no dual prompt fits either, and left and right without a wrist camera
+	// (ManiSkill's panda_pair) are refused for the camera, with a single-arm prompt and with a dual one.
+	const other = await first("v3", ["robot0", "robot1"]);
+	assert.match(
+		other.notices.join("\n"),
+		/the single-arm prompt v3 cannot drive it, and the dual prompts name their arms left and right \(this robot's are robot0, robot1\)/,
+	);
+	assert.deepEqual(other.calls, []);
+	for (const prompt of ["v3", "v4-dual-once"]) {
+		const bare = await first(prompt, TWO, false);
+		assert.match(bare.notices.join("\n"), /this robot configuration has no wrist camera/);
+		assert.deepEqual(bare.calls, []);
+	}
 });
