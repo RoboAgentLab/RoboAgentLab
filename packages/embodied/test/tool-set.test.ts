@@ -83,6 +83,21 @@ const FINISH = {
 };
 const MCP_TOOL = "mcp__fs__read_file";
 
+/** A robot tool that calls another tool, as the persistent policy does (../src/capabilities/policy). */
+function relayTool(pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "relay",
+		label: "relay",
+		description: "Call another tool.",
+		parameters: Type.Object({ tool: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
+		async execute(_id, p, signal, _update, ctx) {
+			const out = await (ctx as ExtensionToolContext).executeTool(p.tool, p.args, { signal });
+			const text = out.result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+			return { content: [{ type: "text", text: `${out.isError ? "error" : "ok"}: ${text}` }], details: {} };
+		},
+	});
+}
+
 /**
  * A real pi session (pi's agent loop, extension runner, tools and built-in codemode, tool_search and
  * MCP extensions) running the robot base with a toy robot, a scripted model whose requests are kept
@@ -101,6 +116,8 @@ async function session(o: {
 	reactivate?: boolean;
 	/** The MCP server connects before the prompt (else once the robot's before_agent_start has run). */
 	connected?: boolean;
+	/** The robot under test, in place of the toy one below. */
+	robot?: (pi: ExtensionAPI) => void;
 }) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "tool-set-")));
 	const secret = join(base, "secret.txt");
@@ -128,18 +145,7 @@ async function session(o: {
 			ran.push("hidden");
 			return { content: [{ type: "text", text: "hidden ran" }], details: {} };
 		});
-		// A robot tool that calls another tool, as the persistent policy does (../src/capabilities/policy).
-		pi.registerTool({
-			name: "relay",
-			label: "relay",
-			description: "Call another tool.",
-			parameters: Type.Object({ tool: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
-			async execute(_id, p, signal, _update, ctx) {
-				const out = await (ctx as ExtensionToolContext).executeTool(p.tool, p.args, { signal });
-				const text = out.result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
-				return { content: [{ type: "text", text: `${out.isError ? "error" : "ok"}: ${text}` }], details: {} };
-			},
-		});
+		relayTool(pi);
 	};
 	let started: () => void = () => {};
 	const robotWithdrew = new Promise<void>((resolve) => {
@@ -248,7 +254,7 @@ async function session(o: {
 		cwd: base,
 		agentDir: join(base, "agent"),
 		settingsManager,
-		extensionFactories: [robot, late, createCodemodeExtension(), createToolSearchExtension(), mcp],
+		extensionFactories: [o.robot ?? robot, late, createCodemodeExtension(), createToolSearchExtension(), mcp],
 	});
 	await resourceLoader.reload();
 	const { session } = await createAgentSession({
@@ -406,4 +412,81 @@ test("a real session: a tool another extension activates after the robot's turn_
 	assert.deepEqual(retried.results(), ["late_tool: late_tool is not one of the tools toy gives the planner."]);
 	assert.deepEqual(retried.declared, [OWN, OWN, OWN]);
 	assert.deepEqual([...again.ran, ...retried.ran], ["move"]);
+});
+
+/**
+ * A toy robot on robosuite's manifest, one arm (move_to's step_m and tol_rad are a program's options, code mode; record
+ * is a keyword of the server's method that no mode declares), with `relay`. `reached` gets what its move_to runs with,
+ * `seen` the events an extension loaded after the robot's handlers sees.
+ */
+const manifestRobot = (reached: unknown[], seen: string[]) => (pi: ExtensionAPI) => {
+	const r = defineRobot(pi, {
+		name: "toy",
+		task: [],
+		keepImages: 1,
+		manifest: "robosuite",
+		vars: () => ({ arms: [] }),
+		start: async () => ["move_to", "relay", "finish"],
+		result: () => ({}),
+		status: () => ({ step: 0 }),
+		finish: FINISH,
+	});
+	r.primitive("move_to", async (p) => {
+		reached.push(p);
+		return { content: [{ type: "text", text: "moved" }], details: {} };
+	});
+	relayTool(pi);
+	pi.on("tool_call", (e) => {
+		seen.push(`call ${e.toolName}`);
+	});
+	pi.on("tool_execution_end", (e) => {
+		seen.push(`end ${e.toolName}${e.isError ? " (error)" : ""}`);
+	});
+};
+const TAKES = "it takes xyz, quat_xyzw, rotvec, gripper, tol_m, max_steps.";
+
+test("a real session: a manifest tool's call with an argument the tool does not take is refused before it runs, through another tool too; finish leaves such an argument out", async (t) => {
+	const reached: unknown[] = [];
+	const s = await session({ robot: manifestRobot(reached, []) });
+	t.after(s.close);
+	await s.run(
+		call("move_to", { xyz: [0.5, 0, 1], step_m: -0.05, record: true }),
+		call("relay", { tool: "move_to", args: { xyz: [0.5, 0, 1], tol_rad: 0.1 } }),
+		call("move_to", { xyz: [0.5, 0, 1], tol_m: 0.01 }),
+		call("finish", { status: "success", summary: "done", terminated: true }),
+	);
+	assert.deepEqual(s.results(), [
+		`move_to: move_to has no argument "step_m" or "record"; ${TAKES}`,
+		`relay: error: move_to has no argument "tol_rad"; ${TAKES}`,
+		"move_to: moved",
+		"finish: success",
+	]);
+	// pi's validation kept the stray keys (else the first two calls would have run), and only the third reached the
+	// tool.
+	assert.deepEqual(reached, [{ xyz: [0.5, 0, 1], tol_m: 0.01 }]);
+	const finished = s.session.messages.find((m) => m.role === "toolResult" && m.toolName === "finish");
+	assert.deepEqual(finished?.role === "toolResult" ? finished.details : undefined, {
+		status: "success",
+		summary: "done",
+	});
+});
+
+test("a real session: a call the gate blocks ends before the next call of its turn is prepared, with no tool_call for a later handler", async (t) => {
+	// What a replay relies on to stop a recorded turn at the call the robot refuses now (../src/capabilities/replay).
+	const reached: unknown[] = [];
+	const seen: string[] = [];
+	const s = await session({ robot: manifestRobot(reached, seen) });
+	t.after(s.close);
+	await s.run(
+		fauxAssistantMessage(
+			[
+				fauxToolCall("move_to", { xyz: [0.5, 0, 1], step_m: -0.05 }),
+				fauxToolCall("move_to", { xyz: [0.5, 0, 1], tol_m: 0.01 }),
+			],
+			{ stopReason: "toolUse" },
+		),
+	);
+	assert.deepEqual(seen, ["end move_to (error)", "call move_to", "end move_to"]);
+	assert.deepEqual(s.results(), [`move_to: move_to has no argument "step_m"; ${TAKES}`, "move_to: moved"]);
+	assert.deepEqual(reached, [{ xyz: [0.5, 0, 1], tol_m: 0.01 }]);
 });

@@ -56,9 +56,9 @@ import {
 	replayThinking,
 	replayThinkingError,
 } from "./planner/replay-thinking.ts";
+import { strayArguments, strayRefusal, toolArguments } from "./primitives/arguments.ts";
 import {
 	available,
-	codeModeParams,
 	loadManifest,
 	type Manifest,
 	toolDescription,
@@ -287,7 +287,11 @@ export type RobotSpec = {
 	 * from it. Without one the robot's tools carry their own schemas (`tool`).
 	 */
 	manifest?: string;
-	/** The manifest's `{{name}}` variables (descriptions, enums), read at load and at every session start. */
+	/**
+	 * The manifest's `{{name}}` variables (descriptions, enums). The base reads them at load, at every session start,
+	 * and when it refuses a manifest tool's call for an argument it does not take (the refusal lists the schema's
+	 * names); a mode that renders the manifest may read them at any turn.
+	 */
 	vars?: () => Vars;
 	/**
 	 * Whether this run has a capability a manifest entry `requires` (read after `start`); a tool whose
@@ -309,6 +313,9 @@ export type RobotSpec = {
  *   itself (an MCP server's, `codemode`, one registered after the start, a `--tools` entry when a tool
  *   registers) is declared in no request (`finish` hides it), deactivated at the start of every run
  *   and after every turn, and named once to the operator.
+ * - Tool arguments: a call of a manifest tool that carries an argument its entry does not declare for
+ *   tool mode is refused (at the gate, in `prepare`, and in the tool itself); a module's tool keeps its
+ *   own schema and rules, and `finish` keeps the arguments its schema declares.
  * - Finish rules: pi stops early only when every result in a batch terminates, so tools registered
  *   with `tool` terminate when their batch also calls `finish`. `finish`, or a spent --max-turns /
  *   --time-limit / --max-cost budget, ends the episode, after which only `finish` runs.
@@ -510,12 +517,6 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	const mem = spec.memory
 		? memory(pi, {
 				robot: name,
-				// A recipe line keeps a primitive's code-mode params too when their values fit: piper's and robosuite's tools
-				// pass them on in tool mode (robodojo's and robolab's set return_frames themselves).
-				params: (tool) => {
-					const e = manifestTool(tool);
-					return e ? codeModeParams(e, spec.vars?.() ?? {}) : {};
-				},
 				...spec.memory,
 				explore: spec.explore ? () => pi.getFlag("explore") === true : undefined,
 			})
@@ -633,6 +634,21 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 	type PrimitiveRun = (params: any, signal: AbortSignal | undefined, ctx: ExtensionContext) => Promise<Result>;
 	/** Tools whose schema and description come from the manifest, with what they were registered with. */
 	const declared = new Map<string, { run: PrimitiveRun; registered: string }>();
+	/**
+	 * Why a call of a manifest tool does not run with these arguments, else undefined: it carries one the tool does
+	 * not take. pi's validation keeps the keys a schema does not declare, and most of these tools hand their arguments
+	 * to the env server's method, which can take more keywords than the tool offers (a program's options, keywords no
+	 * mode declares). A module's tool (act, run_code) keeps its own schema and rules.
+	 */
+	function stray(toolName: string, args: unknown): string | undefined {
+		// The entry in force now (its privileged variant under --privileged). The refusal lists what its schema offers:
+		// those names are built for a refusal only, so a call that carries nothing stray reads no variables.
+		const entry = declared.has(toolName) ? manifestTool(toolName) : undefined;
+		if (!entry) return undefined;
+		const offered = () => Object.keys(toolSchema(entry, spec.vars?.() ?? {}).properties);
+		const why = strayArguments(args, toolArguments(entry), offered);
+		return why === undefined ? undefined : strayRefusal(toolName, why);
+	}
 	function tool<P extends TSchema>(
 		toolName: string,
 		description: string,
@@ -654,6 +670,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 		}
 		if (!robotTools.includes(toolName)) robotTools.push(toolName);
 		const call: Call = async (params, sig, ctx) => {
+			// The gate and `prepare` refuse a call with a stray argument before it gets here; one that came another way
+			// (an extension that runs the tool object itself) does not run either.
+			const extra = stray(toolName, params);
+			if (extra) throw new Error(extra);
 			signal = sig;
 			try {
 				return { ...(await run(params as Static<P>, sig, ctx)), terminate: finishing };
@@ -910,6 +930,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				name: toolName,
 				arguments: args as Json,
 			});
+			// The page's form offers the schema's fields; another client's stray argument is refused like one that does
+			// not fit the schema.
+			const extra = stray(toolName, params);
+			if (extra) throw new Error(extra);
 			const ctx = sessionCtx;
 			// After waiting its turn the gates are checked again: the episode may have ended meanwhile.
 			return (sig) =>
@@ -1075,6 +1099,10 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 				reason: `${event.toolName} is not one of the tools ${name} gives the planner.`,
 				...(finishing ? { terminate: true } : {}),
 			};
+		// Then the arguments of a manifest tool: one it does not take refuses the call before it counts or runs.
+		// After the grant, so that the refusal lists the parameters of a tool the planner has.
+		const extra = stray(event.toolName, event.input);
+		if (extra !== undefined) return { block: true, reason: extra, ...(finishing ? { terminate: true } : {}) };
 		if (event.toolName !== "finish") toolCalls++;
 		return undefined;
 	});
@@ -1312,7 +1340,11 @@ export function defineRobot(pi: ExtensionAPI, spec: RobotSpec) {
 			hiddenDeclarations: loadout.registered.flatMap((t) => (toolSet.granted(t.name) ? [] : [t.name])),
 		}),
 		async execute(_id, params) {
-			claimed = params as Claim;
+			// finish refuses nothing itself (a refusal would keep an episode from ending): the claim is the arguments
+			// its schema declares, and what else the call carries is left out. Most robots return the claim as the
+			// result's details, which must carry nothing the planner added: a `terminated` there would read as the env's.
+			const keys = Object.keys((spec.finish.parameters as { properties?: object }).properties ?? {});
+			claimed = Object.fromEntries(Object.entries(params as Json).filter(([k]) => keys.includes(k))) as Claim;
 			ended = true;
 			return { ...spec.finish.result(claimed), terminate: true };
 		},

@@ -337,9 +337,13 @@ export class RobotSession implements ToolProvider {
 				name,
 				arguments: args as Parameters<typeof validateToolArguments>[1]["arguments"],
 			}) as Record<string, unknown>;
-			kwargs = rpcArguments(t.entry, params);
+			// The schema is open, as pi's are: an argument it does not offer is refused here, before the method
+			// (which can take a program's options and keywords no mode declares) could see it.
+			const offered = Object.keys((t.tool.inputSchema as { properties?: object }).properties ?? {});
+			kwargs = rpcArguments(t.entry, params, offered);
 		} catch (err) {
-			return failure(`${name}: ${message(err)}`);
+			const why = message(err);
+			return failure(why.startsWith(`${name}: `) ? why : `${name}: ${why}`);
 		}
 		const dispatch = () => this.rpcCall(t.entry.method as string, kwargs, signal);
 		return moves(t.entry) ? this.motion(name, dispatch) : this.forward(dispatch);

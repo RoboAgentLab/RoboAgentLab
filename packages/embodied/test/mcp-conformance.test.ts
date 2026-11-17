@@ -165,12 +165,15 @@ const inCode = (p: ManifestParam) => !p.modes || p.modes.includes("code");
 
 test("every served tool's adapted call matches the method's declared signature (code-mode params)", () => {
 	let adapted = 0;
-	for (const robot of ROBOTS) {
+	// With every list variable filled, and with every list empty (one arm, no cameras): a parameter the schema then
+	// leaves out must not be one the method requires.
+	const lists = [VARS, { ...VARS, arms: [], cameras: [] }];
+	for (const [robot, vars] of ROBOTS.flatMap((r) => lists.map((v) => [r, v] as const))) {
 		const m = loadManifest(robot);
 		for (const privileged of [false, true]) {
-			const { tools } = manifestTools(m, { privileged }, everything, VARS);
+			const { tools } = manifestTools(m, { privileged }, everything, vars);
 			for (const { tool, entry } of tools) {
-				const where = `${robot} ${tool.name}`;
+				const where = `${robot} ${tool.name}${vars === VARS ? "" : " (empty lists)"}`;
 				const params = entry.params ?? {};
 				const method = Object.entries(params).filter(([, p]) => inCode(p));
 				const schema = tool.inputSchema as JsonSchema;
@@ -182,7 +185,8 @@ test("every served tool's adapted call matches the method's declared signature (
 					);
 				// Every parameter given: the kwargs are exactly method parameters, and the required ones are there.
 				const args = sample(schema) as Record<string, unknown>;
-				const kwargs = rpcArguments(entry, args);
+				const offered = Object.keys(schema.properties ?? {});
+				const kwargs = rpcArguments(entry, args, offered);
 				for (const k of Object.keys(kwargs))
 					assert.ok(
 						method.some(([name]) => name === k),
@@ -199,36 +203,117 @@ test("every served tool's adapted call matches the method's declared signature (
 				);
 				for (const [k, p] of method)
 					if (p.required)
-						assert.ok(k in rpcArguments(entry, least), `${where}: ${k} from the required tool params`);
+						assert.ok(k in rpcArguments(entry, least, offered), `${where}: ${k} from the required tool params`);
 				if (Object.keys(schema.properties ?? {}).some((k) => !inCode(params[k]))) adapted++;
 			}
 		}
 	}
-	assert.ok(adapted >= 2, `align_wrist's point is adapted on libero and franka (${adapted})`);
+	assert.ok(adapted >= 4, `align_wrist's point is adapted on libero and franka, for both sets of lists (${adapted})`);
 });
+
+/** What a schema built from the entry with every list variable filled offers. */
+const offer = (e: Parameters<typeof rpcParams>[0]) => Object.keys(rpcParams(e));
 
 test("rpcParams and rpcArguments: point maps onto row and col; pi-side state is neither offered nor accepted", () => {
 	const libero = loadManifest("libero");
 	const align = libero.primitives.find((e) => e.name === "align_wrist");
 	assert.ok(align);
 	assert.deepEqual(Object.keys(rpcParams(align)), ["point", "max_correction_m", "execute"]);
-	assert.deepEqual(rpcArguments(align, { point: [10, 20], max_correction_m: 0.02, execute: undefined }), {
-		row: 10,
-		col: 20,
-		max_correction_m: 0.02,
-	});
+	assert.deepEqual(
+		rpcArguments(align, { point: [10, 20], max_correction_m: 0.02, execute: undefined }, offer(align)),
+		{
+			row: 10,
+			col: 20,
+			max_correction_m: 0.02,
+		},
+	);
 	assert.deepEqual(pointArgs([3.4, 7.6]), { row: 3, col: 8 });
 	assert.throws(() => pointArgs([1]), /\[row, col\]/);
 	const segment = libero.primitives.find((e) => e.name === "segment");
 	assert.ok(segment);
 	assert.ok(!("step" in rpcParams(segment)), "step is pi's recorded state");
 	assert.ok("point" in rpcParams(segment), "segment's point is the method's own");
-	assert.deepEqual(rpcArguments(segment, { prompt: "bowl", point: [1, 2] }), { prompt: "bowl", point: [1, 2] });
-	assert.throws(() => rpcArguments(segment, { prompt: "bowl", step: 0 }), /step is pi's/);
+	assert.deepEqual(rpcArguments(segment, { prompt: "bowl", point: [1, 2] }, offer(segment)), {
+		prompt: "bowl",
+		point: [1, 2],
+	});
+	assert.throws(() => rpcArguments(segment, { prompt: "bowl", step: 0 }, offer(segment)), /step is pi's/);
 	const back = libero.primitives.find((e) => e.name === "back_project");
 	assert.ok(back);
 	assert.ok(!("resolution" in rpcParams(back)) && !("step" in rpcParams(back)));
-	assert.deepEqual(rpcArguments(back, { row: 1, col: 2, camera: "wrist" }), { row: 1, col: 2, camera: "wrist" });
+	assert.deepEqual(rpcArguments(back, { row: 1, col: 2, camera: "wrist" }, offer(back)), {
+		row: 1,
+		col: 2,
+		camera: "wrist",
+	});
+	// An argument the caller's schema does not offer is an error too: a program's option (a code-mode parameter), a
+	// keyword of the method that no mode declares, and the method's form of a parameter the tool maps (align_wrist's
+	// row and col).
+	const move = loadManifest("robosuite").primitives.find((e) => e.name === "move_to");
+	assert.ok(move);
+	assert.throws(() => rpcArguments(move, { xyz: [0, 0, 1], step_m: -0.05, record: true }, offer(move)), {
+		message:
+			'move_to: no argument "step_m" or "record"; it takes xyz, arm, quat_xyzw, rotvec, gripper, tol_m, max_steps',
+	});
+	// A one-arm session's schema leaves `arm` out, and no handler stands before the method: refused as well, with the
+	// list variable that left it out (a two-arm session started with an empty list is told what to change).
+	for (const [extra, refusal] of [
+		[{ tol_rad: 0.1 }, 'no argument "tol_rad"; it takes xyz'],
+		[{ arm: "robot1" }, 'no argument "arm"; it takes xyz. arm is not offered while --var arms is empty'],
+		[{ arm: undefined }, undefined],
+	] as const) {
+		const call = (): Record<string, unknown> => rpcArguments(move, { xyz: [0, 0, 1], ...extra }, ["xyz"]);
+		if (refusal) assert.throws(call, { message: `move_to: ${refusal}` });
+		else assert.deepEqual(call(), { xyz: [0, 0, 1] });
+	}
+	// Two parameters left out and both carried: each gets its sentence, with its own list.
+	const plan = libero.primitives.find((e) => e.name === "plan_grasp");
+	assert.ok(plan);
+	assert.throws(() => rpcArguments(plan, { object: "bowl", camera: "wrist", arm: "left" }, ["object"]), {
+		message:
+			'plan_grasp: no argument "camera" or "arm"; it takes object. camera is not offered while --var cameras is empty. arm is not offered while --var arms is empty',
+	});
+	const close = loadManifest("piper").primitives.find((e) => e.name === "close_gripper");
+	assert.ok(close);
+	assert.throws(() => rpcArguments(close, { reopen_empty: false }, offer(close)), {
+		message: 'close_gripper: no argument "reopen_empty"; it takes arm',
+	});
+	assert.deepEqual(rpcArguments(close, { arm: "left", reopen_empty: undefined }, offer(close)), { arm: "left" });
+	assert.throws(() => rpcArguments(align, { row: 10, col: 20 }, offer(align)), {
+		message: 'align_wrist: no argument "row" or "col"; it takes point, max_correction_m, execute',
+	});
+	// pi-side state keeps its own answer, whatever the schema offers.
+	assert.throws(() => rpcArguments(segment, { prompt: "bowl", step: 0 }, ["prompt", "point"]), /step is pi's/);
+});
+
+test("a tool whose required parameter the session's variables leave out is not served, with the reason", () => {
+	// Four of robodojo's five motion tools require `arm`, an enum over its arms: with `--var arms=` no call could
+	// name one. go_home takes no arm and stays served.
+	const m = loadManifest("robodojo");
+	const empty = manifestTools(m, { privileged: false }, everything, { ...VARS, arms: [] });
+	const needs = ["move_to", "move_delta", "rotate_delta", "set_gripper"];
+	for (const name of needs) {
+		assert.ok(!empty.tools.some((t) => t.tool.name === name), `${name} is left out`);
+		assert.deepEqual(
+			empty.leftOut.find((l) => l.name === name),
+			{ name, reason: "arm is required and --var arms is empty: give --var arms=<name>[,<name>]" },
+		);
+	}
+	assert.deepEqual(
+		empty.leftOut.map((l) => l.name),
+		needs,
+		"nothing else is left out",
+	);
+	assert.ok(
+		empty.tools.some((t) => t.tool.name === "go_home"),
+		"go_home takes no arm and stays served",
+	);
+	const served = manifestTools(m, { privileged: false }, everything, VARS).tools.map((t) => t.tool.name);
+	for (const name of needs) assert.ok(served.includes(name), `${name} is served with arms`);
+	// An optional parameter over an empty list takes no tool out: robosuite's `arm` on one arm.
+	const oneArm = manifestTools(loadManifest("robosuite"), { privileged: false }, everything, { ...VARS, arms: [] });
+	assert.deepEqual(oneArm.leftOut, []);
+	assert.ok(oneArm.tools.some((t) => t.tool.name === "move_to"));
 });
 
 test("the real robots in REAL_ROBOTS have manifests", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import replay, { loadRecording, REPLAY_ENTRY, taskDiff } from "../src/capabilities/replay/index.ts";
+import { strayArguments, strayRefusal } from "../src/primitives/arguments.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
@@ -86,7 +87,8 @@ function recordSession(finish = true) {
 	return dir;
 }
 
-function fakePi(flags: Record<string, unknown>, task: Record<string, string>) {
+/** `gate`: another extension's tool_call handler, loaded before the replay (the robot's gate). */
+function fakePi(flags: Record<string, unknown>, task: Record<string, string>, gate?: Handler) {
 	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const entries: { type: string; data: any }[] = [];
@@ -116,6 +118,7 @@ function fakePi(flags: Record<string, unknown>, task: Record<string, string>) {
 	};
 	const log = console.error;
 	console.error = (line: string) => stderr.push(line);
+	if (gate) handlers.set("tool_call", [gate]);
 	replay(pi);
 	const model = provider.getModels()[0];
 	/** One model turn over `messages`, as pi's agent loop asks for it. */
@@ -340,7 +343,10 @@ function sessionOf(turns: { content: unknown[]; stopReason?: string; errors?: Re
 	return dir;
 }
 
-/** Execute turn `m`'s calls as pi does for a sequential batch: tool_call hooks, then the result; `errors` fail calls by name. */
+/**
+ * Execute turn `m`'s calls as pi does for a sequential batch: tool_call hooks, then the result; `errors` fail calls
+ * by name. Every call ends with tool_execution_end; one a handler blocked gets no tool_result.
+ */
 async function runBatch(p: ReturnType<typeof fakePi>, m: any, errors: Record<string, string> = {}) {
 	const out: any[] = [];
 	const sent: string[] = [];
@@ -351,6 +357,12 @@ async function runBatch(p: ReturnType<typeof fakePi>, m: any, errors: Record<str
 		const content = [{ type: "text", text: failed ?? "{}" }];
 		if (!blocked?.block)
 			await p.emit("tool_result", { toolCallId: c.id, input: c.arguments, content, isError: failed !== undefined });
+		await p.emit("tool_execution_end", {
+			toolCallId: c.id,
+			toolName: c.name,
+			result: { content },
+			isError: failed !== undefined,
+		});
 		out.push({ role: "toolResult", toolCallId: c.id, toolName: c.name, content, isError: failed !== undefined });
 	}
 	return { results: out, sent };
@@ -370,6 +382,31 @@ test("a call the robot's tool set refused never ran: it is skipped, not sent aga
 	assert.deepEqual(
 		rec.turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]),
 		[[["view", "relay"], ["codemode"]]],
+	);
+});
+
+test("a call refused for an argument its tool does not take never ran: it is skipped; a tool failing with another's refusal ran", () => {
+	// The robot base's own sentence (../src/robot.ts builds it the same way), whatever the stray name holds: a line
+	// separator is escaped, so the refusal stays one line.
+	const key = `step${String.fromCharCode(0x2028)}m`;
+	const refusal = strayRefusal("move", strayArguments({ [key]: -0.05 }, [], () => ["xyz", "gripper"]) as string);
+	assert.equal(refusal, 'move has no argument "step\\u2028m"; it takes xyz, gripper.');
+	const dir = sessionOf([
+		{
+			content: [
+				call("move", { xyz: [1, 2, 3], [key]: -0.05 }),
+				call("view", {}),
+				call("relay", { tool: "move" }),
+				call("grip", {}),
+			],
+			// relay failed with move's refusal, and grip with its own after other text: both ran.
+			errors: { move: refusal, relay: refusal, grip: `robot error: ${refusal.replace("move", "grip")}` },
+		},
+	]);
+	const rec = loadRecording(dir);
+	assert.deepEqual(
+		rec.turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]),
+		[[["view", "relay", "grip"], ["move"]]],
 	);
 });
 
@@ -442,6 +479,146 @@ test("a failure inside a multi-call turn stops the replay at that call: the rest
 	} finally {
 		p.restore();
 	}
+});
+
+test("a recorded call the robot refuses now stops the replay at that call: the rest of the turn is not sent", async () => {
+	// The recording's move ran with an argument its tool no longer takes. This run's gate blocks it, and a blocked
+	// call gets no tool_result: the replay learns of it when the call ends.
+	const dir = sessionOf([
+		{
+			content: [
+				call("move", { xyz: [1, 0, 0], step_m: 0.005 }),
+				call("grasp", {}),
+				call("move", { xyz: [2, 0, 0] }),
+			],
+		},
+		{ content: [call("finish", { status: "success" })] },
+	]);
+	const refusal = 'move has no argument "step_m"; it takes xyz.';
+	const p = fakePi({ replay: dir }, {}, (e) =>
+		e.toolName === "move" && "step_m" in e.input ? { block: true, reason: refusal } : undefined,
+	);
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		assert.equal(calls(t1).length, 3);
+		const { results: r1, sent } = await runBatch(p, t1);
+		assert.deepEqual(sent, []);
+		assert.deepEqual(
+			r1.map((r) => r.content[0].text),
+			[
+				refusal,
+				...Array(2).fill(
+					`replay stopped (move failed: ${refusal}; it succeeded in the recording); this recorded call was not sent`,
+				),
+			],
+		);
+		const t2 = await p.turn([t1, ...r1]);
+		assert.equal(calls(t2).length, 0);
+		assert.match(text(t2), /grasp not sent/);
+		assert.match(text(t2), /Replay stopped/);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a multi-call turn whose calls end as recorded is sent whole, a failure the recording also had included", async () => {
+	const dir = sessionOf([
+		{ content: [call("move", { xyz: [1, 0, 0] }), call("grasp", {}), call("move", { xyz: [2, 0, 0] })] },
+		{ content: [call("grip", { v: 1 }), call("move", { xyz: [3, 0, 0] })], errors: { grip: "gripper jammed" } },
+		{ content: [call("finish", { status: "success" })] },
+	]);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		const { results: r1, sent } = await runBatch(p, t1);
+		assert.deepEqual(sent, ["move", "grasp", "move"]);
+		const t2 = await p.turn([t1, ...r1]);
+		const { results: r2, sent: sent2 } = await runBatch(p, t2, { grip: "gripper jammed" });
+		assert.deepEqual(sent2, ["grip", "move"]);
+		const t3 = await p.turn([t1, ...r1, t2, ...r2]);
+		assert.match(text(t3), /grip failed, as in the recording/);
+		assert.deepEqual(
+			calls(t3).map((c: any) => c.name),
+			["finish"],
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+test("only the recorded call's own end counts: a call it made of the same tool, refused, does not stop the turn", async () => {
+	const dir = sessionOf([{ content: [call("relay", { tool: "move" }), call("move", { xyz: [1, 0, 0] })] }]);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const [relay, move] = calls(await p.turn());
+		// pi ends a nested call under the id <caller>/<n>; relay reports the refusal and succeeds, as recorded.
+		await p.emit("tool_execution_end", {
+			toolCallId: `${relay.id}/1`,
+			parentToolCallId: relay.id,
+			toolName: "move",
+			result: { content: [{ type: "text", text: "refused" }] },
+			isError: true,
+		});
+		await p.emit("tool_execution_end", {
+			toolCallId: relay.id,
+			toolName: "relay",
+			result: { content: [{ type: "text", text: "error: refused" }] },
+			isError: false,
+		});
+		assert.equal(
+			await p.emit("tool_call", { toolCallId: move.id, toolName: "move", input: move.arguments }),
+			undefined,
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a result without content is judged when its call ends", async () => {
+	// An untyped tool may return none. It failed in the recording and succeeds now: the rest is withheld.
+	const dir = sessionOf([{ content: [call("bare", {}), call("move", { xyz: [1, 0, 0] })], errors: { bare: "boom" } }]);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const [bare, move] = calls(await p.turn());
+		await p.emit("tool_execution_end", {
+			toolCallId: bare.id,
+			toolName: "bare",
+			result: { details: {} },
+			isError: false,
+		});
+		const blocked = await p.emit("tool_call", { toolCallId: move.id, toolName: "move", input: move.arguments });
+		assert.equal(
+			blocked?.reason,
+			"replay stopped (bare succeeded; it failed in the recording (boom)); this recorded call was not sent",
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a call an earlier replay withheld never ran: replaying that replay's session does not send it", () => {
+	const sentence =
+		"replay stopped (move failed: robot error: IK failed; it succeeded in the recording); this recorded call was not sent";
+	const dir = sessionOf([
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("grasp", {}), call("relay", {}), call("grip", {})],
+			// relay and grip failed with the sentence inside other text: both ran.
+			errors: {
+				move: "robot error: IK failed",
+				grasp: sentence,
+				relay: `relay failed: ${sentence}`,
+				grip: `${sentence}\nmore`,
+			},
+		},
+	]);
+	assert.deepEqual(
+		loadRecording(dir).turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]),
+		[[["move", "relay", "grip"], ["grasp"]]],
+	);
 });
 
 test("a code-mode session replays every run_code program verbatim", async () => {

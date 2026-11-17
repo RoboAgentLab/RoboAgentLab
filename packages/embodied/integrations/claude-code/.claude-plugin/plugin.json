@@ -56,7 +56,7 @@
 		"vars": {
 			"type": "string",
 			"title": "Robot variables",
-			"description": "Semicolon-separated name=value[,value] the manifest's enums need, e.g. cameras=agentview,wrist;arms=",
+			"description": "Semicolon-separated name=value[,value] the manifest's enums need, e.g. cameras=agentview,wrist;arms= (one arm; two arms name them: arms=left,right)",
 			"default": ""
 		},
 		"confirm_file": {

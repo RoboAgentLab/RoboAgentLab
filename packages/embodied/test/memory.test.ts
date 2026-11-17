@@ -26,7 +26,6 @@ import { dirname, join, resolve, sep } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { type ExtensionAPI, type SessionEntry, SessionManager } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
 import { mergeMemory, renderLeaf, splitFrontmatter, validateMemory } from "../src/capabilities/memory/corpus.ts";
 import { canonicalPath, denied, memory, recipe, respelled } from "../src/capabilities/memory/index.ts";
 import { loadRecording } from "../src/capabilities/replay/index.ts";
@@ -234,7 +233,7 @@ test("a recipe line keeps only the arguments its tool declares: no line passes f
 	assert.equal(SessionManager.continueRecent(dir, dir).getSessionFile(), sm.getSessionFile());
 });
 
-test("the recipe exported once a run settles keeps the arguments each primitive declares: its tool's schema, and the robot's other modes", async (t) => {
+test("the recipe exported once a run settles keeps the arguments each primitive's tool declares, no others", async (t) => {
 	const base = realpathSync.native(mkdtempSync(join(tmpdir(), "recipe-export-")));
 	t.after(() => rmSync(base, { recursive: true, force: true }));
 	const home = join(base, "memory");
@@ -261,9 +260,6 @@ test("the recipe exported once a run settles keeps the arguments each primitive 
 		cell: () => ({ tag: "goal_t3_s7", reference: "goal_t3_s7" }),
 		published: false,
 		primitives: ["move_to", "release"],
-		// Code-mode parameters of the manifest's, which some robots' tools pass on too: kept when their values fit.
-		params: (tool): Record<string, TSchema> =>
-			tool === "move_to" ? { step_m: Type.Number(), continuous: Type.Boolean() } : {},
 	});
 	const toolCall = (id: string, name: string, args: Record<string, unknown>, terminated: boolean) => [
 		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] } },
@@ -279,8 +275,9 @@ test("the recipe exported once a run settles keeps the arguments each primitive 
 			},
 		},
 	];
-	// The planner's arguments include keys the tools do not declare: a session's header, an entry, another action,
-	// and names an object inherits (as own keys, as JSON gives them), which no params record holds.
+	// The planner's arguments include keys the tools do not declare: a program's option (a manifest's code-mode
+	// parameter), a session's header, an entry, another action, and names an object inherits (as own keys, as JSON
+	// gives them).
 	const extra = {
 		type: "session",
 		version: 3,
@@ -303,7 +300,7 @@ test("the recipe exported once a run settles keeps the arguments each primitive 
 	await hooks.get("agent_settled")?.({}, ctx);
 	assert.equal(
 		readFileSync(join(run, "goal_t3_s7_recipe.jsonl"), "utf8"),
-		`${JSON.stringify({ action: "move_to", xyz: [0, 0, 1], step_m: 0.005 })}\n${JSON.stringify({ action: "release" })}\n`,
+		`${JSON.stringify({ action: "move_to", xyz: [0, 0, 1] })}\n${JSON.stringify({ action: "release" })}\n`,
 	);
 });
 

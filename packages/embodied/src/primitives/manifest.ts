@@ -178,13 +178,22 @@ export function enumValues(values: string[] | string, vars: Vars): string[] {
 	return [...v];
 }
 
-/** An enum whose values come from an empty list variable leaves the parameter out (e.g. `arm` on one arm). */
-function dropped(p: ManifestParam, vars: Vars) {
-	if (p.type !== "enum" || Array.isArray(p.values)) return false;
-	const m = /^\{\{(\w+)\}\}$/.exec(p.values ?? "");
-	const v = m ? vars[m[1]] : undefined;
-	return Array.isArray(v) && v.length === 0;
+/** The list variable an enum parameter takes its values from (`{{arms}}`: arms), else undefined. */
+export function listVariable(p: ManifestParam): string | undefined {
+	if (p.type !== "enum" || Array.isArray(p.values)) return undefined;
+	return /^\{\{(\w+)\}\}$/.exec(p.values ?? "")?.[1];
 }
+
+/**
+ * The name of the list variable behind an enum parameter when that list is empty (the schema then leaves the
+ * parameter out, e.g. `arm` on one arm), else undefined.
+ */
+export function emptyList(p: ManifestParam, vars: Vars): string | undefined {
+	const name = listVariable(p);
+	const v = name === undefined ? undefined : vars[name];
+	return name !== undefined && Array.isArray(v) && v.length === 0 ? name : undefined;
+}
+const dropped = (p: ManifestParam, vars: Vars) => emptyList(p, vars) !== undefined;
 
 function paramSchema(p: ManifestParam, vars: Vars): TSchema {
 	const d = p.description ? { description: fill(p.description, vars) } : {};
@@ -229,15 +238,6 @@ export function toolSchema(e: ManifestEntry, vars: Vars = {}) {
 		props[k] = p.required ? s : Type.Optional(s);
 	}
 	return Type.Object(props);
-}
-
-/** The schemas of the entry's params that exist only outside tool mode (`modes` without "tool": a program's), by name. */
-export function codeModeParams(e: ManifestEntry, vars: Vars = {}): Record<string, TSchema> {
-	return Object.fromEntries(
-		Object.entries(e.params ?? {}).flatMap(([k, p]) =>
-			p.modes && !p.modes.includes("tool") && !dropped(p, vars) ? [[k, paramSchema(p, vars)]] : [],
-		),
-	);
 }
 
 export const toolDescription = (e: ManifestEntry, vars: Vars = {}) => fill(e.doc.tool ?? "", vars);

@@ -3,14 +3,18 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { RpcUnavailable } from "../src/infra/rpc.ts";
 import { UNITS_EVENT, type UnitsHandle, type UnitsSpec } from "../src/modes/units/index.ts";
 import { CLOSED_LOOP } from "../src/planner/closed-loop.ts";
+import { STRAY_REFUSAL } from "../src/primitives/arguments.ts";
 import {
 	defineRobot,
 	leakedToolCall,
+	PRIMITIVES_EVENT,
+	type PrimitivesHandle,
 	RESULT_ENTRY,
 	type RobotSpec,
 	STATUS_EVENT,
@@ -100,6 +104,10 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 		ctx,
 		restore,
 		active: () => active,
+		/** A flag given on the command line: pi sets its value after the extensions have loaded. */
+		setFlag: (name: string, value: unknown) => {
+			flags[name] = value;
+		},
 		/** pi activating tools by itself (an MCP server's, a late registration): the base's code is not asked. */
 		self: (...names: string[]) => {
 			active = [...active, ...names];
@@ -297,15 +305,233 @@ test("memory's session_start sees the resolved task", async (t) => {
 	assert.ok((await f.emit("tool_call", { toolName: "read", input: { path: "/etc/passwd" } }))?.block);
 });
 
-test("a recipe line keeps an argument the robot's manifest declares for code mode, which its tool passes on too", async (t) => {
-	// robosuite's move_to: step_m, step_rad and tol_rad are code-mode parameters, not in the tool's schema; a value that
-	// does not fit (out of its range, a string for a number) is left out, as the keys no mode declares, inherited
-	// names too.
+/**
+ * A planner's call as pi makes it: its arguments validated against the tool's schema (which keeps the keys the schema
+ * does not declare), then the tool_call hooks, then the tool unless a hook blocked the call.
+ */
+async function planned(
+	f: ReturnType<typeof fakePi>,
+	name: string,
+	args: Parameters<typeof validateToolArguments>[1]["arguments"],
+) {
+	const tool = f.tools.get(name);
+	const input = validateToolArguments(tool, { type: "toolCall", id: "c", name, arguments: args });
+	const gate = await f.emit("tool_call", { toolName: name, input });
+	return gate?.block ? gate : tool.execute("c", input, undefined, undefined, f.ctx);
+}
+
+/** A toy robot on robosuite's manifest, one arm: its tools record what reaches them. */
+function manifestToy(f: ReturnType<typeof fakePi>, extra: Partial<RobotSpec> = {}) {
+	const ran: [string, unknown][] = [];
+	const robot = defineRobot(f.pi, {
+		name: "toy",
+		task: [],
+		keepImages: 1,
+		manifest: "robosuite",
+		// `arm` is an enum over the robot's arms: with none to choose from, the schema leaves it out.
+		vars: () => ({ arms: [] }),
+		start: async () => ["move_to", "run_code", "finish"],
+		result: () => ({}),
+		status: () => ({ step: 0 }),
+		finish,
+		...extra,
+	});
+	const moved = (details: Record<string, unknown> = {}) => ({
+		content: [{ type: "text" as const, text: "moved" }],
+		details,
+	});
+	for (const name of ["move_to", "move_delta"])
+		robot.primitive(name, async (p) => {
+			ran.push([name, p]);
+			return moved({ terminated: true });
+		});
+	// A module's tool (run_code's manifest entry names its module, code mode) keeps the schema it is registered with.
+	robot.tool("run_code", "run", Type.Object({ code: Type.String() }), async (p) => {
+		ran.push(["run_code", p]);
+		return moved();
+	});
+	return { robot, ran };
+}
+
+test("a manifest tool takes the arguments its entry declares for tool mode: a call with another is refused before it counts or runs", async (t) => {
+	// robosuite's move_to: step_m, step_rad and tol_rad are a program's options (code mode) and record is a keyword of
+	// the server's method that no mode declares. pi's validation keeps them all, and the robot's tool hands its
+	// arguments to the method.
+	const f = fakePi({ "max-tool-calls": "2" });
+	t.after(f.restore);
+	const { ran } = manifestToy(f);
+	const stray = { xyz: [0.5, 0, 1], step_m: -0.05, record: true };
+	// Readiness comes first: before the robot is up, the refusal is that one.
+	assert.deepEqual(await f.emit("tool_call", { toolName: "move_to", input: stray }), {
+		block: true,
+		reason: "toy is not available.",
+		terminate: true,
+	});
+	await f.emit("session_start");
+	const offered = "xyz, quat_xyzw, rotvec, gripper, tol_m, max_steps";
+	assert.deepEqual(Object.keys(f.tools.get("move_to").parameters.properties), offered.split(", "));
+	// A turn with a robot tool or finish runs one call at a time: what lets a refusal or a failure hold back the rest.
+	assert.deepEqual(
+		["move_to", "run_code", "finish"].map((n) => f.tools.get(n).executionMode),
+		["sequential", "sequential", "sequential"],
+	);
+	const refused = await planned(f, "move_to", stray);
+	assert.deepEqual(refused, {
+		block: true,
+		reason: `move_to has no argument "step_m" or "record"; it takes ${offered}.`,
+	});
+	// The replay reads the refusal back as a call that never ran, by the tool it names.
+	assert.equal(STRAY_REFUSAL.exec(refused.reason)?.[1], "move_to");
+	// Then the grant: a tool the robot did not give the planner is refused as that, whatever its arguments.
+	assert.deepEqual(await planned(f, "move_delta", { delta_xyz: [0, 0, 0.01], step_m: -0.05 }), {
+		block: true,
+		reason: "move_delta is not one of the tools toy gives the planner.",
+	});
+	// In a batch that also calls finish, the refusal terminates like the robot's other refusals.
+	await f.emit("message_end", assistant("move_to", "finish"));
+	assert.equal((await planned(f, "move_to", { xyz: [0.5, 0, 1], tol_rad: 0.1 })).terminate, true);
+	await f.emit("message_end", assistant("move_to"));
+	// The tool itself does not run with one either, however it is reached (an extension that runs the tool object).
+	await assert.rejects(
+		f.tools.get("move_to").execute("c", { xyz: [0.5, 0, 1], step_rad: 1 }, undefined, undefined, f.ctx),
+		{ message: `move_to has no argument "step_rad"; it takes ${offered}.` },
+	);
+	// Nor does the operator's manual call (the dashboard's): refused like an argument that does not fit the schema.
+	const handle = f.events.find((e) => e.channel === PRIMITIVES_EVENT)?.data as PrimitivesHandle;
+	assert.throws(() => handle.prepare("move_to", { xyz: [0.5, 0, 1], record: true }), {
+		message: `move_to has no argument "record"; it takes ${offered}.`,
+	});
+	assert.throws(() => handle.prepare("move_to", { xyz: [0.5, 0, 1], max_steps: 5000 }), /max_steps/);
+	assert.deepEqual(ran, []);
+	// `arm` is the entry's own: its schema leaves it out on one arm, and it reaches the tool's handler, as before. A
+	// module's tool keeps its own schema and rules.
+	await planned(f, "move_to", { xyz: [0.5, 0, 1], arm: "robot7" });
+	await planned(f, "run_code", { code: "pass", note: 1 });
+	assert.deepEqual(ran, [
+		["move_to", { xyz: [0.5, 0, 1], arm: "robot7" }],
+		["run_code", { code: "pass", note: 1 }],
+	]);
+	// The refused calls spent no tool-call budget: the two it allows ran. Once it is spent, that refusal comes first
+	// and ends the episode.
+	assert.deepEqual(await planned(f, "move_to", stray), {
+		block: true,
+		reason: "Planner tool_calls budget exhausted; the episode is over.",
+		terminate: true,
+	});
+});
+
+test("the arguments a manifest tool takes are those of the entry in force: its privileged variant under --privileged", async (t) => {
+	// LIBERO's get_object_pose takes use_multiview; its privileged variant (the simulator's truth) does not.
+	for (const privileged of [false, true]) {
+		const f = fakePi();
+		t.after(f.restore);
+		const ran: unknown[] = [];
+		const robot = defineRobot(f.pi, {
+			name: "toy",
+			task: [],
+			keepImages: 1,
+			manifest: "libero",
+			capabilities: () => true,
+			groundTruth: async () => ({}),
+			start: async () => ["get_object_pose", "finish"],
+			result: () => ({}),
+			status: () => ({ step: 0 }),
+			finish,
+		});
+		robot.primitive("get_object_pose", async (p) => {
+			ran.push(p);
+			return { content: [], details: {} };
+		});
+		f.setFlag("privileged", privileged);
+		// The flag set after load holds at once: the tool object refuses with the names of the entry in force, not those
+		// it was registered with.
+		if (privileged)
+			await assert.rejects(
+				f.tools
+					.get("get_object_pose")
+					.execute("c", { object_name: "bowl", use_multiview: true }, undefined, undefined, f.ctx),
+				{ message: 'get_object_pose has no argument "use_multiview"; it takes object_name.' },
+			);
+		await f.emit("session_start");
+		const r = await planned(f, "get_object_pose", { object_name: "bowl", use_multiview: true });
+		if (privileged)
+			assert.deepEqual(r, {
+				block: true,
+				reason: 'get_object_pose has no argument "use_multiview"; it takes object_name.',
+			});
+		assert.deepEqual(ran, privileged ? [] : [{ object_name: "bowl", use_multiview: true }]);
+	}
+});
+
+test("the names a refusal lists are built for the refusal: a call that carries nothing stray reads no variables", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	let reads = 0;
+	const { ran } = manifestToy(f, {
+		vars: () => {
+			reads++;
+			return { arms: [] };
+		},
+	});
+	await f.emit("session_start");
+	const handle = f.events.find((e) => e.channel === PRIMITIVES_EVENT)?.data as PrimitivesHandle;
+	const started = reads;
+	// A planner's call (the gate, then the tool) and the operator's manual call.
+	await planned(f, "move_to", { xyz: [0.5, 0, 1], arm: "robot7" });
+	handle.prepare("move_to", { xyz: [0.5, 0, 1] });
+	assert.equal(reads, started);
+	assert.equal(ran.length, 1);
+	// A refusal reads them once, for the names it lists.
+	assert.equal((await planned(f, "move_to", { xyz: [0.5, 0, 1], record: true })).block, true);
+	assert.equal(reads, started + 1);
+});
+
+test("a refusal names at most five stray arguments, each quoted and cut to forty characters", async (t) => {
+	const f = fakePi();
+	t.after(f.restore);
+	manifestToy(f);
+	await f.emit("session_start");
+	// The names are the planner's own text: one of forty-one characters and one of forty, one with a line break and a
+	// line separator, an empty one, and one of characters outside printable ASCII (a paragraph separator, DEL, two C1
+	// controls, a right-to-left override, a letter, a surrogate pair). Each code unit of those is shown as an escape.
+	const names = [
+		"x".repeat(41),
+		"y".repeat(40),
+		`new\nline${String.fromCharCode(0x2028)}sep`,
+		"",
+		String.fromCharCode(0x2029, 0x7f, 0x85, 0x9f, 0x202e, 0xe9, 0xd83d, 0xde00),
+		"d",
+	];
+	const r = await planned(f, "move_to", { xyz: [0.5, 0, 1], ...Object.fromEntries(names.map((k) => [k, 1])) });
+	assert.equal(
+		r.reason,
+		`move_to has no argument "${"x".repeat(40)}..." or "${"y".repeat(40)}" or "new\\nline\\u2028sep" or "" or "\\u2029\\u007f\\u0085\\u009f\\u202e\\u00e9\\ud83d\\ude00" or others; it takes xyz, quat_xyzw, rotvec, gripper, tol_m, max_steps.`,
+	);
+	assert.equal(STRAY_REFUSAL.exec(r.reason)?.[1], "move_to");
+});
+
+test("finish takes the arguments its schema declares and leaves the rest out: no `terminated` of the planner's reaches the result", async (t) => {
+	// Most robots return the claim as the result's details, which must carry nothing the planner added: a `terminated`
+	// there would read as the env's.
+	const f = fakePi();
+	t.after(f.restore);
+	manifestToy(f);
+	await f.emit("session_start");
+	await f.emit("agent_start");
+	const r = await planned(f, "finish", { status: "success", summary: "done", terminated: true, success: true });
+	assert.deepEqual(r.details, { status: "success", summary: "done" });
+	assert.equal(r.terminate, true);
+	await f.emit("agent_end");
+	const result = f.entries.find((e) => e.type === RESULT_ENTRY)?.data;
+	assert.deepEqual([result.claimed, result.summary], ["success", "done"]);
+});
+
+test("a recipe line keeps the arguments its tool's schema declares: a program's option an older recording carried is left out", async (t) => {
+	// A session recorded before the base refused such calls: robosuite's move_to ran with step_m, a code-mode parameter
+	// its tool then passed on. The line keeps what the tool takes now.
 	const args = {
 		xyz: [0.1, 0, 1],
 		step_m: 0.005,
-		step_rad: 2,
-		tol_rad: "fast",
 		type: "session",
 		id: "r",
 		...JSON.parse('{"constructor":{"customType":"pi-embodied-setup-notice"},"valueOf":42}'),
@@ -330,32 +556,18 @@ test("a recipe line keeps an argument the robot's manifest declares for code mod
 	t.after(f.restore);
 	mkdirSync(join(f.dir, "memory", "toy"), { recursive: true });
 	writeFileSync(join(f.dir, "memory", "toy", "MEMORY.md"), "# memory\n");
-	const robot = defineRobot(f.pi, {
-		name: "toy",
-		task: [],
-		keepImages: 1,
-		manifest: "robosuite",
-		vars: () => ({ arms: ["robot0"] }),
-		start: async () => ["move_to", "finish"],
-		result: () => ({}),
-		status: () => ({ step: 0 }),
-		finish,
+	manifestToy(f, {
 		memory: {
 			home: () => join(f.dir, "memory"),
 			cell: () => ({ tag: "cell", reference: "" }),
 			primitives: ["move_to"],
 		},
 	});
-	robot.primitive("move_to", async () => ({ content: [], details: { terminated: true } }));
-	assert.equal(
-		["step_m", "step_rad", "tol_rad"].some((k) => k in f.tools.get("move_to").parameters.properties),
-		false,
-	);
 	await f.emit("session_start");
 	await f.emit("agent_settled");
 	assert.equal(
 		readFileSync(join(f.dir, "cell_recipe.jsonl"), "utf8"),
-		`${JSON.stringify({ action: "move_to", xyz: [0.1, 0, 1], step_m: 0.005 })}\n`,
+		`${JSON.stringify({ action: "move_to", xyz: [0.1, 0, 1] })}\n`,
 	);
 });
 

@@ -28,8 +28,7 @@ import {
 	type ExtensionContext,
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { type TSchema, Type } from "typebox";
-import { Value } from "typebox/value";
+import { Type } from "typebox";
 import { dir as cfgDir } from "../../infra/config.ts";
 import { SESSION_FILE_NAME } from "../../infra/session-files.ts";
 import { branchProviders, plannerOf } from "../../planner/kind.ts";
@@ -76,12 +75,6 @@ export type MemoryOptions = {
 	cell?: () => { tag: string; reference: string } | undefined;
 	/** State-advancing tools that belong in a recipe (plus successful `segment` calls). */
 	primitives?: readonly string[];
-	/**
-	 * The arguments a primitive takes besides those its tool's schema declares, with their schemas: a robot's manifest
-	 * params of code mode (../../robot.ts), which some robots' tools pass on in tool mode too. A recipe line keeps
-	 * one when its value fits that schema.
-	 */
-	params?: (tool: string) => Readonly<Record<string, TSchema>>;
 	/**
 	 * The robot's memory section, as a template (`{{memory_dir}}` ...); default ./section.md: read the
 	 * corpus, then the cell's reference and recipe. ../../robot.ts puts it in every evaluation prompt: at
@@ -299,16 +292,15 @@ export function toolCalls(entries: SessionEntry[]): Call[] {
  * The command sequence after the last successful `reset` if it reached `terminated`, else undefined.
  * Contract: an executed primitive's result carries `details.terminated` (boolean); a failed call is
  * `isError` or has `details.error` / `details.result.error` and is dropped. Lines are
- * `{"action": name, ...the arguments it keeps}` (`keeps`: those its tool's schema declares, and the robot's
- * code-mode params whose values fit), plus successful `segment` calls as `{action, prompt | point, camera}`. pi
- * passes a tool undeclared arguments too; a line leaves them out, so that none makes it look like a pi session's
- * header (`type`, `id`), and its `action` is the tool's name. An argument a robot's tool takes without declaring
- * it is not recorded.
+ * `{"action": name, ...the arguments it keeps}` (`keeps`: those its tool's schema declares), plus successful
+ * `segment` calls as `{action, prompt | point, camera}`. pi passes a tool undeclared arguments too; a line leaves
+ * them out, so that none makes it look like a pi session's header (`type`, `id`), and its `action` is the tool's
+ * name.
  */
 export function recipe(
 	entries: SessionEntry[],
 	primitives: ReadonlySet<string>,
-	keeps: (tool: string, key: string, value: unknown) => boolean,
+	keeps: (tool: string, key: string) => boolean,
 ): Record<string, unknown>[] | undefined {
 	const calls = toolCalls(entries);
 	const ok = (c: Call) => !c.isError && !c.details?.error && !c.details?.result?.error;
@@ -325,7 +317,7 @@ export function recipe(
 		)
 		.map((c) => {
 			if (c.name !== "segment") {
-				const args = Object.entries(c.args).filter(([k, v]) => k !== "action" && keeps(c.name, k, v));
+				const args = Object.entries(c.args).filter(([k]) => k !== "action" && keeps(c.name, k));
 				return { action: c.name, ...Object.fromEntries(args) };
 			}
 			const camera = c.details?.camera ?? c.args.camera ?? "agentview";
@@ -609,17 +601,17 @@ export function memory(pi: ExtensionAPI, opts: MemoryOptions = {}) {
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!cell || !outputDir || profile === "off") return;
 		const branch = ctx.sessionManager.getBranch();
-		// A primitive's arguments: the properties of its tool's schema (every embodied primitive's is a Type.Object), and
-		// those the robot declares for code mode when their values fit, in type and range (`params`: pi checks none of an
-		// undeclared key's). Only the record's own keys: `constructor` or `toString` would read an inherited function.
+		// A primitive's arguments: the properties of its tool's schema (every embodied primitive's is a Type.Object). A
+		// manifest tool's call with another does not run (../../robot.ts), except for a parameter the session's schema
+		// leaves out (`arm` on one arm); a line keeps none in any case.
 		const schemas = new Map(
 			pi.getAllTools().map((t) => [t.name, Object.keys((t.parameters as { properties?: object }).properties ?? {})]),
 		);
-		const commands = recipe(branch, new Set(opts.primitives ?? []), (tool, key, value) => {
-			if (schemas.get(tool)?.includes(key)) return true;
-			const params = opts.params?.(tool) ?? {};
-			return Object.hasOwn(params, key) && Value.Check(params[key], value);
-		});
+		const commands = recipe(
+			branch,
+			new Set(opts.primitives ?? []),
+			(tool, key) => schemas.get(tool)?.includes(key) === true,
+		);
 		const path = join(outputDir, `${cell.tag}_recipe.jsonl`);
 		if (commands) {
 			mkdirSync(outputDir, { recursive: true });
