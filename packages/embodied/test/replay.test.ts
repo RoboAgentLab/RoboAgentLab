@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import replay, { loadRecording, REPLAY_ENTRY, taskDiff } from "../src/capabilities/replay/index.ts";
 import { strayArguments, strayRefusal } from "../src/primitives/arguments.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
+
+/** A fresh folder for a recorded session, removed when this file's tests are done. */
+const folders: string[] = [];
+const folder = () => {
+	const dir = mkdtempSync(join(tmpdir(), "replay-"));
+	folders.push(dir);
+	return dir;
+};
+after(() => {
+	for (const dir of folders) rmSync(dir, { recursive: true, force: true });
+});
 
 const assistant = (id: string, parentId: string, content: unknown[], stopReason = "toolUse") => ({
 	type: "message",
@@ -50,7 +61,7 @@ const STALE =
  * really failed, a write, and (optionally) finish.
  */
 function recordSession(finish = true) {
-	const dir = mkdtempSync(join(tmpdir(), "replay-"));
+	const dir = folder();
 	const t1 = turnWithResults("a1", "u", [{ type: "thinking", thinking: "look first" }, call("view", {})]);
 	const t2 = turnWithResults("a2", "err", [
 		{ type: "text", text: "two at once" },
@@ -80,7 +91,11 @@ function recordSession(finish = true) {
 		...t3.entries,
 		...t4.entries,
 		...t5.entries,
-		assistant("a6", t5.leaf, finish ? [call("finish", { status: "success", summary: "ok" })] : [call("view", {})]),
+		...turnWithResults(
+			"a6",
+			t5.leaf,
+			finish ? [call("finish", { status: "success", summary: "ok" })] : [call("view", {})],
+		).entries,
 	];
 	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 	writeFileSync(join(dir, "arm_recipe.jsonl"), `${JSON.stringify({ action: "view" })}\n`);
@@ -327,7 +342,7 @@ test("without --replay the model says so and calls nothing", async () => {
 
 /** A session of `turns` (content, stopReason, recorded errors by call name), each followed by its results. */
 function sessionOf(turns: { content: unknown[]; stopReason?: string; errors?: Record<string, string> }[]) {
-	const dir = mkdtempSync(join(tmpdir(), "replay-"));
+	const dir = folder();
 	const lines: unknown[] = [
 		{ type: "session", version: 3, id: "s", cwd: dir },
 		{ type: "message", id: "u", parentId: null, message: { role: "user", content: "Solve." } },
@@ -342,6 +357,55 @@ function sessionOf(turns: { content: unknown[]; stopReason?: string; errors?: Re
 	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 	return dir;
 }
+
+/**
+ * What a recording holds for a call: an error result (a list: one text part each), pi's time of the tool's execute()
+ * (`ms`), a result whose content is `raw` as given, or no result (`none`).
+ */
+type Outcome = { error?: string | string[]; ms?: number; none?: true; raw?: unknown };
+/**
+ * A session of `turns` whose calls have `outcomes` by position (default: a result "{}" without a time). `ms` on a
+ * turn is pi's time of the reply. pi records how long a reply took, and how long the tool ran for every call whose
+ * tool it entered; a hand-written recording has neither.
+ */
+function sessionWith(turns: { content: unknown[]; outcomes?: Outcome[]; ms?: number; stopReason?: string }[]) {
+	const dir = folder();
+	const lines: unknown[] = [
+		{ type: "session", version: 3, id: "s", cwd: dir },
+		{ type: "message", id: "u", parentId: null, message: { role: "user", content: "Solve." } },
+	];
+	let leaf = "u";
+	turns.forEach((t, i) => {
+		const a = assistant(`y${i}`, leaf, t.content, t.stopReason ?? "toolUse");
+		if (t.ms !== undefined) Object.assign(a.message, { durationMs: t.ms });
+		lines.push(a);
+		leaf = a.id;
+		(t.content.filter((c: any) => c.type === "toolCall") as { id: string; name: string }[]).forEach((c, k) => {
+			const o = t.outcomes?.[k] ?? {};
+			if (o.none) return;
+			const id = `y${i}_r${k}`;
+			lines.push({
+				type: "message",
+				id,
+				parentId: leaf,
+				message: {
+					role: "toolResult",
+					toolCallId: c.id,
+					toolName: c.name,
+					content: "raw" in o ? o.raw : [o.error ?? "{}"].flat().map((text) => ({ type: "text", text })),
+					isError: o.error !== undefined,
+					...(o.ms === undefined ? {} : { durationMs: o.ms }),
+				},
+			});
+			leaf = id;
+		});
+	});
+	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+	return dir;
+}
+/** What a recording's turns hold for a replay: the calls it sends and the calls it skips, by name. */
+const sentAndSkipped = (dir: string) =>
+	loadRecording(dir).turns.map((t) => [t.calls.map((c) => c.name), t.blocked.map((b) => b.name)]);
 
 /**
  * Execute turn `m`'s calls as pi does for a sequential batch: tool_call hooks, then the result; `errors` fail calls
@@ -412,7 +476,8 @@ test("a call refused for an argument its tool does not take never ran: it is ski
 
 test("a reply cut at the output token limit (or otherwise abnormal) has its calls skipped with a note", async () => {
 	const dir = sessionOf([
-		{ content: [call("view", {})] },
+		// A reply that ended with "stop" and carries a call ended normally, like one that ended with "toolUse".
+		{ content: [call("view", {})], stopReason: "stop" },
 		{
 			content: [call("move", { xyz: [1, 2] })],
 			stopReason: "length",
@@ -690,5 +755,568 @@ test("a call that failed in the recording but succeeds now stops the replay", as
 		assert.match(text(t2), /Replay stopped/);
 	} finally {
 		p.restore();
+	}
+});
+
+const NO_RESULT = "the recording holds no result for it";
+
+test("a call the recording holds no result for is not sent, and the replay goes on with the calls that have one", async () => {
+	const dir = sessionWith([
+		{ content: [call("view", {})] },
+		// Aborted after the first move: the second move and the grip never started.
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("move", { xyz: [2, 0, 0] }), call("grip", { v: 1 })],
+			outcomes: [{}, { none: true }, { none: true }],
+		},
+		// The session went on. A result is missing between two that are there: that call alone is skipped.
+		{
+			content: [call("grip", { v: 0 }), call("move", { xyz: [3, 0, 0] }), call("view", {})],
+			outcomes: [{}, { none: true }, {}],
+		},
+		// The run was cut while finish ran: a finish without a result is no finish.
+		{ content: [call("finish", { status: "success" })], outcomes: [{ none: true }] },
+	]);
+	const rec = loadRecording(dir);
+	assert.deepEqual(sentAndSkipped(dir), [
+		[["view"], []],
+		[["move"], ["move", "grip"]],
+		[["grip", "view"], ["move"]],
+		[[], ["finish"]],
+	]);
+	assert.deepEqual(rec.turns[1].blocked, [
+		{ name: "move", reason: NO_RESULT, unfinished: true },
+		{ name: "grip", reason: NO_RESULT, unfinished: true },
+	]);
+	assert.equal(rec.finished, false);
+	// In a recording with pi's times too: the loader looks for the result before it reads the times.
+	const cut = sessionWith([
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 })],
+			outcomes: [{ ms: 4 }, { none: true }],
+			ms: 900,
+		},
+	]);
+	assert.deepEqual(sentAndSkipped(cut), [[["move"], ["grip"]]]);
+	assert.deepEqual(loadRecording(cut).turns[0].blocked, [{ name: "grip", reason: NO_RESULT, unfinished: true }]);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		const b1 = await runBatch(p, t1);
+		const t2 = await p.turn([t1, ...b1.results]);
+		assert.deepEqual(
+			calls(t2).map((c: any) => [c.name, c.arguments]),
+			[["move", { xyz: [1, 0, 0] }]],
+		);
+		// The note does not say such a call never ran: the recording does not tell.
+		assert.ok(
+			text(t2).includes(`replay: skipped move (${NO_RESULT})\nreplay: skipped grip (${NO_RESULT})`),
+			text(t2),
+		);
+		const b2 = await runBatch(p, t2);
+		const t3 = await p.turn([t1, ...b1.results, t2, ...b2.results]);
+		assert.deepEqual(
+			calls(t3).map((c: any) => [c.name, c.arguments]),
+			[
+				["grip", { v: 0 }],
+				["view", {}],
+			],
+		);
+		const b3 = await runBatch(p, t3);
+		const t4 = await p.turn([t1, ...b1.results, t2, ...b2.results, t3, ...b3.results]);
+		assert.equal(calls(t4).length, 0);
+		assert.ok(text(t4).includes(`replay: skipped finish (${NO_RESULT})`), text(t4));
+		assert.match(text(t4), /Replay complete: the recording has no finish/);
+		assert.deepEqual([...b1.sent, ...b2.sent, ...b3.sent], ["view", "move", "grip", "view"]);
+	} finally {
+		p.restore();
+	}
+});
+
+test("in a recording with pi's times, a result without one is read as a call pi answered itself: skipped whatever its text says", async () => {
+	// The approval gate's and the closed-loop gate's refusals, a failed validation and a hook that threw: none is
+	// a text of the replay's list, and none entered its tool.
+	const denied = "move was not approved by the operator: the operator declined this motion. It did not run.";
+	const unknown =
+		"move refused: the last motion (move) has an unknown outcome (the call timed out). Re-observe with view before issuing another motion.";
+	const invalid =
+		'Validation failed for tool "grip":\n  - v: must be number\n\nReceived arguments:\n{\n  "v": "tight"\n}';
+	/** One reply: four calls pi answered itself, a relay that entered its tool and failed with the same words, a grip that ran. */
+	const reply = (ms?: number) => ({
+		content: [
+			call("move", { xyz: [1, 0, 0] }),
+			call("move", { xyz: [2, 0, 0] }),
+			call("grip", { v: "tight" }),
+			call("view", {}),
+			call("relay", { tool: "move" }),
+			call("grip", { v: 1 }),
+		],
+		outcomes: [
+			{ error: denied },
+			{ error: unknown },
+			{ error: invalid },
+			{ error: "fetch failed" },
+			{ error: denied, ms },
+			{ ms },
+		],
+	});
+	const timed = sessionWith([{ ...reply(12), ms: 900 }]);
+	assert.deepEqual(sentAndSkipped(timed), [
+		[
+			["relay", "grip"],
+			["move", "move", "grip", "view"],
+		],
+	]);
+	const turn = loadRecording(timed).turns[0];
+	assert.deepEqual(
+		turn.blocked.map((b) => [b.reason, b.unfinished]),
+		[
+			[denied, undefined],
+			[unknown, undefined],
+			[invalid.replace(/\s+/g, " "), undefined],
+			["fetch failed", undefined],
+		],
+	);
+	assert.deepEqual([turn.calls[0].error, turn.calls[1].error], [denied, undefined]);
+	// A timed result marks the recording by itself, and so does the reply's own time: a recording whose every call
+	// was refused has no timed result.
+	assert.deepEqual(sentAndSkipped(sessionWith([reply(12)])), sentAndSkipped(timed));
+	const refused = { content: [call("move", { xyz: [1, 0, 0] })], outcomes: [{ error: denied }] };
+	assert.deepEqual(sentAndSkipped(sessionWith([{ ...refused, ms: 900 }])), [[[], ["move"]]]);
+	// The times are read for every result, error or not; a result that says nothing still gets a reason.
+	assert.deepEqual(loadRecording(sessionWith([{ content: [call("view", {})], ms: 900 }])).turns[0].blocked, [
+		{ name: "view", reason: "{}" },
+	]);
+	const mute = sessionWith([{ content: [call("view", {})], outcomes: [{ error: " " }], ms: 900 }]);
+	assert.deepEqual(loadRecording(mute).turns[0].blocked, [{ name: "view", reason: "its result says nothing" }]);
+	// A result that is no error and whose content is no list of parts (a recording written by hand) says nothing
+	// either.
+	const bare = sessionWith([
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 }), call("turn", {}), call("view", {})],
+			outcomes: [{ raw: "moved" }, { raw: null }, { raw: undefined }, { raw: [null] }],
+			ms: 900,
+		},
+	]);
+	assert.deepEqual(
+		loadRecording(bare).turns[0].blocked,
+		["move", "grip", "turn", "view"].map((name) => ({ name, reason: "its result says nothing" })),
+	);
+	// A result's text parts are read as one text, a space between them: as a reason, and as a recorded error.
+	const parts = sessionWith([
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 })],
+			outcomes: [
+				{ error: ["move was not approved by the operator:", "too close."] },
+				{ error: ["gripper", "jammed"], ms: 7 },
+			],
+			ms: 900,
+		},
+	]);
+	assert.deepEqual(
+		[loadRecording(parts).turns[0].blocked[0].reason, loadRecording(parts).turns[0].calls[0].error],
+		["move was not approved by the operator: too close.", "gripper jammed"],
+	);
+	// The texts are read in a recording with times too: a listed refusal that a tool raised itself has a time and
+	// is still skipped by its text; a tool that failed with another's refusal is sent. A time of 0 ms is a time.
+	const stray = 'move has no argument "step_m"; it takes xyz, gripper.';
+	const inside = sessionWith([
+		{
+			content: [
+				call("move", { xyz: [1, 0, 0] }),
+				call("move", { xyz: [2, 0, 0], step_m: 0.005 }),
+				call("relay", { tool: "move" }),
+				call("grip", { v: 1 }),
+			],
+			outcomes: [
+				{ error: "operator submitted a terminal verdict; stopping", ms: 3 },
+				{ error: stray, ms: 2 },
+				{ error: stray, ms: 2 },
+				{ ms: 0 },
+			],
+			ms: 900,
+		},
+	]);
+	assert.deepEqual(sentAndSkipped(inside), [
+		[
+			["relay", "grip"],
+			["move", "move"],
+		],
+	]);
+	// A result's 0 ms marks the recording by itself, and a time anywhere on the branch marks every turn of it: the
+	// turns before it and the turns behind it.
+	const zero = {
+		content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 })],
+		outcomes: [{ error: denied }, { ms: 0 }],
+	};
+	assert.deepEqual(sentAndSkipped(sessionWith([zero])), [[["grip"], ["move"]]]);
+	assert.deepEqual(
+		sentAndSkipped(sessionWith([refused, { content: [call("grip", { v: 1 })], outcomes: [{ ms: 5 }] }])),
+		[
+			[[], ["move"]],
+			[["grip"], []],
+		],
+	);
+	assert.deepEqual(
+		sentAndSkipped(sessionWith([{ content: [call("grip", { v: 1 })], outcomes: [{ ms: 5 }] }, refused])),
+		[
+			[["grip"], []],
+			[[], ["move"]],
+		],
+	);
+	// A recording without any time (written by hand, or by a pi that recorded none) is read by the texts alone, as
+	// before: none of these is on the list.
+	assert.deepEqual(sentAndSkipped(sessionWith([reply()])), [[["move", "move", "grip", "view", "relay", "grip"], []]]);
+	assert.deepEqual(sentAndSkipped(sessionWith([refused])), [[["move"], []]]);
+	const p = fakePi({ replay: timed }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		assert.deepEqual(
+			calls(t1).map((c: any) => [c.name, c.arguments]),
+			[
+				["relay", { tool: "move" }],
+				["grip", { v: 1 }],
+			],
+		);
+		assert.ok(text(t1).includes(`replay: skipped move (it never ran in the recording: ${denied})`), text(t1));
+		assert.ok(text(t1).includes("replay: skipped view (it never ran in the recording: fetch failed)"), text(t1));
+	} finally {
+		p.restore();
+	}
+});
+
+test("a call whose arguments did not parse is never sent: pi stored {} for it", () => {
+	const cut = {
+		...call("open", {}),
+		argumentsError: 'Unterminated string in JSON at position 12\n\nReceived arguments:\n{"force": "lo',
+	};
+	const said = `Invalid arguments for tool "open": ${cut.argumentsError}`;
+	// In a recording without times too: the call itself says so.
+	const dir = sessionWith([{ content: [cut, call("view", {})], outcomes: [{ error: said }, {}] }]);
+	assert.deepEqual(sentAndSkipped(dir), [[["view"], ["open"]]]);
+	assert.equal(loadRecording(dir).turns[0].blocked[0].reason, said.replace(/\s+/g, " "));
+	// Whatever its result is: one that is no error, with a list of parts or (written by hand) without one; one with
+	// a time in a recording with times; or none, noted as a call without a result.
+	assert.deepEqual(sentAndSkipped(sessionWith([{ content: [cut, call("view", {})] }])), [[["view"], ["open"]]]);
+	const bare = sessionWith([{ content: [cut, call("view", {})], outcomes: [{ raw: "opened" }, {}] }]);
+	assert.deepEqual(sentAndSkipped(bare), [[["view"], ["open"]]]);
+	assert.equal(loadRecording(bare).turns[0].blocked[0].reason, "its result says nothing");
+	const clocked = { content: [cut, call("view", {})], outcomes: [{ error: said, ms: 3 }, { ms: 3 }], ms: 900 };
+	assert.deepEqual(sentAndSkipped(sessionWith([clocked])), [[["view"], ["open"]]]);
+	assert.deepEqual(loadRecording(sessionWith([{ content: [cut], outcomes: [{ none: true }] }])).turns[0].blocked, [
+		{ name: "open", reason: NO_RESULT, unfinished: true },
+	]);
+});
+
+test("the text of a result that is no error is not read for a call that is sent: a content that is no list of parts does not matter", () => {
+	// A recording written by hand; pi writes a list of parts.
+	const dir = sessionWith([
+		{
+			content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 }), call("view", {})],
+			outcomes: [{ raw: "moved" }, { raw: null }, { raw: undefined }],
+		},
+	]);
+	assert.deepEqual(sentAndSkipped(dir), [[["move", "grip", "view"], []]]);
+});
+
+test("a call's result is its own turn's: a result under its id in another turn is not taken for it", () => {
+	const first = call("move", { xyz: [1, 0, 0] });
+	const again = { ...call("move", { xyz: [2, 0, 0] }), id: first.id };
+	// The first ran; the second, under the same id, was refused.
+	assert.deepEqual(
+		sentAndSkipped(
+			sessionWith([{ content: [first] }, { content: [again], outcomes: [{ error: "The episode is finished." }] }]),
+		),
+		[
+			[["move"], []],
+			[[], ["move"]],
+		],
+	);
+	// The first has no result; the second's is not taken for it.
+	const rec = loadRecording(sessionWith([{ content: [first], outcomes: [{ none: true }] }, { content: [again] }]));
+	assert.deepEqual(
+		rec.turns.map((t) => [t.calls.map((c) => c.arguments), t.blocked.map((b) => b.unfinished)]),
+		[
+			[[], [true]],
+			[[{ xyz: [2, 0, 0] }], []],
+		],
+	);
+	// The second has no result; the first's, a refusal in the turn before, is not taken for it.
+	const late = loadRecording(
+		sessionWith([
+			{ content: [first], outcomes: [{ error: "The episode is finished." }] },
+			{ content: [again], outcomes: [{ none: true }] },
+		]),
+	);
+	assert.deepEqual(
+		late.turns.map((t) => t.blocked.map((b) => [b.reason, b.unfinished])),
+		[[["The episode is finished.", undefined]], [[NO_RESULT, true]]],
+	);
+	// Nor is a result that is not on the leaf's branch: the loader reads the leaf's branch, and on it the call has
+	// no result.
+	const dir = folder();
+	const moved = call("move", { xyz: [4, 0, 0] });
+	const lines = [
+		{ type: "session", version: 3, id: "s", cwd: dir },
+		{ type: "message", id: "u", parentId: null, message: { role: "user", content: "Solve." } },
+		assistant("a", "u", [moved]),
+		{
+			type: "message",
+			id: "r",
+			parentId: "a",
+			message: { role: "toolResult", toolCallId: moved.id, toolName: "move", content: [], isError: false },
+		},
+		{ type: "message", id: "u2", parentId: "a", message: { role: "user", content: "Go on." } },
+	];
+	writeFileSync(join(dir, "2026-01-01T00-00-00-000Z_s.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+	assert.deepEqual(loadRecording(dir).turns[0].blocked, [{ name: "move", reason: NO_RESULT, unfinished: true }]);
+	// An entry a hook wrote before a call's result (the approval gate's as the call was prepared, the closed-loop
+	// gate's as the result came in) sits between a reply and its results: it ends nothing.
+	const gated = folder();
+	const [approved, gripped] = [call("move", { xyz: [5, 0, 0] }), call("grip", { v: 1 })];
+	const result = (id: string, parentId: string, c: { id: string; name: string }, error?: string) => ({
+		type: "message",
+		id,
+		parentId,
+		message: {
+			role: "toolResult",
+			toolCallId: c.id,
+			toolName: c.name,
+			content: [{ type: "text", text: error ?? "{}" }],
+			isError: error !== undefined,
+		},
+	});
+	const between = [
+		{ type: "session", version: 3, id: "s", cwd: gated },
+		{ type: "message", id: "u", parentId: null, message: { role: "user", content: "Solve." } },
+		assistant("a", "u", [approved, gripped]),
+		{ type: "custom", id: "c1", parentId: "a", customType: "approval", data: { decision: "approve" } },
+		result("r1", "c1", approved),
+		{ type: "custom", id: "c2", parentId: "r1", customType: "closed_loop", data: { kind: "unknown_outcome" } },
+		result("r2", "c2", gripped, "robot error: the call timed out"),
+	];
+	writeFileSync(
+		join(gated, "2026-01-01T00-00-00-000Z_s.jsonl"),
+		`${between.map((l) => JSON.stringify(l)).join("\n")}\n`,
+	);
+	assert.deepEqual(
+		loadRecording(gated).turns.map((t) => [t.calls.map((c) => [c.name, c.error]), t.blocked]),
+		[
+			[
+				[
+					["move", undefined],
+					["grip", "robot error: the call timed out"],
+				],
+				[],
+			],
+		],
+	);
+});
+
+test("in a recording without times, a call whose result is an error is also not sent when the last result under its id is a listed refusal", () => {
+	const first = call("move", { xyz: [1, 0, 0] });
+	const again = { ...call("move", { xyz: [2, 0, 0] }), id: first.id };
+	const denied = "move was not approved by the operator: the operator declined this motion. It did not run.";
+	const over = "The episode is finished.";
+	// In a later turn and in the same reply. The note of each call is its own result's.
+	const twice = [
+		{ content: [first], outcomes: [{ error: denied }] },
+		{ content: [again], outcomes: [{ error: over }] },
+	];
+	assert.deepEqual(sentAndSkipped(sessionWith(twice)), [
+		[[], ["move"]],
+		[[], ["move"]],
+	]);
+	assert.deepEqual(
+		loadRecording(sessionWith(twice)).turns.map((t) => t.blocked.map((b) => b.reason)),
+		[[denied], [over]],
+	);
+	assert.deepEqual(
+		sentAndSkipped(sessionWith([{ content: [first, again], outcomes: [{ error: denied }, { error: over }] }])),
+		[[[], ["move", "move"]]],
+	);
+	// Not in a recording with pi's times: there the first call's result has one, so its tool ran and failed.
+	assert.deepEqual(
+		sentAndSkipped(
+			sessionWith([
+				{ content: [first], outcomes: [{ error: denied, ms: 3 }] },
+				{ content: [again], outcomes: [{ error: over }] },
+			]),
+		),
+		[
+			[["move"], []],
+			[[], ["move"]],
+		],
+	);
+	// Nor when the last result under the id is no error, whatever it says.
+	assert.deepEqual(
+		sentAndSkipped(
+			sessionWith([
+				{ content: [first], outcomes: [{ error: "gripper jammed" }] },
+				{ content: [again], outcomes: [{ raw: [{ type: "text", text: over }] }] },
+			]),
+		),
+		[
+			[["move"], []],
+			[["move"], []],
+		],
+	);
+	// The id's last result, not its last error: here a call that ran comes behind the refusal, and the call that
+	// failed before the refusal is sent. And the call's own id, whatever the tool: a refusal of the same tool under
+	// another id does not touch the call, a refusal of another tool under its id does.
+	const failed = { content: [first], outcomes: [{ error: "gripper jammed" }] };
+	const third = { ...call("move", { xyz: [3, 0, 0] }), id: first.id };
+	assert.deepEqual(
+		sentAndSkipped(sessionWith([failed, { content: [again], outcomes: [{ error: over }] }, { content: [third] }])),
+		[
+			[["move"], []],
+			[[], ["move"]],
+			[["move"], []],
+		],
+	);
+	const other = call("move", { xyz: [2, 0, 0] });
+	assert.deepEqual(sentAndSkipped(sessionWith([failed, { content: [other], outcomes: [{ error: over }] }])), [
+		[["move"], []],
+		[[], ["move"]],
+	]);
+	const grip = { ...call("grip", { v: 1 }), id: first.id };
+	assert.deepEqual(sentAndSkipped(sessionWith([twice[0], { content: [grip], outcomes: [{ error: over }] }])), [
+		[[], ["move"]],
+		[[], ["grip"]],
+	]);
+	// The last result's text is read as a call's own is: with white space around it, and a refusal that names a
+	// tool counts for a call of that tool only.
+	const ungranted = (tool: string) => `${tool} is not one of the tools arm gives the planner.`;
+	const under = (name: string) => ({
+		content: [{ ...call(name, {}), id: first.id }],
+		outcomes: [{ error: ungranted(name) }],
+	});
+	assert.deepEqual(
+		[
+			[twice[0], { content: [again], outcomes: [{ error: `  ${over}\n` }] }],
+			[twice[0], under("move")],
+			[failed, under("codemode")],
+		].map((turns) => sentAndSkipped(sessionWith(turns))),
+		[
+			[
+				[[], ["move"]],
+				[[], ["move"]],
+			],
+			[
+				[[], ["move"]],
+				[[], ["move"]],
+			],
+			[
+				[["move"], []],
+				[[], ["codemode"]],
+			],
+		],
+	);
+	// Every call of the id whose result is an error, one that says nothing too, and whatever the id is: here the
+	// empty one of a server that sends none.
+	const bare = [first, again, third].map((c) => ({ ...c, id: "" }));
+	const all = sessionWith([{ content: bare, outcomes: [{ error: "" }, { error: denied }, { error: over }] }]);
+	assert.deepEqual(
+		loadRecording(all).turns[0].blocked.map((b) => b.reason),
+		["its result says nothing", denied, over],
+	);
+});
+
+test("calls of one reply that share an id take that id's results in the order of the calls", () => {
+	// A server whose stream carries no tool-call ids: pi stores "" for every call of the reply and writes their
+	// results under that id, in the order of the calls.
+	const moves = [1, 2, 3].map((x) => ({ ...call("move", { xyz: [x, 0, 0] }), id: "" }));
+	const own = call("grip", { v: 1 });
+	const read = (turn: Parameters<typeof sessionWith>[0][number]) => {
+		const t = loadRecording(sessionWith([turn])).turns[0];
+		return { sent: t.calls.map((c) => [c.arguments.xyz ?? c.name, c.error]), blocked: t.blocked };
+	};
+	// The run was aborted after the first move: the other two have no result, and the first's is not theirs.
+	assert.deepEqual(read({ content: moves, outcomes: [{ ms: 5 }, { none: true }, { none: true }], ms: 900 }), {
+		sent: [[[1, 0, 0], undefined]],
+		blocked: [
+			{ name: "move", reason: NO_RESULT, unfinished: true },
+			{ name: "move", reason: NO_RESULT, unfinished: true },
+		],
+	});
+	// Whatever the shared id is, and behind the reply's own text.
+	for (const id of ["", "call_0"]) {
+		const twins = [1, 2].map((x) => ({ ...call("move", { xyz: [x, 0, 0] }), id }));
+		const content = [{ type: "text", text: "two moves" }, ...twins];
+		assert.deepEqual(read({ content, outcomes: [{ ms: 5 }, { none: true }], ms: 900 }), {
+			sent: [[[1, 0, 0], undefined]],
+			blocked: [{ name: "move", reason: NO_RESULT, unfinished: true }],
+		});
+	}
+	// Each call reads its own result, a call with an id of its own between them too: the first ran, the second
+	// was refused, the third failed inside its tool. With pi's times, and by the texts alone.
+	for (const ms of [5, undefined]) {
+		assert.deepEqual(
+			read({
+				content: [moves[0], moves[1], own, moves[2]],
+				outcomes: [{ ms }, { error: "The episode is finished." }, { ms }, { error: "gripper jammed", ms }],
+			}),
+			{
+				sent: [
+					[[1, 0, 0], undefined],
+					["grip", undefined],
+					[[3, 0, 0], "gripper jammed"],
+				],
+				blocked: [{ name: "move", reason: "The episode is finished." }],
+			},
+		);
+	}
+	// The first was refused with words the list does not hold; the two behind it ran and are sent.
+	const denied = "move was not approved by the operator: the operator declined this motion. It did not run.";
+	assert.deepEqual(read({ content: moves, outcomes: [{ error: denied }, { ms: 5 }, { ms: 5 }], ms: 900 }), {
+		sent: [
+			[[2, 0, 0], undefined],
+			[[3, 0, 0], undefined],
+		],
+		blocked: [{ name: "move", reason: denied }],
+	});
+});
+
+test("the texts of calls that never ran, read in a recording without times: each one whole, with white space around it, after other text and before other text", () => {
+	// [the call's tool, the text, the pattern is tied to the text's start, to its end]
+	const TEXTS: [string, string, boolean, boolean][] = [
+		[
+			"move",
+			"replay stopped (grip failed: jammed; it succeeded in the recording); this recorded call was not sent",
+			true,
+			true,
+		],
+		["move", "Tool execution was blocked", true, true],
+		["move", "Operation aborted", true, true],
+		["nosuch", "Tool nosuch not found", true, true],
+		["move", 'Tool call "move" was not executed: the response hit the output token limit', true, false],
+		["move", "arm is not available.", true, true],
+		["move", "The robot failed: env.step: timed out. The episode is over.", true, true],
+		["move", "The episode is finished.", true, true],
+		["move", "Planner tool_calls budget exhausted; the episode is over.", true, true],
+		["move", "operator submitted a terminal verdict; the run is closing", true, false],
+		["move", "operator aborted this run; finish without further motion", true, false],
+		["move", "refused; request_scene_reset and obtain operator confirmation first", true, false],
+		[
+			"finish",
+			"finish refused: the verifier judged the task NOT complete (the cube is beside the bowl).",
+			true,
+			false,
+		],
+		["move", STALE, false, true],
+		["grep", "file access is disabled: the memory guard has no memory, output dir or cell", true, false],
+		["read", "file access denied: /etc/passwd cannot be named", true, false],
+		["codemode", "codemode is not one of the tools arm gives the planner.", true, true],
+		["move", 'move has no argument "step_m"; it takes xyz, gripper.', true, true],
+	];
+	/** Whether a call of `tool` whose error result says `error` is read as one that never ran. */
+	const skipped = (tool: string, error: string) =>
+		sentAndSkipped(sessionWith([{ content: [call(tool, {})], outcomes: [{ error }] }]))[0][1].length === 1;
+	for (const [tool, said, start, end] of TEXTS) {
+		assert.equal(skipped(tool, said), true, said);
+		assert.equal(skipped(tool, `  ${said}\n`), true, `with white space around it: ${said}`);
+		assert.equal(skipped(tool, `robot error: ${said}`), !start, `after other text: ${said}`);
+		assert.equal(skipped(tool, `${said} (again)`), !end, `before other text: ${said}`);
 	}
 });
