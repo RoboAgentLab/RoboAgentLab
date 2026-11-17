@@ -1200,6 +1200,9 @@ export function units(
 	pi.on("session_start", () =>
 		pi.events.emit(UNITS_EVENT, {
 			...handle,
+			// This session's arms (read above, in the first session_start handler), not the list of the load: the two
+			// differ when the robot gives its arms as a function or reads them from a flag, which pi sets after the load.
+			arms: armNames,
 			vocabulary: vocab(),
 			viewSelect: spec.viewSelect?.() === true,
 			rt: rtOn(),
@@ -1391,13 +1394,13 @@ export function units(
 	registerVerifier({
 		pi,
 		check,
-		arms: armNames,
+		arms: () => armNames,
 		wrist: () => wristView,
 		active: () => mode() !== undefined,
 		verifying,
 		instruction,
 		isClosed: (arm) => closed.get(arm),
-		placement: () => stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase())),
+		placement: (arm) => stages.some((s) => PLACEMENT.includes(s.motion.toUpperCase()) && (!s.arm || s.arm === arm)),
 		liftStep: () => (plugin("variable_step") ? coarse() : spec.stepM),
 		act: actAndSave,
 		replan: () => {

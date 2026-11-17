@@ -734,6 +734,8 @@ export type GumiState = {
 	terminal: readonly string[];
 	/** The VLM operator (./operator.ts), when mounted. */
 	operator?: unknown;
+	/** Why GUMI drives none of this robot's arms, when it does not: two arms that are not named left and right. */
+	unsupported?: string;
 };
 
 /**
@@ -759,6 +761,11 @@ export function gumi(
 	let handle: UnitsHandle | undefined;
 	/** [ARM], or the robot's two arm names. */
 	let arms: readonly string[] = [ARM];
+	/**
+	 * Why GUMI drives none of this robot's arms, else undefined: its two-arm commands (`L:` / `R:`), keys, pads and
+	 * rollout layout name the arms left and right, and the robot's two arms have other names.
+	 */
+	let unsupported: string | undefined;
 	let ctx: ExtensionContext | undefined;
 	let recorder: Recorder | undefined;
 	let latest: Observation | undefined;
@@ -808,6 +815,7 @@ export function gumi(
 		look: handle?.look !== undefined,
 		terminal: handle?.terminal ?? [],
 		...(operator ? { operator: operator.state() } : {}),
+		...(unsupported ? { unsupported } : {}),
 	});
 	const publish = (msg?: string) => {
 		if (msg !== undefined) message = msg;
@@ -816,10 +824,16 @@ export function gumi(
 
 	pi.events.on(UNITS_EVENT, (data) => {
 		handle = data as UnitsHandle;
-		arms = handle.arms.length > 1 ? handle.arms : [ARM];
+		const was = unsupported;
+		unsupported =
+			handle.arms.length > 1 && handle.arms.join() !== DUAL.join()
+				? `GUMI drives two arms named ${DUAL.join(" and ")}, and this robot's are ${handle.arms.join(", ")}`
+				: undefined;
+		// Such a robot is not driven as one arm either: no step, no rollout; the takeover gate and the look stay.
+		arms = handle.arms.length > 1 && !unsupported ? handle.arms : [ARM];
 		closed = Object.fromEntries(arms.map((a) => [a, false]));
-		recorder = root() ? new Recorder(root() as string, arms) : undefined;
-		publish();
+		recorder = root() && !unsupported ? new Recorder(root() as string, arms) : undefined;
+		publish(unsupported ?? (was ? "" : undefined));
 	});
 	// The robot's status (../robot.ts STATUS_EVENT): the task language and LIBERO's success flag.
 	pi.events.on(STATUS_EVENT, (data) => {
@@ -907,7 +921,7 @@ export function gumi(
 			};
 		}
 		if (event.toolName !== handle.tool) return undefined;
-		const parsed = actSteps(event.input, arms, handle.terminal ?? []);
+		const parsed = unsupported ? undefined : actSteps(event.input, arms, handle.terminal ?? []);
 		pending = parsed ? { ...parsed, obs: latest, state: await stateNow(latest), closed: { ...closed } } : undefined;
 		publish();
 		return undefined;
@@ -989,6 +1003,7 @@ export function gumi(
 		 */
 		async step(body: Record<string, unknown>, src: Exclude<Src, "agent"> = "human") {
 			if (!handle || !ctx) throw fail(409, "no robot with action units is up (run the robot with --units)");
+			if (unsupported) throw fail(409, unsupported);
 			const steps = (() => {
 				try {
 					return parseSteps(
@@ -1121,7 +1136,7 @@ export function gumi(
 		},
 		/** start | save (success marked) | discard. */
 		record(action: string, success?: unknown) {
-			if (!recorder) throw fail(409, "recording is off: start pi with --gumi-record <dir>");
+			if (!recorder) throw fail(409, unsupported ?? "recording is off: start pi with --gumi-record <dir>");
 			try {
 				if (action === "start") {
 					const id = (task.robot_task as Record<string, string> | undefined)?.task ?? "0";
@@ -1196,6 +1211,10 @@ export function gumi(
 			const dir = words.find((w, i) => !w.startsWith("--") && (p < 0 || i !== p + 1));
 			if (!dir || !(pause >= 0)) {
 				c.ui.notify(usage, "error");
+				return;
+			}
+			if (unsupported) {
+				c.ui.notify(`gumi-replay: ${unsupported}`, "error");
 				return;
 			}
 			let plan: ReplayStep[];

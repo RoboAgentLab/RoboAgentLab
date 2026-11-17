@@ -85,6 +85,11 @@ methods in `services/PROTOCOL.md` under "Env servers".
 | `flash` | `src/capabilities/flash` | `--model flash/replay` |
 | `services` | `src/infra/model-services.ts` | `--serve-models`: start its model servers itself |
 
+`units.arms` names a two-arm robot's arms for `act`: a list, or a function when they depend on the
+task or on a flag (it is read at each session start, after pi has set the flags). GUMI's teleop and
+the dual fine-tuned prompts drive two arms only when the list is `left`, `right` in that order, and
+say so for any other pair; `act` drives every pair.
+
 `services` lists the model servers the robot attaches to (`SAM3`, `MOLMO`, `pi05("<embodiment>")`
 from `src/infra/model-services.ts`, or the robot's own `ModelService`); each one's `flag` is the endpoint
 flag the robot already reads, so nothing else changes.

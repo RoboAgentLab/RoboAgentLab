@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ground, MOVE_UNITS } from "../src/modes/units/index.ts";
+import { ground, MOVE_UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
 import robosuite, {
 	ARMS,
 	arms,
@@ -45,6 +45,8 @@ function stubPi(values: Record<string, unknown> = {}) {
 	const flags: Record<string, { default?: unknown; description?: string }> = {};
 	const tools = new Map<string, Tool>();
 	const entries: { type: string; data: any }[] = [];
+	/** The last value the robot published on each `pi.events` channel. */
+	const emitted = new Map<string, unknown>();
 	let active: string[] = [];
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -63,7 +65,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 		},
 		getActiveTools: () => active,
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
-		events: { emit: () => {}, on: () => () => {} },
+		events: { emit: (channel: string, data: unknown) => emitted.set(channel, data), on: () => () => {} },
 	} as unknown as ExtensionAPI;
 	const sessionDir = mkdtempSync(join(tmpdir(), "robosuite-"));
 	const ctx = {
@@ -90,7 +92,7 @@ function stubPi(values: Record<string, unknown> = {}) {
 	}
 	const run = async (name: string, params: unknown) =>
 		(await tools.get(name)!.execute("id", params, undefined, undefined, ctx)) as any;
-	return { pi, flags, tools, entries, emit, run, sessionDir, active: () => active };
+	return { pi, flags, tools, entries, emitted, emit, run, sessionDir, active: () => active };
 }
 
 const close = (a: number[], b: number[]) => a.every((x, k) => Math.abs(x - b[k]) < 1e-9);
@@ -675,6 +677,37 @@ test("--code-oracle refuses a tier or task the program was not written for", asy
 	}
 });
 
+test("a two-arm task under --units: the finish check names the arm that still holds, and lifts each open gripper under its arm's name", async (t) => {
+	const env = await fakeRobosuite("TwoArmLift");
+	t.after(env.close);
+	// pi's order: the task is known only once the flags are set, after the load.
+	const late: Record<string, unknown> = {};
+	const s = stubPi(late);
+	robosuite(s.pi);
+	Object.assign(late, {
+		"env-url": env.url,
+		task: "TwoArmLift",
+		units: "true",
+		"units-plugins": "recovery,auto_release,proprioception,plan,mem_text",
+	});
+	await s.emit("session_start");
+	process.exitCode = undefined;
+	const claim = { toolName: "finish", input: { status: "success", summary: "" } };
+	const lifted = () => env.calls.filter((c) => c.method.startsWith("env.move")).map((c) => c.kwargs.arm);
+	// --units-verify auto is on for two arms. Under a placement plan a claim while robot0 holds is refused by name.
+	await s.run("plan", { stages: [{ motion: "PLACE", target: "table", completion: "pot down", arm: "robot0" }] });
+	const grasp = await s.run("act", { unit: "GRASP", arm: "robot0" });
+	await s.emit("tool_result", { toolName: "act", content: grasp.content });
+	const held = await s.emit("tool_call", claim);
+	assert.match(held.reason, /^finish refused: the gripper \(robot0 arm\) is still closed on the object\./);
+	assert.deepEqual(lifted(), []);
+	// Released: the check lifts robot0, then robot1 (this stub has no verifier model: its verdict is not asked for here).
+	await s.run("act", { unit: "RELEASE", arm: "robot0" });
+	await s.emit("tool_call", claim);
+	assert.deepEqual([...new Set(lifted())], [...ARMS]);
+	assert.ok(lifted().indexOf("robot1") > lifted().lastIndexOf("robot0"), "one arm after the other");
+});
+
 test("a two-arm task starts: --task is read at session start, after pi has set the flags", async (t) => {
 	const env = await fakeCodeEnv({}, "TwoArmLift");
 	t.after(env.close);
@@ -695,6 +728,9 @@ test("a two-arm task starts: --task is read at session start, after pi has set t
 	assert.deepEqual(errors, [], "not refused as a one-arm session");
 	assert.ok(s.active().includes("act"));
 	assert.deepEqual(s.tools.get("act")!.parameters.properties.arm.enum, [...ARMS], "act names the arm on two arms");
+	// What the robot publishes for the operator's and the student's side names the same two arms.
+	const published = () => [...(s.emitted.get(UNITS_EVENT) as UnitsHandle).arms];
+	assert.deepEqual(published(), [...ARMS]);
 	// A one-arm task on the same load keeps `act` without `arm`.
 	const one = await fakeCodeEnv({}, "Lift");
 	t.after(one.close);
@@ -702,4 +738,5 @@ test("a two-arm task starts: --task is read at session start, after pi has set t
 	await s.emit("session_start");
 	process.exitCode = undefined;
 	assert.equal(s.tools.get("act")!.parameters.properties.arm, undefined);
+	assert.deepEqual(published(), []);
 });

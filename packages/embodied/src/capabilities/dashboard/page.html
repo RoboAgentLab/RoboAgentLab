@@ -514,15 +514,17 @@ function renderGumi(g) {
     $("opRun").disabled = O.mode === "continuous";
     $("opStatus").textContent = [O.model, O.status, `${O.executed} steps`, O.lastDecision ? `${O.lastDecision.phase}: ${O.lastDecision.command || "-"} (${O.lastDecision.confidence})` : ""].filter(Boolean).join(" · ");
   }
-  $("tpStatus").textContent = [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()].filter(Boolean).join(" · ");
+  $("tpStatus").textContent = (G.unsupported
+    ? [G.unsupported, G.message === G.unsupported ? "" : G.message, G.last ? `last: ${G.last}` : ""]
+    : [G.message, G.last ? `last: ${G.last}` : "", dual() ? T.helpDual : T.help, turnHelp()]).filter(Boolean).join(" · ");
   const terminal = G.terminal ?? [];
-  const key = G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {}) + "|" + terminal.join() + "|" + G.look;
+  const key = (G.unsupported ?? "") + "|" + G.arms.join() + "|" + G.vocabulary.join() + "|" + JSON.stringify(G.keys ?? {}) + "|" + terminal.join() + "|" + G.look;
   if (key === padsKey) return;
   padsKey = key;
   // The arm's STOP holds one step and returns the view: the pad calls it Look. A robot's own STOP that ends
   // the episode (`terminal`) is labelled as itself; its look (the vocabulary's observe) is a separate button.
-  const stopLooks = G.vocabulary.includes("STOP") && !terminal.includes("STOP");
-  $("tpPads").replaceChildren(...G.arms.map((arm) => {
+  const stopLooks = !G.unsupported && G.vocabulary.includes("STOP") && !terminal.includes("STOP");
+  $("tpPads").replaceChildren(...(G.unsupported ? [] : G.arms).map((arm) => {
     const pad = el("div", "pad"); pad.append(el("b", "", T.arms[arm] ?? arm));
     for (const unit of G.vocabulary.filter((u) => u !== "DONE" && (u !== "STILL" || dual()))) {
       const code = keyOf(arm, unit);
@@ -588,7 +590,7 @@ $("tpSave").onclick = () => gumiPost("/gumi/record", { action: "save", success: 
 $("tpDiscard").onclick = () => { if (confirm(T.confirmDiscard)) gumiPost("/gumi/record", { action: "discard" }); };
 const typing = (e) => ["INPUT", "TEXTAREA"].includes(e.target?.tagName) && e.target.type !== "checkbox";
 document.addEventListener("keydown", (e) => {
-  if (e.repeat || typing(e) || !$("tpKeys").checked || !G?.available || e.metaKey || e.altKey) return;
+  if (e.repeat || typing(e) || !$("tpKeys").checked || !G?.available || G.unsupported || e.metaKey || e.altKey) return;
   if (e.ctrlKey && !e.code.startsWith("Control")) return;
   let hit = G.keys?.[e.code];
   if (!dual() && e.code === "Space") hit = [G.arms[0], G.closed[G.arms[0]] ? "RELEASE" : "GRASP"];

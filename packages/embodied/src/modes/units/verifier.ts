@@ -58,7 +58,11 @@ export type VerifierDeps = {
 	pi: ExtensionAPI;
 	/** Updated in place. */
 	check: VerifierState;
-	arms: readonly string[];
+	/**
+	 * The session's arm names ([] on one arm), read at each finish check: a robot may know them only once a
+	 * session starts.
+	 */
+	arms: () => readonly string[];
 	/** The robot configuration has a wrist view (the images the verifier judges). */
 	wrist: () => boolean;
 	/** Units mode is on (--units). */
@@ -69,8 +73,11 @@ export type VerifierDeps = {
 	instruction: () => string;
 	/** Whether the arm's gripper was commanded closed ("" = the single arm). */
 	isClosed: (arm: string) => boolean | undefined;
-	/** The plan has a PLACE, RELEASE or RETREAT stage (the task is a placement). */
-	placement: () => boolean;
+	/**
+	 * The plan has a PLACE, RELEASE or RETREAT stage of this arm, or of no named arm: a placement for the arm
+	 * ("" = the single arm).
+	 */
+	placement: (arm: string) => boolean;
 	/** The MV_UP step of the retreat lift, m. */
 	liftStep: () => number;
 	/** `act` with its state entry. */
@@ -90,7 +97,7 @@ export type VerifierDeps = {
 
 /** Register the verifier's handlers: the latest camera images (`tool_result`) and the finish check (`tool_call`). */
 export function registerVerifier(d: VerifierDeps) {
-	const { pi, check, arms: armNames } = d;
+	const { pi, check } = d;
 
 	// The verifier judges the latest camera images: the newest robot tool result that carries any
 	// (`point`'s marked image is not a camera view).
@@ -106,7 +113,7 @@ export function registerVerifier(d: VerifierDeps) {
 	 * one arm after the other; the last result's images become the verifier's view. A refused or
 	 * blocked lift is recorded and the check runs on the images at hand.
 	 */
-	async function retreat(signal: AbortSignal | undefined) {
+	async function retreat(signal: AbortSignal | undefined, armNames: readonly string[]) {
 		const log: Record<string, unknown>[] = [];
 		if (d.retreats?.() === false) return [{ skipped: "the robot's own vocabulary: no gripper to lift" }];
 		for (const arm of armNames.length ? armNames : [undefined]) {
@@ -143,11 +150,13 @@ export function registerVerifier(d: VerifierDeps) {
 		if (event.toolName !== "finish" || !d.active() || !d.verifying()) return undefined;
 		const status = (event.input as { status?: unknown }).status;
 		if (status !== undefined && status !== "success") return undefined;
+		// One reading of the arms for the whole check: the holding test, the lifts and the prompt agree.
+		const armNames = d.arms();
 		// Stage discipline (Show-Harness subgoal): a placement is done only after PLACE -> RELEASE ->
-		// RETREAT, so a success claim while still holding is refused (not the verifier's replan).
-		const holding = (armNames.length ? armNames : [""]).filter((a) => d.isClosed(a));
-		const placement = d.placement();
-		if (placement && holding.length && check.holdRefusals < MAX_HOLD_REFUSALS) {
+		// RETREAT, so a success claim while the arm that places still holds is refused (not the verifier's
+		// replan). An arm may hold when every placement stage names another arm: a hand-over's receiver does.
+		const holding = (armNames.length ? armNames : [""]).filter((a) => d.isClosed(a) && d.placement(a));
+		if (holding.length && check.holdRefusals < MAX_HOLD_REFUSALS) {
 			check.holdRefusals++;
 			pi.appendEntry(VERIFY_ENTRY, {
 				status,
@@ -163,7 +172,7 @@ export function registerVerifier(d: VerifierDeps) {
 			};
 		}
 		const entry: Record<string, unknown> = { status, replans: check.replans };
-		entry.retreat = await retreat(ctx.signal);
+		entry.retreat = await retreat(ctx.signal, armNames);
 		entry.cameras = check.images.length;
 		let refuse = false;
 		let failed = false;
