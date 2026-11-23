@@ -88,7 +88,7 @@ describe("responseId E2E Tests", () => {
 	});
 
 	describe.skipIf(!process.env.MISTRAL_API_KEY)("Mistral Provider", () => {
-		const llm = getModel("mistral", "devstral-medium-latest");
+		const llm = getModel("mistral", "ministral-14b-latest");
 
 		it("should expose responseId", { retry: 3, timeout: 30000 }, async () => {
 			await expectResponseId(llm);
