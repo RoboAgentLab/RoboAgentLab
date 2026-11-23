@@ -13,6 +13,15 @@
  * the replay ends; a recording without `finish` ends with a text turn, and the robot reports the
  * episode at shutdown.
  *
+ * pi sends the session's id with every request of the session's own loop, and marks its one-off
+ * summaries as not to be cached. A recorded turn is given only to a request that carries that id
+ * and not that mark; any other request to this model gets an error and leaves the replay where it
+ * is. A replay runs no model, so a check that asks the session's model when no other is named for
+ * it (the units verifier, a reviewed approval, VDM, an attachment check) gets that error unless one
+ * is named: `--aux-model` for any of them; for one alone the deployment's `aux.verify`, `aux.vdm`
+ * or `aux.attach`, or `--approval-model`. The dashboard's model check and pi's own summaries always
+ * ask the session's model: under a replay they get that error.
+ *
  * The calls are verbatim: results of this run never change them. Calls that never ran in the
  * recording are skipped with a note: those pi answered without entering their tool (a refusal by
  * the robot base, the operator, ../gumi or any other extension's hook, arguments that did not parse
@@ -135,6 +144,14 @@ const NO_RESULT = "the recording holds no result for it";
  */
 const neverEntered = (c: ToolCall, r: ToolResultMessage, timed: boolean) =>
 	c.argumentsError !== undefined || (timed && typeof r.durationMs !== "number");
+
+/**
+ * What a request gets that is not a turn of the session's own loop, as an error. The asker puts it behind a colon
+ * or inside parentheses in a message of its own, so it has no full stop; and it holds no word that pi's retry, or the
+ * fallback planner by default (../../planner/fallback.ts), takes for a failure worth another try or another model.
+ */
+const NOT_A_TURN =
+	"replay/session replays recorded turns and answers no other request; --aux-model names a model for the checks that take one";
 
 /** The custom entry recording which session this run replays. */
 export const REPLAY_ENTRY = "replay_source";
@@ -270,6 +287,8 @@ export default function replay(pi: ExtensionAPI) {
 	let started = false;
 	let over = false;
 	let hasUI = false;
+	/** The session's id, which pi sends with every request of the session's own loop. */
+	let session: string | undefined;
 	let emitted: { id: string; name: string; recorded?: string }[] = [];
 	/** Why the replay stopped inside the current batch: its first call whose outcome diverged from the recording. */
 	let halt: string | undefined;
@@ -282,6 +301,7 @@ export default function replay(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		hasUI = ctx.hasUI;
+		session = ctx.sessionManager.getSessionId();
 		cursor = ids = 0;
 		started = over = false;
 		emitted = [];
@@ -434,6 +454,16 @@ export default function replay(pi: ExtensionAPI) {
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		// Not the session's own loop asking for its next turn: answered with an error, before anything of the replay
+		// is read or changed. pi marks its one-off summaries with cacheRetention "none", the bug report's included,
+		// which carries the session's id.
+		if (session === undefined || options?.sessionId !== session || options?.cacheRetention === "none") {
+			message.stopReason = "error";
+			message.errorMessage = NOT_A_TURN;
+			stream.push({ type: "error", reason: "error", error: message });
+			stream.end();
+			return stream;
+		}
 		if (options?.signal?.aborted) {
 			if (started) over = true;
 			message.stopReason = "aborted";
