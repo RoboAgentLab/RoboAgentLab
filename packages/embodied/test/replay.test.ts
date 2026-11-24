@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import replay, { loadRecording, REPLAY_ENTRY, taskDiff } from "../src/capabilities/replay/index.ts";
+import { RELAY_ERRORS } from "../src/planner/fallback.ts";
 import { strayArguments, strayRefusal } from "../src/primitives/arguments.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 
@@ -102,12 +104,17 @@ function recordSession(finish = true) {
 	return dir;
 }
 
+/** The stub's first session id. pi sends a session's id with every request of that session's own loop. */
+const SESSION = "session-1";
+
 /** `gate`: another extension's tool_call handler, loaded before the replay (the robot's gate). */
 function fakePi(flags: Record<string, unknown>, task: Record<string, string>, gate?: Handler) {
 	flags = deployFlags(flags);
 	const handlers = new Map<string, Handler[]>();
 	const entries: { type: string; data: any }[] = [];
 	const stderr: string[] = [];
+	/** The id of the session the stub is in: a test moves it on for a new session. */
+	const session = { id: SESSION };
 	let provider: any;
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
@@ -123,7 +130,10 @@ function fakePi(flags: Record<string, unknown>, task: Record<string, string>, ga
 		cwd: "/",
 		model: { provider: "replay", id: "session" },
 		ui: { notify: () => {} },
-		sessionManager: { getBranch: () => [{ type: "custom", customType: "robot_task", data: task }] },
+		sessionManager: {
+			getBranch: () => [{ type: "custom", customType: "robot_task", data: task }],
+			getSessionId: () => session.id,
+		},
 	};
 	/** Run `name`'s handlers; the first defined handler result. */
 	const emit = async (name: string, event: Record<string, unknown> = {}) => {
@@ -136,12 +146,30 @@ function fakePi(flags: Record<string, unknown>, task: Record<string, string>, ga
 	if (gate) handlers.set("tool_call", [gate]);
 	replay(pi);
 	const model = provider.getModels()[0];
-	/** One model turn over `messages`, as pi's agent loop asks for it. */
+	/** One model turn over `messages`, as pi's agent loop asks for it: with the session's id. */
 	const turn = (messages: unknown[] = [], signal?: AbortSignal) =>
-		provider.streamSimple(model, { messages }, { signal }).result();
+		provider.streamSimple(model, { messages }, { signal, sessionId: session.id }).result();
+	/**
+	 * A request that is not the loop's, as ctx.modelRegistry.streamSimple hands one over (the dashboard's model check,
+	 * a question to a VLM): one user message unless `messages` is given, and no session id unless `options` holds one.
+	 */
+	const ask = (options: Record<string, unknown> = {}, messages?: unknown[]) =>
+		provider.streamSimple(
+			model,
+			{ messages: messages ?? [{ role: "user", content: "Reply with the single word OK.", timestamp: 0 }] },
+			{ maxTokens: 1, ...options },
+		);
+	/** The answer to such a request. */
+	const side = (options: Record<string, unknown> = {}, messages?: unknown[]) => ask(options, messages).result();
+	/** The answer to one from a caller that passes no options at all. */
+	const bare = () => provider.streamSimple(model, { messages: [] }).result();
 	return {
 		emit,
 		turn,
+		ask,
+		side,
+		bare,
+		session,
 		entries,
 		stderr,
 		model,
@@ -753,6 +781,385 @@ test("a call that failed in the recording but succeeds now stops the replay", as
 		assert.equal(calls(t2).length, 0);
 		assert.match(text(t2), /grip succeeded; it failed in the recording \(gripper jammed\)/);
 		assert.match(text(t2), /Replay stopped/);
+	} finally {
+		p.restore();
+	}
+});
+
+/** What a request gets that is not a turn of the session's own loop. */
+const NOT_A_TURN =
+	"replay/session replays recorded turns and answers no other request; --aux-model names a model for the checks that take one";
+/**
+ * `m` is that answer: an error of the replay's own model, with nothing of the recording and nothing of the replay's
+ * own report.
+ */
+function assertNotATurn(m: any) {
+	assert.equal(m.stopReason, "error");
+	assert.equal(m.errorMessage, NOT_A_TURN);
+	assert.deepEqual(m.content, []);
+	assert.deepEqual([m.api, m.provider, m.model], ["replay", "replay", "session"]);
+	assert.equal(m.usage.totalTokens, 0);
+}
+/** One call of a sequential batch as pi runs it: its hook, `during` while it runs, then its end; `error` fails it. */
+async function runCall(p: ReturnType<typeof fakePi>, c: any, error?: string, during?: () => Promise<unknown>) {
+	const blocked = await p.emit("tool_call", { toolCallId: c.id, toolName: c.name, input: c.arguments });
+	if (!blocked?.block) await during?.();
+	const said = blocked?.block ? (blocked.reason ?? "blocked") : (error ?? "{}");
+	await p.emit("tool_execution_end", {
+		toolCallId: c.id,
+		toolName: c.name,
+		result: { content: [{ type: "text", text: said }] },
+		isError: blocked?.block === true || error !== undefined,
+	});
+	return said;
+}
+const twoTurns = () =>
+	sessionOf([
+		{ content: [call("move", { xyz: [1, 0, 0] }), call("grip", { v: 1 })] },
+		{ content: [{ type: "text", text: "two at once" }, call("move", { xyz: [2, 0, 0] }), call("finish", {})] },
+	]);
+
+test("a request that is not the session's turn, before the first turn: the replay has not started and its first turn is whole", async () => {
+	const p = fakePi({ replay: recordSession() }, { robot: "arm", task: "3", seed: "7" });
+	try {
+		await p.emit("session_start");
+		assertNotATurn(await p.side());
+		assert.equal(p.entries.length, 0);
+		assert.equal(p.stderr.length, 0);
+		// The warning of a task that differs belongs to the replay's start: a request before it does not skip it.
+		await p.emit("before_agent_start");
+		assert.ok(p.stderr.some((l) => /differs from the recorded robot_task: seed: 1 -> 7/.test(l)));
+		assertNotATurn(await p.side());
+		const t1 = await p.turn();
+		assert.deepEqual(
+			calls(t1).map((c: any) => [c.id, c.name]),
+			[["replay_1", "view"]],
+		);
+		assert.match(text(t1), /^replay: 7 recorded turns from /);
+		assert.deepEqual(
+			p.entries.map((e) => e.type),
+			[REPLAY_ENTRY],
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+/**
+ * What the replay takes for no turn of its session: a request without an id, under another id, or with pi's mark on
+ * a one-off summary under the session's id. Each one as it is, and with a signal that is aborted when it arrives.
+ */
+const NOT_TURNS = Object.entries<Record<string, unknown>>({
+	"without an id": {},
+	"under another id": { sessionId: "0193e1c0-0000-7000-8000-000000000000" },
+	"as a one-off summary under the session's id": { sessionId: SESSION, cacheRetention: "none" },
+}).flatMap(([kind, options]): [string, Record<string, unknown>][] => [
+	[kind, options],
+	[`${kind}, arriving aborted`, { ...options, signal: AbortSignal.abort() }],
+]);
+for (const [kind, options] of NOT_TURNS) {
+	test(`a request that is not the session's turn (${kind}) leaves the replay as it is: before the first turn, while a call of a batch runs and behind it; the call's divergence still withholds the rest and stops the replay`, async () => {
+		const p = fakePi({ replay: twoTurns() }, {});
+		try {
+			await p.emit("session_start");
+			assertNotATurn(await p.side(options));
+			assert.equal(p.entries.length, 0);
+			assert.equal(p.stderr.length, 0);
+			// The replay starts with the session's own first turn: its opening note, its entry, the recording's first calls.
+			const t1 = await p.turn();
+			assert.match(text(t1), /^replay: 2 recorded turns from /);
+			assert.deepEqual(
+				p.entries.map((e) => e.type),
+				[REPLAY_ENTRY],
+			);
+			const [move, grip] = calls(t1);
+			assert.deepEqual(
+				[move, grip].map((c: any) => [c.id, c.name]),
+				[
+					["replay_1", "move"],
+					["replay_2", "grip"],
+				],
+			);
+			// A request while the move runs; the move then fails where the recording's succeeded.
+			const failed = "robot error: IK failed";
+			await runCall(p, move, failed, async () => assertNotATurn(await p.side(options)));
+			// One more request once the call has ended, before the next call is prepared. Its transcript is like the
+			// loop's (the prompt, the replay's own turn, the move's result): the transcript is not read.
+			const prompt = { role: "user", content: "Replay the session.", timestamp: 0 };
+			assertNotATurn(await p.side(options, [prompt, t1, results(t1, { move: failed })[0]]));
+			// Nor does one that brings a result for both calls before the second has run undo the stop.
+			assertNotATurn(await p.side(options, [prompt, t1, ...results(t1, { move: failed })]));
+			const withheld = `replay stopped (move failed: ${failed}; it succeeded in the recording); this recorded call was not sent`;
+			assert.equal(await runCall(p, grip), withheld);
+			// And one with the very transcript the session's next request brings.
+			const next = [prompt, t1, ...results(t1, { move: failed, grip: withheld })];
+			assertNotATurn(await p.side(options, next));
+			const t2 = await p.turn(next);
+			assert.deepEqual(calls(t2), []);
+			assert.deepEqual(text(t2).split("\n"), [
+				`replay: move failed: ${failed}; it succeeded in the recording`,
+				"replay: grip not sent",
+				"Replay stopped: a call's outcome diverged from the recording's; no further recorded motion is sent (1 of 2 turns replayed).",
+			]);
+			// The replay printed its opening note and these two and wrote its one entry: nothing for the other requests.
+			assert.equal(p.stderr.length, 3);
+			assert.deepEqual(
+				p.entries.map((e) => e.type),
+				[REPLAY_ENTRY],
+			);
+		} finally {
+			p.restore();
+		}
+	});
+}
+
+test("a request that is not the session's turn, between two turns: the next turn is the recording's next, with the notes of the turn before", async () => {
+	const dir = sessionOf([
+		{ content: [call("grip", { v: 1 })], errors: { grip: "gripper jammed" } },
+		{ content: [{ type: "text", text: "two at once" }, call("move", { xyz: [2, 0, 0] })] },
+		{ content: [call("finish", {})] },
+	]);
+	const p = fakePi({ replay: dir }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		const history = [t1, ...results(t1, { grip: "gripper jammed" })];
+		// The request brings the transcript of the session's next one.
+		assertNotATurn(await p.side({}, history));
+		// The grip failed as in the recording: the session's next turn says so, not the other request's answer.
+		const t2 = await p.turn(history);
+		assert.deepEqual(
+			calls(t2).map((c: any) => [c.id, c.name, c.arguments]),
+			[["replay_2", "move", { xyz: [2, 0, 0] }]],
+		);
+		assert.deepEqual(text(t2).split("\n"), [
+			"replay: grip failed, as in the recording: gripper jammed; continuing",
+			"two at once",
+		]);
+		// A call that diverged still stops the replay at the session's next turn.
+		assertNotATurn(await p.side());
+		const t3 = await p.turn([...history, t2, ...results(t2, { move: "robot error: IK failed" })]);
+		assert.deepEqual(calls(t3), []);
+		assert.match(
+			text(t3),
+			/^replay: move failed: robot error: IK failed; it succeeded in the recording\nReplay stopped: /,
+		);
+		assert.match(text(t3), /\(2 of 3 turns replayed\)\.$/);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a request that is not the session's turn gets the same answer before a session starts, before the replay's first turn, between turns and once the replay is over", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		// No session yet: no request is a session's turn, of whatever kind, with or without options.
+		for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+		assertNotATurn(await p.bare());
+		assertNotATurn(await p.turn());
+		await p.emit("session_start");
+		assertNotATurn(await p.side());
+		const t1 = await p.turn();
+		assert.deepEqual(
+			calls(t1).map((c: any) => [c.id, c.name]),
+			[
+				["replay_1", "move"],
+				["replay_2", "grip"],
+			],
+		);
+		assertNotATurn(await p.side());
+		assertNotATurn(await p.bare());
+		const t2 = await p.turn([t1, ...results(t1)]);
+		assert.deepEqual(
+			calls(t2).map((c: any) => [c.id, c.name]),
+			[
+				["replay_3", "move"],
+				["replay_4", "finish"],
+			],
+		);
+		await p.turn([t1, ...results(t1), t2, ...results(t2)]);
+		await p.emit("agent_end");
+		for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+		assertNotATurn(await p.bare());
+		assert.deepEqual(
+			p.entries.map((e) => e.type),
+			[REPLAY_ENTRY],
+		);
+		// The session's own request after the end is still told that the replay ran.
+		assert.match(text(await p.turn()), /already ran/);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a request that is not the session's turn, once a run has ended with calls in flight, prints and writes nothing and leaves them remembered", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		await p.turn();
+		await p.emit("agent_end");
+		const printed = p.stderr.length;
+		for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+		assert.equal(p.stderr.length, printed);
+		assert.deepEqual(
+			p.entries.map((e) => e.type),
+			[REPLAY_ENTRY],
+		);
+		assert.deepEqual(text(await p.turn()).split("\n"), [
+			"replay: move: no result; continuing",
+			"replay: grip: no result; continuing",
+			"The replay already ran in this session.",
+		]);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a request under another id is not the session's turn, nor is a one-off summary pi sends under the session's id", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		// pi's compaction and branch summaries send a fresh id each; its bug-report summary sends the session's.
+		// pi marks them all as not to be cached.
+		const other = { sessionId: "0193e1c0-0000-7000-8000-000000000000" };
+		const summary = { sessionId: SESSION, cacheRetention: "none" };
+		assertNotATurn(await p.side(other));
+		assertNotATurn(await p.side(summary));
+		const t1 = await p.turn();
+		assertNotATurn(await p.side(other));
+		assertNotATurn(await p.side(summary));
+		// pi's compaction and branch summaries carry both, an id of their own and the mark; nor does the mark need an id.
+		assertNotATurn(await p.side({ ...other, cacheRetention: "none" }));
+		assertNotATurn(await p.side({ cacheRetention: "none" }));
+		// A request of the session's own loop is its turn whatever else it carries: here a retention that is not the mark.
+		// It brings the move's result alone, and the turn says so before the recording's text.
+		const t2 = await p.side({ sessionId: SESSION, cacheRetention: "long" }, [t1, results(t1)[0]]);
+		assert.deepEqual(text(t2).split("\n"), ["replay: grip: no result; continuing", "two at once"]);
+		assert.deepEqual(
+			[t1, t2].map((m) => calls(m).map((c: any) => c.id)),
+			[
+				["replay_1", "replay_2"],
+				["replay_3", "replay_4"],
+			],
+		);
+		// So is one with yet another retention. This one brings no result of the two calls in flight, and the replay
+		// notes that before it closes.
+		assert.deepEqual(text(await p.side({ sessionId: SESSION, cacheRetention: "short" })).split("\n"), [
+			"replay: move: no result; continuing",
+			"replay: finish: no result; continuing",
+			"Replay complete: all recorded turns were replayed.",
+		]);
+		// A new session has an id of its own: a request under the one before is not its turn.
+		p.session.id = "session-2";
+		await p.emit("session_start");
+		assertNotATurn(await p.side({ sessionId: SESSION }));
+		assert.deepEqual(
+			calls(await p.turn()).map((c: any) => c.id),
+			["replay_1", "replay_2"],
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+test("a request that is not the session's turn and arrives aborted does not end the replay", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		const t1 = await p.turn();
+		const gone = new AbortController();
+		gone.abort();
+		assertNotATurn(await p.side({ signal: gone.signal }));
+		for (const [kind, options] of NOT_TURNS) if (kind.endsWith("aborted")) assertNotATurn(await p.side(options));
+		assert.deepEqual(
+			calls(await p.turn([t1, ...results(t1)])).map((c: any) => [c.id, c.name]),
+			[
+				["replay_3", "move"],
+				["replay_4", "finish"],
+			],
+		);
+	} finally {
+		p.restore();
+	}
+});
+
+test("the answer to a request that is not the session's turn is no error pi sends again, and none the fallback planner by default changes models for", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		const m = await p.side();
+		assertNotATurn(m);
+		// pi sends a request again after an error it takes for a passing one, and after one it takes for a full context.
+		assert.equal(isRetryableAssistantError(m), false);
+		assert.equal(isContextOverflow(m, p.model.contextWindow), false);
+		assert.doesNotMatch(m.errorMessage, RELAY_ERRORS);
+	} finally {
+		p.restore();
+	}
+});
+
+test("the answer to a request that is not the session's turn reaches its asker as one error event", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		const stream = p.ask();
+		const events: any[] = [];
+		for await (const event of stream) events.push(event);
+		assert.deepEqual(
+			events.map((e) => [e.type, e.reason]),
+			[["error", "error"]],
+		);
+		assertNotATurn(events[0].error);
+		assert.equal(await stream.result(), events[0].error);
+		// A caller that passes no options at all gets the same answer.
+		assertNotATurn(await p.bare());
+	} finally {
+		p.restore();
+	}
+});
+
+test("a request that is not the session's turn gets the same answer when there is nothing to replay, and the session's own turn still says why, in a later session too", async () => {
+	for (const [flags, why] of [
+		[{}, /^no --replay session given/],
+		[{ replay: join(folder(), "gone.jsonl") }, /^cannot read --replay /],
+	] as const) {
+		const p = fakePi(flags, {});
+		try {
+			await p.emit("session_start");
+			for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+			const m = await p.turn();
+			assert.equal(m.stopReason, "stop");
+			assert.match(text(m), why);
+			p.session.id = "session-2";
+			await p.emit("session_start");
+			for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+			assert.match(text(await p.turn()), why);
+		} finally {
+			p.restore();
+		}
+	}
+});
+
+test("an id that only resembles the session's is another id, and a one-off summary is told by its mark alone", async () => {
+	const p = fakePi({ replay: twoTurns() }, {});
+	try {
+		await p.emit("session_start");
+		for (const sessionId of [
+			`${SESSION}0`,
+			SESSION.toUpperCase(),
+			SESSION.slice(0, -1),
+			SESSION.slice(1),
+			` ${SESSION}`,
+			`${SESSION} `,
+			"",
+		])
+			assertNotATurn(await p.side({ sessionId }));
+		// The stub's other requests set a token limit; pi's mark counts without one.
+		assertNotATurn(await p.side({ sessionId: SESSION, cacheRetention: "none", maxTokens: undefined }));
+		assert.deepEqual(
+			calls(await p.turn()).map((c: any) => c.id),
+			["replay_1", "replay_2"],
+		);
 	} finally {
 		p.restore();
 	}

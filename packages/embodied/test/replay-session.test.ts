@@ -1,6 +1,7 @@
 // The replay extension as the planner of a real pi session (pi's agent loop, extension runner and tools), over the
-// robot base with a toy robot on robosuite's manifest: what a recorded turn does when its calls end as recorded, and
-// when one does not; and which calls of a session pi itself recorded reach the robot again.
+// robot base with a toy robot (on robosuite's manifest, or in units mode): what a recorded turn does when its calls
+// end as recorded, and when one does not; which calls of a session pi itself recorded reach the robot again; and what
+// a request to the replay's model gets that is not a turn of the session's own loop.
 
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -13,13 +14,18 @@ import {
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionAPI,
+	type ExtensionContext,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import replay, { loadRecording } from "../src/capabilities/replay/index.ts";
-import { defineRobot } from "../src/robot.ts";
+import replay, { loadRecording, REPLAY_ENTRY } from "../src/capabilities/replay/index.ts";
+import { llmCheck } from "../src/infra/check.ts";
+import { auxModel } from "../src/infra/config.ts";
+import type { UnitsSpec } from "../src/modes/units/index.ts";
+import { askVlm } from "../src/modes/units/vlm.ts";
+import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
 import { useDeployment } from "./helpers/deployment.ts";
 
 const FINISH = {
@@ -39,20 +45,22 @@ const finish: Recorded = { name: "finish", arguments: { status: "success", summa
 const IK = "robot error: IK failed";
 const TAKES = "it takes xyz, quat_xyzw, rotvec, gripper, tol_m, max_steps.";
 
-/** A recorded session of `turns` (each a batch of calls with their results), as pi writes one. */
-function record(dir: string, turns: Recorded[][]) {
-	const lines: unknown[] = [
-		{ type: "session", version: 3, id: "s", cwd: dir },
-		{ type: "message", id: "u", parentId: null, message: { role: "user", content: "Solve." } },
-	];
+type RecordedTurn = Recorded[] | { text: string; calls: Recorded[] };
+/**
+ * A recorded session of `turns` (each a batch of calls with their results, and the reply's text when given), as pi
+ * writes one; `task` is its robot_task entry.
+ */
+function record(dir: string, turns: RecordedTurn[], task?: object) {
+	const lines: unknown[] = [{ type: "session", version: 3, id: "s", cwd: dir }];
+	if (task) lines.push({ type: "custom", id: "t", parentId: null, customType: "robot_task", data: task });
+	lines.push({ type: "message", id: "u", parentId: task ? "t" : null, message: { role: "user", content: "Solve." } });
 	let leaf = "u";
-	turns.forEach((calls, i) => {
-		const content = calls.map((c, k) => ({
-			type: "toolCall",
-			id: `rec_${i}_${k}`,
-			name: c.name,
-			arguments: c.arguments,
-		}));
+	turns.forEach((turn, i) => {
+		const calls = Array.isArray(turn) ? turn : turn.calls;
+		const content = [
+			...(Array.isArray(turn) ? [] : [{ type: "text", text: turn.text }]),
+			...calls.map((c, k) => ({ type: "toolCall", id: `rec_${i}_${k}`, name: c.name, arguments: c.arguments })),
+		];
 		lines.push({
 			type: "message",
 			id: `a${i}`,
@@ -83,39 +91,85 @@ function record(dir: string, turns: Recorded[][]) {
 
 type Session = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
-/** The toy robot; `reached` gets every call its move_to ran. */
-const toy = (reached: unknown[]) => (pi: ExtensionAPI) => {
-	const r = defineRobot(pi, {
-		name: "toy",
-		task: [],
-		keepImages: 1,
-		manifest: "robosuite",
-		vars: () => ({ arms: [] }),
-		start: async () => ["move_to", "finish"],
-		result: () => ({}),
-		status: () => ({ step: 0 }),
-		finish: FINISH,
-	});
-	r.primitive("move_to", async (p: { xyz: number[] }) => {
-		reached.push(p);
-		if (p.xyz[0] === 9) throw new Error(IK);
-		return { content: [{ type: "text", text: "moved" }], details: {} };
-	});
+/** A 1x1 PNG, for a tool that returns a camera view. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+/** What the toy's check_attached fails with when a test makes it fail. */
+const NO_FRAMES = "robot error: the frames could not be rendered";
+/** What a question to a VLM came back with: the reply's text, or the error askVlm raised for an error reply. */
+const said = async (ask: () => Promise<{ text: string }>) => {
+	try {
+		return (await ask()).text;
+	} catch (err) {
+		return `error: ${err instanceof Error ? err.message : String(err)}`;
+	}
 };
 
 /**
- * A real pi session in `base` with `extensions` and a scripted model, handed to `run`; pi's stderr lines are kept
- * off the test's output, and a handler pi reports as failed fails the test.
+ * The toy robot; `reached` gets every call its move_to ran. With `asks` it also has check_attached, which asks a
+ * model while it runs as the real tool does (../src/primitives/grasp.ts: `aux.attach`, else --aux-model, else the
+ * session's model) and returns the answer; with "then fails" it fails after asking. Every move returns `views` camera
+ * images, and `spec` is added to the robot's.
+ */
+const toy =
+	(reached: unknown[], o: { asks?: true | "then fails"; views?: number; spec?: Partial<RobotSpec> } = {}) =>
+	(pi: ExtensionAPI) => {
+		const r = defineRobot(pi, {
+			name: "toy",
+			task: [],
+			keepImages: 1,
+			manifest: "robosuite",
+			vars: () => ({ arms: [] }),
+			capabilities: (c) => o.asks !== undefined && c === "grasp",
+			start: async () => ["move_to", ...(o.asks ? ["check_attached"] : []), "finish"],
+			result: () => ({}),
+			status: () => ({ step: 0 }),
+			finish: FINISH,
+			...o.spec,
+		});
+		r.primitive("move_to", async (p: { xyz: number[] }) => {
+			reached.push(p);
+			if (p.xyz[0] === 9) throw new Error(IK);
+			return {
+				content: [
+					{ type: "text", text: "moved" },
+					...Array.from({ length: o.views ?? 0 }, () => ({
+						type: "image" as const,
+						data: PNG,
+						mimeType: "image/png",
+					})),
+				],
+				details: {},
+			};
+		});
+		if (!o.asks) return;
+		r.primitive("check_attached", async (_p, signal, ctx) => {
+			const answer = await said(() =>
+				askVlm(ctx, auxModel(pi, "attach"), pi.getThinkingLevel(), "Held?", [], signal),
+			);
+			if (o.asks === "then fails") throw new Error(NO_FRAMES);
+			return { content: [{ type: "text", text: `asked: ${answer}` }], details: {} };
+		});
+	};
+
+/**
+ * A real pi session in `base` with `extensions` and a scripted model, handed to `run`; the session's stderr lines are
+ * kept off the test's output and handed over as `stderr`, and a handler pi reports as failed fails the test.
  */
 async function withSession<T>(
 	base: string,
 	extensions: ((pi: ExtensionAPI) => void)[],
-	run: (o: { session: Session; faux: ReturnType<typeof registerFauxProvider>; runtime: ModelRuntime }) => Promise<T>,
-	flags: Record<string, string> = {},
+	run: (o: {
+		session: Session;
+		faux: ReturnType<typeof registerFauxProvider>;
+		runtime: ModelRuntime;
+		stderr: string[];
+	}) => Promise<T>,
+	flags: Record<string, string | boolean> = {},
 ): Promise<T> {
 	useDeployment({});
 	const faux = registerFauxProvider();
 	const log = console.error;
+	const stderr: string[] = [];
 	let session: Session | undefined;
 	try {
 		const model = faux.getModel();
@@ -153,13 +207,13 @@ async function withSession<T>(
 			settingsManager,
 			resourceLoader,
 		}));
-		console.error = () => {};
+		console.error = (...line: unknown[]) => void stderr.push(line.join(" "));
 		// Flags set as pi sets the ones given on the command line.
 		for (const [name, value] of Object.entries(flags)) session.extensionRunner.setFlagValue(name, value);
 		// pi reports a handler that throws to its error listeners only: without one, a throw would pass unseen.
 		const thrown: string[] = [];
 		await session.bindExtensions({ onError: (e) => void thrown.push(`${e.event}: ${e.error}`) });
-		const out = await run({ session, faux, runtime });
+		const out = await run({ session, faux, runtime, stderr });
 		assert.deepEqual(thrown, [], "no extension handler threw");
 		return out;
 	} finally {
@@ -348,4 +402,456 @@ test("a real session: of a session pi recorded, a call a hook refused and the ca
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
+});
+
+/** What a request to the replay's model gets that is not a turn of the session's own loop. */
+const NOT_A_TURN =
+	"replay/session replays recorded turns and answers no other request; --aux-model names a model for the checks that take one";
+const stopped = (n: number, of: number) =>
+	`Replay stopped: a call's outcome diverged from the recording's; no further recorded motion is sent (${n} of ${of} turns replayed).`;
+/** A recorded call of the toy's check_attached. */
+const check: Recorded = { name: "check_attached", arguments: { object: "cube" } };
+
+/**
+ * Replay `turns` with `-e robot -e replay [-e more] --model replay/session --replay <file>` and `flags`. `before` runs
+ * once the session's model is replay/session and before the prompt, with the context pi gives an extension; `aux` are
+ * the answers of the scripted model, which is asked only when a flag or the deployment names it. Returns the moves
+ * that reached the robot, each call's result, what the replay said (the session's replies and its stderr lines), the
+ * session's entries of a type, and the robot's result row (written at pi's quit when the episode did not finish).
+ */
+async function replaying(
+	turns: RecordedTurn[],
+	o: {
+		task?: object;
+		robot?: (reached: unknown[]) => (pi: ExtensionAPI) => void;
+		flags?: Record<string, string | boolean>;
+		aux?: string[];
+		before?: (ctx: ExtensionContext, session: Session) => Promise<void>;
+		more?: ((pi: ExtensionAPI) => void)[];
+	} = {},
+) {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "replay-session-")));
+	const reached: unknown[] = [];
+	let ctx: ExtensionContext | undefined;
+	try {
+		const file = record(base, turns, o.task);
+		return await withSession(
+			base,
+			[
+				(o.robot ?? toy)(reached),
+				replay,
+				...(o.more ?? []),
+				(pi) => {
+					pi.on("session_start", (_event, c) => {
+						ctx = c;
+					});
+				},
+			],
+			async ({ session, faux, runtime, stderr }) => {
+				faux.appendResponses((o.aux ?? []).map((text) => fauxAssistantMessage(text)));
+				const planner = runtime.getModel("replay", "session");
+				assert.ok(planner, "the replay provider's model is registered");
+				await session.setModel(planner);
+				await o.before?.(ctx as ExtensionContext, session);
+				await session.prompt("Replay the session.");
+				await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+				const texts = (m: { content: { type: string; text?: string }[] }) =>
+					m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+				const entries = (type: string) =>
+					(session.sessionManager.getEntries() as { type: string; customType?: string; data?: any }[]).flatMap(
+						(e) => (e.type === "custom" && e.customType === type ? [e.data] : []),
+					);
+				return {
+					file,
+					reached: reached.map((p) => (p as { xyz: number[] }).xyz[0]),
+					results: session.messages.flatMap((m) =>
+						m.role === "toolResult" ? [`${m.toolName}${m.isError ? " ERROR" : ""}: ${texts(m)}`] : [],
+					),
+					said: session.messages.flatMap((m) => (m.role === "assistant" ? texts(m).split("\n") : [])),
+					stderr: stderr.filter((l) => l.startsWith("[replay]")),
+					entries,
+					row: entries(RESULT_ENTRY).at(-1) as Record<string, unknown> | undefined,
+				};
+			},
+			{ replay: file, ...o.flags },
+		);
+	} finally {
+		rmSync(base, { recursive: true, force: true });
+	}
+}
+
+/** The dashboard's check of the session's model (POST /llm-check runs it): whether it passed, and what it reports. */
+const llm = async (ctx: ExtensionContext) => {
+	const r = await llmCheck(ctx.modelRegistry, ctx.model as never);
+	return `${r.ok ? "ok" : "failed"}: ${r.detail}`;
+};
+/** A question to the session's model, as a check asks one when no other model is named for it. */
+const vlm = (ctx: ExtensionContext) => said(() => askVlm(ctx, "", "off", "Is the cube in the bowl?", []));
+/** What a request through pi's model registry came back with. */
+const reply = async (ctx: ExtensionContext, context: object, options: object = {}) => {
+	const m = await ctx.modelRegistry.streamSimple(ctx.model as never, context as never, options).result();
+	return m.stopReason === "error"
+		? `error: ${m.errorMessage}`
+		: m.content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("");
+};
+const ask = { role: "user", content: "Summarize the conversation.", timestamp: 0 };
+/** An extension that runs `fn` inside pi's loop at the `n`-th `event` of the session. */
+const at =
+	(
+		event: "turn_end" | "context" | "tool_execution_end" | "agent_end",
+		n: number,
+		fn: (ctx: ExtensionContext) => Promise<unknown>,
+	) =>
+	(pi: ExtensionAPI) => {
+		let seen = 0;
+		pi.on(event as "turn_end", async (_event, ctx) => {
+			if (++seen === n) await fn(ctx);
+		});
+	};
+
+test("a real session: a request before the session's first turn (the dashboard's model check, a question to a VLM) does not start the replay or take its first turn", async () => {
+	const answers: string[] = [];
+	let sources = -1;
+	const out = await replaying([{ text: "I move above the cube.", calls: [move(0.5)] }, [move(0.6)], [finish]], {
+		// The recorded task differs from this run's: the replay warns of that when the session's first turn starts.
+		task: { robot: "toy", seed: "1" },
+		before: async (ctx, session) => {
+			answers.push(await llm(ctx), await vlm(ctx));
+			sources = (session.sessionManager.getEntries() as { type: string; customType?: string }[]).filter(
+				(e) => e.type === "custom" && e.customType === REPLAY_ENTRY,
+			).length;
+		},
+	});
+	assert.deepEqual(answers, [`failed: ${NOT_A_TURN}`, `error: ${NOT_A_TURN}`]);
+	assert.deepEqual(out.reached, [0.5, 0.6]);
+	assert.deepEqual(out.results, ["move_to: moved", "move_to: moved", "finish: success"]);
+	// The replay starts with the session's own first turn: its entry, its opening note, the warning.
+	assert.equal(sources, 0);
+	assert.equal(out.entries(REPLAY_ENTRY).length, 1);
+	assert.deepEqual(out.said.slice(0, 2), [`replay: 3 recorded turns from ${out.file}`, "I move above the cube."]);
+	assert.deepEqual(out.stderr, [
+		"[replay] this run's task differs from the recorded robot_task: seed: 1 -> (none)",
+		`[replay] 3 recorded turns from ${out.file}`,
+	]);
+	assert.equal(out.row?.claimed, "success");
+});
+
+test("a real session: a recorded tool that asks the session's model while it runs gets no recorded turn for an answer, and the next turn is sent", async () => {
+	const asking = (reached: unknown[]) => toy(reached, { asks: true });
+	const out = await replaying([[check], { text: "Now to the bowl.", calls: [move(0.5)] }, [move(0.6)], [finish]], {
+		robot: asking,
+	});
+	assert.deepEqual(out.reached, [0.5, 0.6]);
+	assert.deepEqual(out.results, [
+		`check_attached: asked: error: ${NOT_A_TURN}`,
+		"move_to: moved",
+		"move_to: moved",
+		"finish: success",
+	]);
+	assert.ok(out.said.includes("Now to the bowl."));
+	// The replay has nothing to note: every call it sent has its result.
+	assert.deepEqual(out.stderr, [`[replay] 4 recorded turns from ${out.file}`]);
+	// With a model named for the question, that model answers it.
+	const named = await replaying([[check], [move(0.5)], [finish]], {
+		robot: asking,
+		flags: { "aux-model": "faux/faux-1" },
+		aux: ["held"],
+	});
+	assert.deepEqual(named.results, ["check_attached: asked: held", "move_to: moved", "finish: success"]);
+	// The deployment's own role names that model too.
+	const role = await replaying([[check], [move(0.5)], [finish]], {
+		robot: asking,
+		aux: ["held"],
+		before: async () => void useDeployment({ aux: { attach: "faux/faux-1" } }),
+	});
+	assert.deepEqual(role.results, ["check_attached: asked: held", "move_to: moved", "finish: success"]);
+});
+
+test("a real session: a request while a recorded call runs, or behind it, does not make the replay forget that call: when it diverges, the rest of its turn is withheld and the replay stops", async () => {
+	const failing = (reached: unknown[]) => toy(reached, { asks: "then fails" });
+	const turns = [[check, move(0.7)], [move(0.5)], [finish]];
+	const answers: string[] = [];
+	let session: Session | undefined;
+	// Behind the failed call: a question to a VLM, a request under another id, and pi's own summary of the session.
+	const behind: ((ctx: ExtensionContext) => Promise<string>)[] = [
+		vlm,
+		(ctx) => reply(ctx, { messages: [ask] }, { sessionId: "0193e1c0-0000-7000-8000-000000000000" }),
+		() =>
+			(session as Session)
+				.summarizeForBugReport({ signal: new AbortController().signal })
+				.catch((err: Error) => `threw: ${err.message}`),
+	];
+	for (const more of [
+		[],
+		...behind.map((asked) => [at("tool_execution_end", 1, async (ctx) => void answers.push(await asked(ctx)))]),
+	]) {
+		const out = await replaying(turns, {
+			robot: failing,
+			more,
+			before: async (_ctx, s) => {
+				session = s;
+			},
+		});
+		assert.deepEqual(out.reached, []);
+		assert.deepEqual(out.results, [
+			`check_attached ERROR: ${NO_FRAMES}`,
+			`move_to ERROR: replay stopped (check_attached failed: ${NO_FRAMES}; it succeeded in the recording); this recorded call was not sent`,
+		]);
+		assert.equal(out.said.at(-1), stopped(1, 3));
+		assert.equal(out.row?.claimed, null);
+	}
+	assert.deepEqual(answers, [
+		`error: ${NOT_A_TURN}`,
+		`error: ${NOT_A_TURN}`,
+		`threw: Bug report summary failed: ${NOT_A_TURN}`,
+	]);
+});
+
+test("a real session: a model check between two turns does not make the replay forget a call that diverged, or take the next turn", async () => {
+	const answers: string[] = [];
+	const checking = () => at("turn_end", 1, async (ctx) => void answers.push(await llm(ctx)));
+	// The first call diverges: the replay stops there.
+	const diverged = await replaying([[move(9)], [move(0.5)], [finish]], { more: [checking()] });
+	assert.deepEqual(diverged.reached, [9]);
+	assert.deepEqual(diverged.results, [`move_to ERROR: ${IK}`]);
+	assert.equal(diverged.said.at(-1), stopped(1, 3));
+	assert.equal(diverged.row?.claimed, null);
+	// Nothing diverges: the turn behind the check is the recording's next.
+	const whole = await replaying([[move(0.4)], { text: "Now to the bowl.", calls: [move(0.5)] }, [finish]], {
+		more: [checking()],
+	});
+	assert.deepEqual(whole.reached, [0.4, 0.5]);
+	assert.ok(whole.said.includes("Now to the bowl."));
+	assert.deepEqual(answers, [`failed: ${NOT_A_TURN}`, `failed: ${NOT_A_TURN}`]);
+});
+
+test("a real session: a request from another extension's context handler, right before the session's own, does not take the turn; nor does one when the replay is over", async () => {
+	const answers: string[] = [];
+	// pi hands the transcript to the extensions' context handlers shortly before each request of its loop; this one
+	// is loaded after the replay.
+	const out = await replaying([[move(0.5)], { text: "Now to the bowl.", calls: [move(0.6)] }, [finish]], {
+		more: [
+			at("context", 2, async (ctx) => void answers.push(await vlm(ctx))),
+			at("agent_end", 1, async (ctx) => void answers.push(await vlm(ctx))),
+		],
+	});
+	assert.deepEqual(out.reached, [0.5, 0.6]);
+	assert.deepEqual(out.results, ["move_to: moved", "move_to: moved", "finish: success"]);
+	assert.deepEqual(answers, [`error: ${NOT_A_TURN}`, `error: ${NOT_A_TURN}`]);
+	// The replay printed its opening note and nothing for the two requests.
+	assert.deepEqual(out.stderr, [`[replay] 3 recorded turns from ${out.file}`]);
+});
+
+test("a real session: a request under another id, one that declares tools of its own, and pi's own summary of the session do not take a turn", async () => {
+	const answers: unknown[] = [];
+	let session: Session | undefined;
+	const out = await replaying(
+		[[move(0.4)], { text: "Now to the bowl.", calls: [move(0.5)] }, [move(0.6)], [move(0.7)], [finish]],
+		{
+			before: async (_ctx, s) => {
+				session = s;
+			},
+			more: [
+				// pi's compaction and branch summaries go out under an id of their own.
+				at("turn_end", 1, async (ctx) =>
+					answers.push(
+						await reply(ctx, { messages: [ask] }, { sessionId: "0193e1c0-0000-7000-8000-000000000000" }),
+					),
+				),
+				// A tool's own agent loop declares its tools, as the session's loop does.
+				at("turn_end", 2, async (ctx) =>
+					answers.push(
+						await reply(ctx, {
+							systemPrompt: "You are a policy.",
+							tools: [{ name: "policy_act", description: "act", parameters: Type.Object({}) }],
+							messages: [ask],
+						}),
+					),
+				),
+				// pi's summary for a bug report is asked under the session's own id.
+				at("turn_end", 3, async () =>
+					answers.push(
+						await (session as Session)
+							.summarizeForBugReport({ signal: new AbortController().signal })
+							.catch((err: Error) => `threw: ${err.message}`),
+					),
+				),
+			],
+		},
+	);
+	assert.deepEqual(out.reached, [0.4, 0.5, 0.6, 0.7]);
+	assert.deepEqual(out.results, [
+		"move_to: moved",
+		"move_to: moved",
+		"move_to: moved",
+		"move_to: moved",
+		"finish: success",
+	]);
+	assert.deepEqual(answers, [
+		`error: ${NOT_A_TURN}`,
+		`error: ${NOT_A_TURN}`,
+		`threw: Bug report summary failed: ${NOT_A_TURN}`,
+	]);
+});
+
+const VECTORS: UnitsSpec["vectors"] = {
+	MV_FWD: [1, 0, 0],
+	MV_BACK: [-1, 0, 0],
+	MV_LEFT: [0, -1, 0],
+	MV_RIGHT: [0, 1, 0],
+	MV_UP: [0, 0, 1],
+	MV_DOWN: [0, 0, -1],
+};
+const act = (unit: string): Recorded => ({ name: "act", arguments: { unit } });
+/** The flags of a robot in pure units mode with the finish verifier on (../src/modes/units). */
+const VERIFIED = {
+	units: "true",
+	"units-plugins": "recovery,auto_release,proprioception,plan,mem_text",
+	"units-verify": "true",
+};
+/** A toy arm in the real units mode with its real finish verifier; with `blocked` a forward move fails. */
+const unitsToy =
+	(o: { blocked?: boolean } = {}) =>
+	() =>
+	(pi: ExtensionAPI) => {
+		const pos = [0.5, 0, 0.2];
+		let width = 0.08;
+		defineRobot(pi, {
+			name: "toy",
+			task: [],
+			keepImages: 2,
+			start: async () => ["finish"],
+			result: () => ({}),
+			finish: FINISH,
+			units: {
+				vectors: VECTORS,
+				stepM: 0.02,
+				apply: async (m) => {
+					if (m.delta[0] > 0 && o.blocked) throw new Error("robot error: blocked");
+					for (let i = 0; i < 3; i++) pos[i] += m.delta[i];
+					if (m.gripper === "open") width = 0.08;
+					if (m.gripper === "close") width = 0.03;
+					return {
+						content: [
+							{ type: "text", text: "obs" },
+							{ type: "image", data: PNG, mimeType: "image/png" },
+						],
+						details: {},
+					};
+				},
+				state: async () => ({ eef_xyz: [...pos], gripper_width: width, table_z: 0 }),
+				instruction: () => "put the cube in the bowl",
+				emptyWidthM: 0.005,
+			},
+		});
+	};
+
+test("a real session: the units verifier's question at a recorded finish is not answered by the replay: without a model named for it the finish is refused, with one it is checked, and with the verifier off nothing is asked", async () => {
+	const refusal = `finish refused: the verifier is unavailable (${NOT_A_TURN}), so the task could not be checked. Call \`finish\` again to retry the check. (This is not the verifier's NOT complete verdict.)`;
+	const out = await replaying([[act("MV_LEFT")], [finish]], { robot: unitsToy(), flags: VERIFIED });
+	assert.equal(out.results.at(-1), `finish ERROR: ${refusal}`);
+	// What the replay says of the stop: the refusal, then its closing line.
+	assert.deepEqual(out.said.slice(-2), [
+		`replay: finish failed: ${refusal}; it succeeded in the recording`,
+		stopped(2, 2),
+	]);
+	assert.equal(out.row?.claimed, null);
+	// The row says why the finish was not verified, and holds no verdict.
+	assert.equal(out.row?.verifier_error, NOT_A_TURN);
+	assert.equal(out.row?.finish_verified, undefined);
+	// The replay has no call without a result.
+	assert.deepEqual(
+		out.stderr.filter((l) => /no result/.test(l)),
+		[],
+	);
+	const named = await replaying([[act("MV_LEFT")], [finish]], {
+		robot: unitsToy(),
+		flags: { ...VERIFIED, "aux-model": "faux/faux-1" },
+		aux: ['{"complete": true, "reason": "the cube is in the bowl"}'],
+	});
+	assert.equal(named.results.at(-1), "finish: success");
+	assert.equal(named.row?.claimed, "success");
+	assert.equal(named.row?.finish_verified, true);
+	// The deployment's own role names the verifier's model too.
+	const role = await replaying([[act("MV_LEFT")], [finish]], {
+		robot: unitsToy(),
+		flags: VERIFIED,
+		aux: ['{"complete": true, "reason": "the cube is in the bowl"}'],
+		before: async () => void useDeployment({ aux: { verify: "faux/faux-1" } }),
+	});
+	assert.equal(role.results.at(-1), "finish: success");
+	assert.equal(role.row?.claimed, "success");
+	assert.equal(role.row?.finish_verified, true);
+	// With the verifier off the finish is the recorded one, and no model is asked.
+	const off = await replaying([[act("MV_LEFT")], [finish]], {
+		robot: unitsToy(),
+		flags: { ...VERIFIED, "units-verify": "false" },
+	});
+	assert.equal(off.results.at(-1), "finish: success");
+	assert.equal(off.row?.claimed, "success");
+	assert.equal(off.row?.finish_verified, undefined);
+	assert.equal(off.row?.verifier_error, undefined);
+	assert.deepEqual(off.entries("units_verify"), []);
+});
+
+test("a real session: with the units verifier on and no model named for it, a turn [act, finish] whose act diverges does not end as a claimed success", async () => {
+	const out = await replaying([[act("MV_FWD"), finish]], { robot: unitsToy({ blocked: true }), flags: VERIFIED });
+	assert.deepEqual(
+		out.results.map((r) => r.split(":")[0]),
+		["act ERROR", "finish ERROR"],
+	);
+	assert.equal(out.said.at(-1), stopped(1, 1));
+	assert.equal(out.row?.claimed, null);
+});
+
+test("a real session: a reviewed approval's question is not answered by the replay: no motion is approved, and the replay stops at the first; with a model named for the reviewer that approves every motion, the replay runs whole", async () => {
+	const out = await replaying([[move(0.5)], [move(0.6)], [move(0.7)], [move(0.8)], [finish]], {
+		flags: { approval: "reviewed" },
+	});
+	assert.deepEqual(out.reached, []);
+	assert.deepEqual(out.results, [
+		`move_to ERROR: move_to was not approved by the reviewer (error): the reviewer failed: ${NOT_A_TURN}. It did not run.`,
+	]);
+	assert.equal(out.said.at(-1), stopped(1, 5));
+	assert.equal(out.row?.claimed, null);
+	// With a model named for the reviewer, by either flag, its decisions stand and the replay runs whole.
+	const approve = '{"decision": "approve", "reason": "the move is safe"}';
+	for (const flag of ["aux-model", "approval-model"]) {
+		const named = await replaying([[move(0.5)], [move(0.6)], [finish]], {
+			flags: { approval: "reviewed", [flag]: "faux/faux-1" },
+			aux: [approve, approve],
+		});
+		assert.deepEqual(named.reached, [0.5, 0.6]);
+		assert.deepEqual(named.results, ["move_to: moved", "move_to: moved", "finish: success"]);
+		assert.equal(named.row?.claimed, "success");
+	}
+});
+
+test("a real session: visual differencing's question is not answered by the replay: every recorded move reaches the robot, and each result it would have described says that it was not; with a model named for it, that model describes them", async () => {
+	const out = await replaying([[move(0.5)], [move(0.6)], [move(0.7)], [finish]], {
+		robot: (reached) => toy(reached, { views: 1, spec: { vdm: { views: 1 } } }),
+		flags: { vdm: true },
+	});
+	assert.deepEqual(out.reached, [0.5, 0.6, 0.7]);
+	assert.deepEqual(out.results, [
+		...Array.from({ length: 3 }, () => `move_to: moved[visual differencing unavailable: ${NOT_A_TURN}]`),
+		"finish: success",
+	]);
+	assert.equal(out.row?.claimed, "success");
+	assert.equal(out.row?.vdm_errors, 3);
+	// With a model named for it, by the flag or by the deployment's own role, that model describes each result.
+	const described = async (o: Parameters<typeof replaying>[1]) => {
+		const named = await replaying([[move(0.5)], [move(0.6)], [finish]], {
+			robot: (reached) => toy(reached, { views: 1, spec: { vdm: { views: 1 } } }),
+			aux: ["A cube and a bowl.", "The arm moved right."],
+			...o,
+		});
+		assert.deepEqual(named.reached, [0.5, 0.6]);
+		assert.match(named.results[0], /\nA cube and a bowl\.$/);
+		assert.match(named.results[1], /\nThe arm moved right\.$/);
+		assert.equal(named.row?.claimed, "success");
+		assert.equal(named.row?.vdm_errors, 0);
+	};
+	await described({ flags: { vdm: true, "aux-model": "faux/faux-1" } });
+	await described({ flags: { vdm: true }, before: async () => void useDeployment({ aux: { vdm: "faux/faux-1" } }) });
 });
