@@ -8,25 +8,16 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import {
-	createAgentSession,
-	DefaultResourceLoader,
-	type ExtensionAPI,
-	type ExtensionContext,
-	ModelRuntime,
-	SessionManager,
-	SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import replay, { loadRecording, REPLAY_ENTRY } from "../src/capabilities/replay/index.ts";
-import { llmCheck } from "../src/infra/check.ts";
 import { auxModel } from "../src/infra/config.ts";
 import type { UnitsSpec } from "../src/modes/units/index.ts";
 import { askVlm } from "../src/modes/units/vlm.ts";
 import { defineRobot, RESULT_ENTRY, type RobotSpec } from "../src/robot.ts";
 import { useDeployment } from "./helpers/deployment.ts";
+import { ask, at, llm, PNG, reply, type Session, said, vlm, withSession } from "./helpers/pi-session.ts";
 
 const FINISH = {
 	description: "finish",
@@ -89,20 +80,8 @@ function record(dir: string, turns: RecordedTurn[], task?: object) {
 	return file;
 }
 
-type Session = Awaited<ReturnType<typeof createAgentSession>>["session"];
-
-/** A 1x1 PNG, for a tool that returns a camera view. */
-const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 /** What the toy's check_attached fails with when a test makes it fail. */
 const NO_FRAMES = "robot error: the frames could not be rendered";
-/** What a question to a VLM came back with: the reply's text, or the error askVlm raised for an error reply. */
-const said = async (ask: () => Promise<{ text: string }>) => {
-	try {
-		return (await ask()).text;
-	} catch (err) {
-		return `error: ${err instanceof Error ? err.message : String(err)}`;
-	}
-};
 
 /**
  * The toy robot; `reached` gets every call its move_to ran. With `asks` it also has check_attached, which asks a
@@ -152,78 +131,6 @@ const toy =
 	};
 
 /**
- * A real pi session in `base` with `extensions` and a scripted model, handed to `run`; the session's stderr lines are
- * kept off the test's output and handed over as `stderr`, and a handler pi reports as failed fails the test.
- */
-async function withSession<T>(
-	base: string,
-	extensions: ((pi: ExtensionAPI) => void)[],
-	run: (o: {
-		session: Session;
-		faux: ReturnType<typeof registerFauxProvider>;
-		runtime: ModelRuntime;
-		stderr: string[];
-	}) => Promise<T>,
-	flags: Record<string, string | boolean> = {},
-): Promise<T> {
-	useDeployment({});
-	const faux = registerFauxProvider();
-	const log = console.error;
-	const stderr: string[] = [];
-	let session: Session | undefined;
-	try {
-		const model = faux.getModel();
-		const runtime = await ModelRuntime.create({ authPath: join(base, "auth.json"), modelsPath: null });
-		runtime.registerProvider(model.provider, {
-			baseUrl: model.baseUrl,
-			apiKey: "faux-key",
-			api: faux.api,
-			models: faux.models.map((m) => ({
-				id: m.id,
-				name: m.name,
-				api: m.api,
-				reasoning: m.reasoning,
-				input: m.input,
-				cost: m.cost,
-				contextWindow: m.contextWindow,
-				maxTokens: m.maxTokens,
-				baseUrl: m.baseUrl,
-			})),
-		});
-		const settingsManager = SettingsManager.inMemory({ retry: { enabled: false, maxRetries: 0, baseDelayMs: 1 } });
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: base,
-			agentDir: join(base, "agent"),
-			settingsManager,
-			extensionFactories: extensions,
-		});
-		await resourceLoader.reload();
-		({ session } = await createAgentSession({
-			cwd: base,
-			agentDir: join(base, "agent"),
-			model,
-			modelRuntime: runtime,
-			sessionManager: SessionManager.inMemory(base),
-			settingsManager,
-			resourceLoader,
-		}));
-		console.error = (...line: unknown[]) => void stderr.push(line.join(" "));
-		// Flags set as pi sets the ones given on the command line.
-		for (const [name, value] of Object.entries(flags)) session.extensionRunner.setFlagValue(name, value);
-		// pi reports a handler that throws to its error listeners only: without one, a throw would pass unseen.
-		const thrown: string[] = [];
-		await session.bindExtensions({ onError: (e) => void thrown.push(`${e.event}: ${e.error}`) });
-		const out = await run({ session, faux, runtime, stderr });
-		assert.deepEqual(thrown, [], "no extension handler threw");
-		return out;
-	} finally {
-		console.error = log;
-		session?.dispose();
-		faux.unregister();
-	}
-}
-
-/**
  * Replay `file` with `-e robot -e replay --model replay/session --replay <file>`: what reached the robot's tool,
  * each call's result, and what the replay said.
  */
@@ -248,7 +155,7 @@ async function replayedFile(base: string, file: string) {
 				said: session.messages.flatMap((m) => (m.role === "assistant" ? texts(m).split("\n") : [])),
 			};
 		},
-		{ replay: file },
+		{ flags: { replay: file } },
 	);
 }
 
@@ -473,41 +380,12 @@ async function replaying(
 					row: entries(RESULT_ENTRY).at(-1) as Record<string, unknown> | undefined,
 				};
 			},
-			{ replay: file, ...o.flags },
+			{ flags: { replay: file, ...o.flags } },
 		);
 	} finally {
 		rmSync(base, { recursive: true, force: true });
 	}
 }
-
-/** The dashboard's check of the session's model (POST /llm-check runs it): whether it passed, and what it reports. */
-const llm = async (ctx: ExtensionContext) => {
-	const r = await llmCheck(ctx.modelRegistry, ctx.model as never);
-	return `${r.ok ? "ok" : "failed"}: ${r.detail}`;
-};
-/** A question to the session's model, as a check asks one when no other model is named for it. */
-const vlm = (ctx: ExtensionContext) => said(() => askVlm(ctx, "", "off", "Is the cube in the bowl?", []));
-/** What a request through pi's model registry came back with. */
-const reply = async (ctx: ExtensionContext, context: object, options: object = {}) => {
-	const m = await ctx.modelRegistry.streamSimple(ctx.model as never, context as never, options).result();
-	return m.stopReason === "error"
-		? `error: ${m.errorMessage}`
-		: m.content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("");
-};
-const ask = { role: "user", content: "Summarize the conversation.", timestamp: 0 };
-/** An extension that runs `fn` inside pi's loop at the `n`-th `event` of the session. */
-const at =
-	(
-		event: "turn_end" | "context" | "tool_execution_end" | "agent_end",
-		n: number,
-		fn: (ctx: ExtensionContext) => Promise<unknown>,
-	) =>
-	(pi: ExtensionAPI) => {
-		let seen = 0;
-		pi.on(event as "turn_end", async (_event, ctx) => {
-			if (++seen === n) await fn(ctx);
-		});
-	};
 
 test("a real session: a request before the session's first turn (the dashboard's model check, a question to a VLM) does not start the replay or take its first turn", async () => {
 	const answers: string[] = [];

@@ -238,7 +238,9 @@ node packages/embodied/src/infra/check.ts <robot> [--deployment NAME] [--units] 
 ```
 
 `<robot>` is the extension's directory name (`dual_franka`; libero-pro / libero-plus are `libero`).
-Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `setup.sh`). Inside a robot session the same check is `/robot-check`.
+Fix every FAIL before running (LIBERO: a missing scene asset is a FAIL; rerun `setup.sh`). Inside a robot session the same check is `/robot-check`;
+under a planner model that answers only its session's own turns (`flash/replay`, `finetuned/...`, `humanclaw-psv/...`,
+`motormind/...`, `replay/session`) its planner row fails with that model's own sentence, by design.
 
 ## 4. One episode
 
@@ -275,7 +277,8 @@ venv is missing, it says why and offers `/embodied-setup <the same request>`. Th
 
 The launch command `/embodied-setup` hands over (`[setting flags]`: the cell's flags from the table
 in section 1, or a paper's `--preset` / `--tier`, plus the fine-tuned planner's `--model finetuned/...`
-flags; `--model flash/replay` for a replay):
+flags; `--model flash/replay` for a replay, with `--units-verify=false` in units mode on a two-arm robot when nothing
+names a model for the units verifier):
 
 ```bash
 cd <experiment dir> && source <services>/.venv-<target>/pi-embodied.env && pi <task flags> [setting flags] --max-turns 40 --time-limit 900 --dashboard=true

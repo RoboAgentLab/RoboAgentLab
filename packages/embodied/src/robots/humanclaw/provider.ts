@@ -15,6 +15,14 @@
  * the robot on DECISION_EVENT so the env server's metric recorder and step JSON get the planner's
  * raw JSON. The first turn is `look`; a done episode ends with `finish`. Like ../../planner/ensemble.ts
  * it reads --model from argv and registers nothing unless it is `humanclaw-psv/<base>`.
+ *
+ * pi sends the session's id with every request of the session's own loop, and marks its one-off
+ * summaries as not to be cached. A decision is made only for a request that carries that id and not
+ * that mark; any other request to this model gets an error and leaves the episode where it is (the
+ * base model is asked by the planner, not through this model). So a check that asks the session's
+ * model when no other is named for it (a reviewed approval) gets that error unless one is named
+ * (`--aux-model`, `--approval-model`), and the dashboard's model check and pi's own summaries, which
+ * always ask the session's model, get it too.
  */
 
 import {
@@ -41,6 +49,13 @@ type Json = Record<string, unknown>;
 
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const USAGE: Usage = { ...ZERO, totalTokens: 0, cost: { ...ZERO, total: 0 } };
+/**
+ * What a request gets that is not a turn of the session's own loop, as an error. The asker puts it behind a colon
+ * or inside parentheses in a message of its own, so it has no full stop; and it holds no word that pi's retry, or the
+ * fallback planner by default (../../planner/fallback.ts), takes for a failure worth another try or another model.
+ */
+const NOT_A_TURN =
+	"humanclaw-psv plans the episode's steps and answers no other request; --aux-model names a model for the checks that take one";
 
 /** The base model of `--model humanclaw-psv/<provider>/<id>`, from argv (pi resolves models before flags). */
 export function psvBase(argv: readonly string[] = process.argv): string | undefined {
@@ -60,6 +75,8 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 	let image: { data: string; mimeType: string } | undefined;
 	let restored: Parameters<PsvPlanner["restore"]>[0] | undefined;
 	let jsonFormatSupported = true;
+	/** The session's id, which pi sends with every request of the session's own loop. */
+	let session: string | undefined;
 
 	/** One base-model request: the prompt text, then the current ego image (planner._message). */
 	const request = async (prompt: string, _stage: string, signal?: AbortSignal) => {
@@ -197,6 +214,16 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		// Not the session's own loop asking for its next step: answered with an error, before anything of the episode
+		// is read or changed. pi marks its one-off summaries with cacheRetention "none", the bug report's included,
+		// which carries the session's id.
+		if (session === undefined || options?.sessionId !== session || options?.cacheRetention === "none") {
+			message.stopReason = "error";
+			message.errorMessage = NOT_A_TURN;
+			stream.push({ type: "error", reason: "error", error: message });
+			stream.end();
+			return stream;
+		}
 		next(context.messages as Message[], options?.signal).then(
 			(turn) => {
 				stream.push({ type: "start", partial: message });
@@ -250,6 +277,7 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 
 	pi.on("session_start", (_e, ctx) => {
 		registry = ctx.modelRegistry;
+		session = ctx.sessionManager.getSessionId();
 		jsonFormatSupported = true;
 		// Resume: the history and planner state of the branch's decisions.
 		const entries = ctx.sessionManager

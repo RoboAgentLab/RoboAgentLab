@@ -11,6 +11,9 @@ import {
 	auxModels,
 	configProblem,
 	cudaDevice,
+	deployment,
+	deploymentAt,
+	deploymentName,
 	deploymentRecord,
 	dir,
 	python,
@@ -172,4 +175,74 @@ test("the eval scripts refuse a renamed or moved flag before any cell runs, nami
 		assert.match(r.stderr, now, old);
 	}
 	assert.equal(run("runs/x", "--env-url", "u", "--task", "t", "--arm", "a", "--aux-model", "m").status, 0);
+});
+
+test("deploymentAt is the deployment a pi started in a directory reads: that directory's project file over the global one, the deployment a name asks for, else default, else the only one; one that is no object is empty", () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-embodied-cfg-"));
+	const g = join(root, "global.json");
+	writeFileSync(g, JSON.stringify({ deployments: { default: { ffmpeg: "g" }, lab: { ffmpeg: "lab" } } }));
+	const at = (project: unknown) => {
+		const d = mkdtempSync(join(root, "run-"));
+		if (project !== undefined) {
+			mkdirSync(join(d, ".pi"));
+			writeFileSync(join(d, ".pi/embodied.json"), JSON.stringify(project));
+		}
+		return d;
+	};
+	const env = process.env.PI_EMBODIED_CONFIG;
+	process.env.PI_EMBODIED_CONFIG = g;
+	try {
+		assert.deepEqual(deploymentAt(at(undefined)), { ffmpeg: "g" });
+		assert.deepEqual(deploymentAt(at(undefined), "lab"), { ffmpeg: "lab" });
+		assert.deepEqual(deploymentAt(at({ deployments: { default: { ffmpeg: "p" } } })), { ffmpeg: "p" });
+		assert.deepEqual(deploymentAt(at(undefined), "none"), {});
+		// The project file of the directory given, not of the one this process runs in, over the global one.
+		assert.deepEqual(deploymentAt(at({ deployments: { lab: { ffmpeg: "only" } } }), "lab"), { ffmpeg: "only" });
+		// A deployment that is no object is empty.
+		assert.deepEqual(deploymentAt(at({ deployments: { lab: 5 } }), "lab"), {});
+		assert.deepEqual(deploymentAt(at({ deployments: { default: "x" } })), {});
+		// With no global file: the only deployment, named or not, else none.
+		process.env.PI_EMBODIED_CONFIG = join(root, "missing.json");
+		assert.deepEqual(deploymentAt(at({ deployments: { lab: { ffmpeg: "only" } } })), { ffmpeg: "only" });
+		assert.deepEqual(deploymentAt(at({ deployments: { default: null } })), {});
+	} finally {
+		if (env === undefined) delete process.env.PI_EMBODIED_CONFIG;
+		else process.env.PI_EMBODIED_CONFIG = env;
+	}
+});
+
+test("a malformed file is the problem reported without reading --deployment: an extension whose flags can no longer be read gets the problem, not a throw", () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-embodied-cfg-"));
+	const g = join(root, "global.json");
+	writeFileSync(g, "{ not json");
+	const env = process.env.PI_EMBODIED_CONFIG;
+	process.env.PI_EMBODIED_CONFIG = g;
+	try {
+		const stale = {
+			getFlag: () => {
+				throw new Error("the extension's flags can no longer be read");
+			},
+		} as unknown as ExtensionAPI;
+		assert.match(configProblem(stale) ?? "", /global\.json: /);
+		assert.deepEqual(deployment(stale), {});
+		assert.equal(deploymentName(stale), "");
+	} finally {
+		if (env === undefined) delete process.env.PI_EMBODIED_CONFIG;
+		else process.env.PI_EMBODIED_CONFIG = env;
+	}
+});
+
+test("deploymentAt reads a relative path of the global file from the directory given, as a pi started there does", () => {
+	const root = mkdtempSync(join(tmpdir(), "pi-embodied-cfg-"));
+	const there = join(root, "run");
+	mkdirSync(join(there, "conf"), { recursive: true });
+	writeFileSync(join(there, "conf/embodied.json"), JSON.stringify({ deployments: { default: { ffmpeg: "there" } } }));
+	const env = process.env.PI_EMBODIED_CONFIG;
+	process.env.PI_EMBODIED_CONFIG = join("conf", "embodied.json");
+	try {
+		assert.deepEqual(deploymentAt(there), { ffmpeg: "there" });
+	} finally {
+		if (env === undefined) delete process.env.PI_EMBODIED_CONFIG;
+		else process.env.PI_EMBODIED_CONFIG = env;
+	}
 });

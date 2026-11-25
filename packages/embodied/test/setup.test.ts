@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
@@ -54,6 +54,7 @@ import setup, {
 	RUN_HOW,
 	rec,
 	runDeps,
+	runFlags,
 	SETUP_NOW,
 	setupDeps,
 	sshHosts,
@@ -69,6 +70,7 @@ import {
 } from "../src/infra/setup/interpret.ts";
 import { parseRequest } from "../src/infra/setup/request.ts";
 import { modelsJsonEntry, SELFHOST, selfhostHandoff, selfhostLabel, selfhostOf } from "../src/infra/setup/selfhost.ts";
+import { ROBOTS as MANISKILL_ARMS } from "../src/robots/maniskill/index.ts";
 
 // The machine's ssh config is not the test's: no hosts, the host is typed.
 setupDeps.sshHosts = () => [];
@@ -1547,12 +1549,14 @@ test("/embodied-run panels: a work's own panel comes first when the robot serves
 /** A deployment config for one test: PI_EMBODIED_CONFIG points at it; restore() puts the old value back. */
 function withConfig(cfg: unknown) {
 	const old = process.env.PI_EMBODIED_CONFIG;
-	const file = join(mkdtempSync(join(tmpdir(), "pi-embodied-cfg-")), "embodied.json");
+	const dir = mkdtempSync(join(tmpdir(), "pi-embodied-cfg-"));
+	const file = join(dir, "embodied.json");
 	writeFileSync(file, JSON.stringify(cfg));
 	process.env.PI_EMBODIED_CONFIG = file;
 	return () => {
 		if (old === undefined) delete process.env.PI_EMBODIED_CONFIG;
 		else process.env.PI_EMBODIED_CONFIG = old;
+		rmSync(dir, { recursive: true, force: true });
 	};
 }
 const NINFER = SELFHOST.find((x) => x.engine === "NInfer")!;
@@ -2139,6 +2143,613 @@ test("planners: a registry model by its display name, the student on every surfa
 		...HOSTED,
 		FINETUNED_AS.tools,
 	]);
+});
+
+/** A deployment that names a model for the units verifier. */
+const VERIFY_NAMED = { deployments: { default: { aux: { verify: "openai/gpt-6" } } } };
+
+test("Flash's line in a units cell on two arms switches the units verifier off (Flash answers no question, and nothing names a model for the verifier); on one arm, with a model named for the verifier in the deployment the line's pi reads, without units mode and for another planner, the line does not name it; the record holds the setting's flags alone, and the handoff the line's", async () => {
+	/** The setting's flags and the launch line (after `pi`) the confirmation shows for `request` in `cwd`. */
+	const line = async (request: string, confirm = [false], cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"))) => {
+		const p = fakePi({ cwd, answers: { select: ["here", ""], confirm, keys: [["\r"]] } });
+		await p.run(request);
+		const summary = p.confirms.at(-1) ?? "";
+		return {
+			flags: summary.match(/^flags: (.*); planner /m)?.[1],
+			launch: summary.match(/^launch \(you run it afterwards\): .* && pi (.*)$/m)?.[1],
+		};
+	};
+	const restore = withConfig({});
+	try {
+		// RoboTwin and RoboDojo have two arms, where the verifier is on by default.
+		assert.deepEqual(await line("robotwin o1 units flash replay"), {
+			flags: "--units=true --model flash/replay --units-verify=false",
+			launch:
+				"--task beat_block_hammer --task-config demo_randomized --seed 0 --units=true --model flash/replay --units-verify=false --max-turns 40 --time-limit 900 --dashboard=true",
+		});
+		assert.equal(
+			(await line("robodojo o2 units flash replay")).flags,
+			"--units=true --detections --model flash/replay --units-verify=false",
+		);
+		// One arm (ManiSkill's default arm): the verifier is off by default, and the line has no switch.
+		assert.equal((await line("maniskill o1 units flash replay")).flags, "--units=true --model flash/replay");
+		// Without units mode (A2; on RoboTwin its weights are asked about first) Flash's line is the model alone.
+		assert.equal((await line("robotwin o1 tools flash replay", [false, false])).flags, "--model flash/replay");
+		// Another planner in units mode: the cell's flags alone.
+		assert.equal((await line("robotwin o1 units with openai/gpt-6")).flags, "--units=true");
+		// The experiment directory's own deployment, which the launch line's pi reads there, names a verifier model.
+		const own = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+		mkdirSync(join(own, "embodied-robotwin/.pi"), { recursive: true });
+		writeFileSync(join(own, "embodied-robotwin/.pi/embodied.json"), JSON.stringify(VERIFY_NAMED));
+		assert.equal(
+			(await line("robotwin o1 units flash replay", [false], own)).flags,
+			"--units=true --model flash/replay",
+		);
+		// Confirmed: the record holds the setting's flags; the handoff names the line's.
+		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-exp-"));
+		const p = fakePi({ cwd, answers: { select: ["here", ""], confirm: [true], keys: [["\r"]] } });
+		await p.run("robotwin o1 units flash replay");
+		const record = JSON.parse(readFileSync(join(cwd, "embodied-robotwin", RECORD), "utf8"));
+		assert.equal(record.flags, "--units=true --model flash/replay");
+		assert.match(p.sent[0]?.text ?? "", /; flags `--units=true --model flash\/replay --units-verify=false`$/m);
+		// The note for a remote box's own deployment is for a remote box only.
+		assert.doesNotMatch(p.sent[0]?.text ?? "", /^- verifier:/m);
+	} finally {
+		restore();
+	}
+	// The global deployment names a model for the verifier.
+	const named = withConfig(VERIFY_NAMED);
+	try {
+		assert.equal((await line("robotwin o1 units flash replay")).flags, "--units=true --model flash/replay");
+	} finally {
+		named();
+	}
+});
+
+test("Flash's line in a ported setting whose preset turns units mode on switches the units verifier off too", async () => {
+	const restore = withConfig({});
+	try {
+		const s = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["here", ""], confirm: [false], keys: [["\r"]] },
+		});
+		await s.run("robotwin o1 units showharness flash replay");
+		assert.match(
+			s.confirms.at(-1) ?? "",
+			/^flags: --preset showharness --model flash\/replay --units-verify=false; planner /m,
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("a remote setup's Flash line in a units cell on two arms has the switch, whatever this machine's deployment names; the handoff says to leave it out when the box's deployment names a model for the verifier", async () => {
+	const restore = withConfig(VERIFY_NAMED);
+	try {
+		const p = fakePi({
+			cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+			answers: { select: ["", ""], input: ["gpu-box"], confirm: [true], keys: [["\r"]] },
+		});
+		await p.run("robotwin o1 units flash replay remote");
+		assert.match(
+			p.confirms.at(-1) ?? "",
+			/^flags: --units=true --model flash\/replay --units-verify=false; planner /m,
+		);
+		assert.match(
+			p.sent[0]?.text ?? "",
+			/^- verifier: the launch line has --units-verify=false \(Flash answers no question, and the units verifier is on by default on two arms\); leave it out on the box when the box's deployment names aux\.verify, so that model checks the replayed finish$/m,
+		);
+		// A remote Flash line without the switch (one arm; no units mode) gets no such note.
+		for (const [request, confirm] of [
+			["maniskill o1 units flash replay remote", [true]],
+			["robotwin o1 tools flash replay remote", [false, true]],
+		] as const) {
+			const q = fakePi({
+				cwd: mkdtempSync(join(tmpdir(), "pi-embodied-exp-")),
+				answers: { select: ["", ""], input: ["gpu-box"], confirm: [...confirm], keys: [["\r"]] },
+			});
+			await q.run(request);
+			assert.doesNotMatch(q.sent[0]?.text ?? "", /^- verifier:/m, request);
+		}
+	} finally {
+		restore();
+	}
+});
+
+/** /embodied-run's flags after `pi` for `request` on an experiment, with the recorded task flags or `typed` ones. */
+async function runLine(cwd: string, request = "", typed?: string) {
+	runDeps.gpus = () => [];
+	runDeps.freePort = async () => 8765;
+	runDeps.env = {};
+	const answers =
+		typed === undefined
+			? { select: ["", "", RUN_HOW.print], confirm: [true], keys: [["\r"]] }
+			: { select: [OTHER, "", RUN_HOW.print], input: [typed], confirm: [true], keys: [["\r"]] };
+	const p = fakePi({ cwd, answers });
+	await p.commands.get(RUN)?.handler(request, p.ctx);
+	return p.notes.at(-1)?.match(/ && pi (.*) --max-turns /)?.[1];
+}
+/** An experiment of `robot` set up with `record` (none: one made by hand) under `settings`, in a directory of its own. */
+function runExperiment(
+	record: Partial<SetupRecordLike> | undefined,
+	settings: Record<string, unknown> = {},
+	robot = "robotwin",
+	own?: unknown,
+) {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+	const dir = installed(cwd, `embodied-${robot}`, robot, record);
+	const ext = ROBOTS.find((r) => r.id === robot)!.extension;
+	writeFileSync(
+		join(dir, ".pi/settings.json"),
+		JSON.stringify({ extensions: [`${cwd}/packages/embodied/${ext}`], ...settings }),
+	);
+	if (own) writeFileSync(join(dir, ".pi/embodied.json"), JSON.stringify(own));
+	return { cwd, dir };
+}
+const FLASH_RECORD = { flags: "--units=true --model flash/replay", planner: "flash/replay" };
+const REGISTRY = { defaultProvider: "openai", defaultModel: "gpt-6" };
+
+test("/embodied-run: the line of the planner that runs it: Flash's in units mode on two arms switches the units verifier off; another planner's, one arm's and one whose record names --units-verify do not", async () => {
+	const restore = withConfig({});
+	try {
+		const on = "--task x --seed 0 --units=true --model flash/replay --units-verify=false";
+		// An experiment set up for Flash: its line has the switch; run with another planner, the line does not.
+		assert.equal(await runLine(runExperiment(FLASH_RECORD).cwd), on);
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD).cwd, "with openai/gpt-6"),
+			"--task x --seed 0 --units=true --model flash/replay --model openai/gpt-6",
+		);
+		// Settings that name a registry model as well: pi runs the line's --model, Flash, so the switch is there.
+		assert.equal(await runLine(runExperiment(FLASH_RECORD, REGISTRY).cwd), on);
+		// --units=both runs units mode too.
+		assert.equal(
+			await runLine(runExperiment({ flags: "--units=both --model flash/replay", planner: "flash/replay" }).cwd),
+			"--task x --seed 0 --units=both --model flash/replay --units-verify=false",
+		);
+		// One set up for a registry model and run with Flash gets it too.
+		assert.equal(
+			await runLine(runExperiment({ planner: "openai/gpt-6" }, REGISTRY).cwd, "flash replay"),
+			"--task x --seed 0 --units=true --model flash/replay --units-verify=false",
+		);
+		// One made by hand (no record) whose settings name Flash as the default model: the line runs Flash.
+		assert.equal(
+			await runLine(
+				runExperiment(undefined, { defaultProvider: "flash", defaultModel: "replay" }).cwd,
+				"robotwin o1 units",
+			),
+			"--task beat_block_hammer --task-config demo_randomized --seed 0 --units=true --units-verify=false",
+		);
+		// A record that names --units-verify itself keeps it as it is.
+		assert.equal(
+			await runLine(
+				runExperiment({ flags: "--units=true --model flash/replay --units-verify=true", planner: "flash/replay" })
+					.cwd,
+			),
+			"--task x --seed 0 --units=true --model flash/replay --units-verify=true",
+		);
+		// One arm (ManiSkill's default arm): the verifier is off by default.
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD, {}, "maniskill").cwd),
+			"--task x --seed 0 --units=true --model flash/replay",
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("/embodied-run reads the whole line pi runs for Flash's switch: task flags typed in that name --aux-model, --units-verify, --units or --model, a budget typed in, and a batch's own flags that name --aux-model, --units-verify or --model", async () => {
+	const restore = withConfig({});
+	try {
+		const exp = () => runExperiment(FLASH_RECORD).cwd;
+		// A model named for the verifier, or the user's own --units-verify, in the task flags: no switch.
+		assert.equal(
+			await runLine(exp(), "", "--task x --seed 0 --aux-model openai/gpt-6"),
+			"--task x --seed 0 --aux-model openai/gpt-6 --units=true --model flash/replay",
+		);
+		assert.equal(
+			await runLine(exp(), "", "--task x --seed 0 --units-verify=true"),
+			"--task x --seed 0 --units-verify=true --units=true --model flash/replay",
+		);
+		// Units mode, or Flash, named by the task flags: the switch.
+		assert.equal(
+			await runLine(
+				runExperiment({ flags: "--model flash/replay", planner: "flash/replay", cell: cell("O1", "A2") }).cwd,
+				"",
+				"--task x --seed 0 --units=true",
+			),
+			"--task x --seed 0 --units=true --model flash/replay --units-verify=false",
+		);
+		assert.equal(
+			await runLine(runExperiment({ planner: "openai/gpt-6" }).cwd, "", "--task x --seed 0 --model flash/replay"),
+			"--task x --seed 0 --model flash/replay --units=true --units-verify=false",
+		);
+		// Task flags ahead of the setting's: its own --model and --units come later on the line, and pi runs those.
+		assert.equal(
+			await runLine(exp(), "", "--task x --seed 0 --model openai/gpt-6"),
+			"--task x --seed 0 --model openai/gpt-6 --units=true --model flash/replay --units-verify=false",
+		);
+		assert.equal(
+			await runLine(exp(), "", "--task x --seed 0 --units=false"),
+			"--task x --seed 0 --units=false --units=true --model flash/replay --units-verify=false",
+		);
+		// A budget typed in that names a model for the verifier.
+		runDeps.gpus = () => [];
+		runDeps.freePort = async () => 8765;
+		runDeps.env = {};
+		const typed = fakePi({
+			cwd: exp(),
+			answers: {
+				select: ["", OTHER, RUN_HOW.print],
+				input: ["--max-turns 20 --time-limit 600 --aux-model openai/gpt-6"],
+				confirm: [true],
+			},
+		});
+		await typed.commands.get(RUN)?.handler("", typed.ctx);
+		assert.match(
+			typed.notes.at(-1) ?? "",
+			/ && pi --task x --seed 0 --units=true --model flash\/replay --max-turns 20 --time-limit 600 --aux-model openai\/gpt-6 --dashboard=true /,
+		);
+		/** The arguments after eval.sh of a batch whose own flags are `flags`. */
+		const batch = async (flags: string) => {
+			const { cwd, dir } = runExperiment(FLASH_RECORD);
+			runDeps.gpus = () => [];
+			const m = scripted([
+				{ experiment: dir, mode: "batch", batch: { args: ["runs/rt", "beat_block_hammer"], env: {}, flags } },
+			]);
+			// The episode budget (the recommended one), then how to run the batch.
+			const p = fakePi({ cwd, answers: { select: ["", BATCH_HOW.print], confirm: [true] } });
+			await withAsk(m.ask, () => p.commands.get(RUN)?.handler("a batch", p.ctx) ?? Promise.resolve());
+			return p.notes.at(-1)?.match(/eval\.sh runs\/rt beat_block_hammer (.*)$/)?.[1];
+		};
+		// A batch's own flags come after the setting's: a model for the verifier, the user's own --units-verify, or
+		// another planner, leaves it out.
+		assert.equal(
+			await batch(""),
+			"--units=true --model flash/replay --max-turns 40 --time-limit 900 --units-verify=false",
+		);
+		assert.equal(
+			await batch("--aux-model openai/gpt-6"),
+			"--units=true --model flash/replay --max-turns 40 --time-limit 900 --aux-model openai/gpt-6",
+		);
+		assert.equal(
+			await batch("--model openai/gpt-6"),
+			"--units=true --model flash/replay --max-turns 40 --time-limit 900 --model openai/gpt-6",
+		);
+		assert.equal(
+			await batch("--units-verify=true"),
+			"--units=true --model flash/replay --max-turns 40 --time-limit 900 --units-verify=true",
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("a batch's line follows the deployment of the checkout, where eval.sh starts pi: not the experiment directory's, not the one where /embodied-run runs; on one arm no switch", async () => {
+	const restore = withConfig({});
+	try {
+		/** A batch's arguments after eval.sh for an experiment whose services sit in a checkout of their own. */
+		const batch = async (o: { exp?: unknown; checkout?: unknown; parent?: unknown; robot?: string }) => {
+			const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+			const checkout = mkdtempSync(join(tmpdir(), "pi-embodied-checkout-"));
+			const services = join(checkout, "services");
+			const robot = o.robot ?? "robotwin";
+			const dir = installed(cwd, `embodied-${robot}`, robot, { ...FLASH_RECORD, services });
+			mkdirSync(join(services, `.venv-${robot}`), { recursive: true });
+			writeFileSync(join(services, `.venv-${robot}`, "pi-embodied.env"), "export X=1\n");
+			const ext = ROBOTS.find((r) => r.id === robot)!.extension;
+			writeFileSync(
+				join(dir, ".pi/settings.json"),
+				JSON.stringify({ extensions: [`${cwd}/packages/embodied/${ext}`] }),
+			);
+			for (const [d, c] of [
+				[dir, o.exp],
+				[checkout, o.checkout],
+				[cwd, o.parent],
+			] as const)
+				if (c) {
+					mkdirSync(join(d, ".pi"), { recursive: true });
+					writeFileSync(join(d, ".pi/embodied.json"), JSON.stringify(c));
+				}
+			runDeps.gpus = () => [];
+			const m = scripted([
+				{ experiment: dir, mode: "batch", batch: { args: ["runs/b", "beat_block_hammer"], env: {}, flags: "" } },
+			]);
+			const p = fakePi({ cwd, answers: { select: ["", BATCH_HOW.print], confirm: [true] } });
+			await withAsk(m.ask, () => p.commands.get(RUN)?.handler("a batch", p.ctx) ?? Promise.resolve());
+			return p.notes.at(-1)?.match(/eval\.sh runs\/b beat_block_hammer (.*)$/)?.[1];
+		};
+		const plain = "--units=true --model flash/replay --max-turns 40 --time-limit 900";
+		const on = `${plain} --units-verify=false`;
+		assert.equal(await batch({}), on);
+		assert.equal(await batch({ checkout: VERIFY_NAMED }), plain);
+		assert.equal(await batch({ exp: VERIFY_NAMED }), on);
+		assert.equal(await batch({ parent: VERIFY_NAMED }), on);
+		assert.equal(await batch({ robot: "libero" }), plain);
+	} finally {
+		restore();
+	}
+});
+
+test("ManiSkill's --arm panda_pair has two arms, as ManiSkill's units read them: Flash's line in units mode switches the verifier off there, on /embodied-run's task flags and on a batch's own flags", async () => {
+	// The arms the wizard reads off the line are the ones ManiSkill's units read from --arm.
+	const ms = ROBOTS.find((r) => r.id === "maniskill")!;
+	for (const [id, r] of Object.entries(MANISKILL_ARMS))
+		for (const arm of [`--arm ${id}`, `--arm=${id}`])
+			assert.equal(
+				runFlags("--units=true --model flash/replay", { twoArms: ms.twoArms, before: arm }).endsWith(
+					" --units-verify=false",
+				),
+				((r as { arms?: unknown[] }).arms?.length ?? 0) > 1,
+				arm,
+			);
+	// pi runs the last --arm, in either spelling.
+	for (const [arm, two] of [
+		["--arm panda_pair --arm panda", false],
+		["--arm=panda_pair --arm=panda", false],
+		["--arm panda --arm panda_pair", true],
+		["--arm=panda --arm panda_pair", true],
+	] as const)
+		assert.equal(
+			runFlags("--units=true --model flash/replay", { twoArms: ms.twoArms, before: arm }).endsWith(
+				" --units-verify=false",
+			),
+			two,
+			arm,
+		);
+	assert.equal(
+		runFlags("--units=true --model flash/replay", { twoArms: ms.twoArms }),
+		"--units=true --model flash/replay",
+	);
+	const restore = withConfig({});
+	try {
+		const exp = () => runExperiment({ ...FLASH_RECORD, task: "--task PickCube-v1 --seed 0" }, {}, "maniskill");
+		assert.equal(
+			await runLine(exp().cwd, "", "--task TwoRobotPickCube-v1 --arm panda_pair --seed 0"),
+			"--task TwoRobotPickCube-v1 --arm panda_pair --seed 0 --units=true --model flash/replay --units-verify=false",
+		);
+		assert.equal(await runLine(exp().cwd), "--task PickCube-v1 --seed 0 --units=true --model flash/replay");
+		const { cwd, dir } = exp();
+		runDeps.gpus = () => [];
+		const m = scripted([
+			{
+				experiment: dir,
+				mode: "batch",
+				batch: { args: ["runs/ms", "TwoRobotPickCube-v1", "0-4"], env: {}, flags: "--arm panda_pair" },
+			},
+		]);
+		const p = fakePi({ cwd, answers: { select: ["", BATCH_HOW.print], confirm: [true] } });
+		await withAsk(m.ask, () => p.commands.get(RUN)?.handler("a batch", p.ctx) ?? Promise.resolve());
+		assert.equal(
+			p.notes.at(-1)?.match(/eval\.sh runs\/ms TwoRobotPickCube-v1 0-4 (.*)$/)?.[1],
+			"--units=true --model flash/replay --max-turns 40 --time-limit 900 --units-verify=false --arm panda_pair",
+		);
+	} finally {
+		restore();
+	}
+});
+
+test("/embodied-run: Flash's switch follows the deployment the line's pi reads where it starts: the experiment directory's own, the one a --deployment on the line names, the global one", async () => {
+	// The experiment directory's own config names a model for the verifier; /embodied-run runs from the one above.
+	const restore = withConfig({});
+	try {
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD, {}, "robotwin", VERIFY_NAMED).cwd),
+			"--task x --seed 0 --units=true --model flash/replay",
+		);
+	} finally {
+		restore();
+	}
+	// A --deployment typed in the task flags picks the deployment that names it; the default names none.
+	const two = withConfig({ deployments: { default: {}, lab: { aux: { verify: "openai/gpt-6" } } } });
+	try {
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD).cwd, "", "--task x --seed 0 --deployment lab"),
+			"--task x --seed 0 --deployment lab --units=true --model flash/replay",
+		);
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD).cwd),
+			"--task x --seed 0 --units=true --model flash/replay --units-verify=false",
+		);
+	} finally {
+		two();
+	}
+	// The global deployment names a model for the verifier.
+	const named = withConfig(VERIFY_NAMED);
+	try {
+		assert.equal(
+			await runLine(runExperiment(FLASH_RECORD).cwd),
+			"--task x --seed 0 --units=true --model flash/replay",
+		);
+	} finally {
+		named();
+	}
+});
+
+test("a batch's own arguments are on the line pi runs (eval.sh hands pi what follows its positionals): ManiSkill's --arm panda_pair there has two arms, unless the batch's own flags name another arm after it; the user's own --units-verify there leaves the switch out, and so does a model for the verifier, named there or in the deployment a --deployment there picks", async () => {
+	const restore = withConfig({});
+	try {
+		/** The words after eval.sh's arguments `args` of a batch whose own flags are `flags`. */
+		const batch = async (robot: string, task: string, args: string[], flags = "") => {
+			const { cwd, dir } = runExperiment({ ...FLASH_RECORD, task }, {}, robot);
+			runDeps.gpus = () => [];
+			const m = scripted([{ experiment: dir, mode: "batch", batch: { args, env: {}, flags } }]);
+			const p = fakePi({ cwd, answers: { select: ["", BATCH_HOW.print], confirm: [true] } });
+			await withAsk(m.ask, () => p.commands.get(RUN)?.handler("a batch", p.ctx) ?? Promise.resolve());
+			const line = p.notes.at(-1) ?? "";
+			const at = line.indexOf(`eval.sh ${args.join(" ")} `);
+			return at < 0 ? line : line.slice(at + `eval.sh ${args.join(" ")} `.length);
+		};
+		const plain = "--units=true --model flash/replay --max-turns 40 --time-limit 900";
+		const on = `${plain} --units-verify=false`;
+		const ms = "--task PickCube-v1 --seed 0";
+		for (const arm of [["--arm", "panda_pair"], ["--arm=panda_pair"]])
+			assert.equal(
+				await batch("maniskill", ms, ["runs/ms", "TwoRobotPickCube-v1", "0-4", ...arm]),
+				on,
+				arm.join(" "),
+			);
+		assert.equal(await batch("maniskill", ms, ["runs/ms", "PickCube-v1", "0-4", "--arm", "panda"]), plain);
+		// The batch's own flags come after its arguments: their --arm is the one pi runs.
+		assert.equal(
+			await batch("maniskill", ms, ["runs/ms", "PickCube-v1", "0-4", "--arm", "panda_pair"], "--arm panda"),
+			`${plain} --arm panda`,
+		);
+		assert.equal(
+			await batch("maniskill", ms, ["runs/ms", "TwoRobotPickCube-v1", "0-4", "--arm", "panda"], "--arm panda_pair"),
+			`${on} --arm panda_pair`,
+		);
+		const rt = "--task x --seed 0";
+		assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer", "--units-verify=true"]), plain);
+		assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer", "--aux-model=gpt-6"]), plain);
+		// The arguments come ahead of the setting's flags: its --units is the one pi runs.
+		assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer", "--units=false"]), on);
+		const named = withConfig({ deployments: { default: {}, lab: VERIFY_NAMED.deployments.default } });
+		try {
+			assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer", "--deployment", "lab"]), plain);
+			assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer"]), on);
+		} finally {
+			named();
+		}
+		// A --deployment there that picks a deployment naming none: the switch, though the default names one.
+		const other = withConfig({ deployments: { default: VERIFY_NAMED.deployments.default, bare: {} } });
+		try {
+			assert.equal(await batch("robotwin", rt, ["runs/rt", "beat_block_hammer", "--deployment", "bare"]), on);
+		} finally {
+			other();
+		}
+	} finally {
+		restore();
+	}
+});
+
+test("runFlags reads a line as pi reads it: the last --model (with --provider, without a thinking suffix) runs, --units in each spelling and a preset's units mode, the line's own --units-verify and --aux-model, a preset name that is no preset", () => {
+	const two = { twoArms: true };
+	const off = (flags: string) => runFlags(flags, two).endsWith(" --units-verify=false");
+	// Units mode in each spelling pi reads, and by a preset.
+	for (const units of [
+		"--units true",
+		"--units=true",
+		"--units=pure",
+		"--units=both",
+		"--units=false --units=true",
+		"--units=true --units-stage-steps 3",
+		"--preset showharness",
+		"--preset=showharness",
+		"--preset humanclaw",
+	])
+		assert.equal(off(`${units} --model flash/replay`), true, units);
+	for (const units of [
+		"",
+		"--units=false",
+		"--units false",
+		"--units=true --units=false",
+		"--preset rpent",
+		"--preset constructor",
+		"--preset=toString",
+		"--preset showharness --units=false",
+	])
+		assert.equal(off(`${units} --model flash/replay`), false, units);
+	// Spellings pi refuses at start (a flag that takes a value given none): the switch there changes no run.
+	for (const units of ["--units", "--units @notes.md"])
+		assert.equal(off(`${units} --model flash/replay`), true, units);
+	// The last --model runs; the planner given runs only a line that names none.
+	assert.equal(off("--units=true --model flash/replay --model openai/gpt-6"), false);
+	assert.equal(off("--units=true --model openai/gpt-6 --model flash/replay"), true);
+	// Flash as pi resolves a --model: with --provider, with a thinking suffix, in any case, by its bare id.
+	for (const model of [
+		"--provider flash --model replay",
+		"--provider flash --model flash/replay",
+		"--provider FLASH --model replay",
+		"--model Flash/Replay",
+		"--model replay",
+		// A thinking suffix on the bare id too, where only taking it off leaves Flash's id.
+		...["off", "minimal", "low", "medium", "high", "xhigh", "max"].flatMap((level) => [
+			`--model flash/replay:${level}`,
+			`--model replay:${level}`,
+		]),
+		"--model flash/replay:HIGH",
+		"--model REPLAY:high",
+		// Any id under Flash's provider, which pi runs there (its own id by a fuzzy match, else a custom id); any --model
+		// that --provider limits to it, in any case.
+		"--model flash/rep",
+		"--model flash/any-id",
+		"--provider flash --model gpt-6",
+		"--provider flash --model openai/gpt-6",
+		"--provider FLASH --model openai/gpt-6",
+	])
+		assert.equal(off(`--units=true ${model}`), true, model);
+	assert.equal(off("--units=true --provider openai --model replay"), false);
+	// The last --provider runs; a bare id that only starts with Flash's provider is another provider's model.
+	assert.equal(off("--units=true --provider flash --provider openai --model gpt-6"), false);
+	assert.equal(off("--units=true --model flash-lite"), false);
+	assert.equal(
+		runFlags("--units=true --provider flash", { ...two, planner: "openai/gpt-6" }),
+		"--units=true --provider flash",
+	);
+	assert.equal(
+		runFlags("--units=true\t--model flash/replay", two),
+		"--units=true --model flash/replay --units-verify=false",
+	);
+	assert.equal(runFlags("--units=true", { ...two, planner: "flash/replay" }), "--units=true --units-verify=false");
+	assert.equal(
+		runFlags("--units=true --model openai/gpt-6", { ...two, planner: "flash/replay" }),
+		"--units=true --model openai/gpt-6",
+	);
+	// One arm: the verifier is off by default.
+	assert.equal(runFlags("--units=true --model flash/replay"), "--units=true --model flash/replay");
+	// The line's own --units-verify stays as it is, in any spelling, in the setting's flags or ahead of them.
+	for (const own of ["--units-verify=true", "--units-verify", "--units-verify auto", "--units-verify=false"]) {
+		assert.equal(
+			runFlags(`--units=true --model flash/replay ${own}`, two),
+			`--units=true --model flash/replay ${own}`,
+		);
+		assert.equal(
+			runFlags("--units=true --model flash/replay", { ...two, before: own }),
+			"--units=true --model flash/replay",
+		);
+	}
+	// A model named for the verifier on the line, in either spelling; an empty one names none.
+	assert.equal(off("--units=true --model flash/replay --aux-model openai/gpt-6"), false);
+	assert.equal(off("--units=true --model flash/replay --aux-model=openai/gpt-6"), false);
+	assert.equal(off("--units=true --model flash/replay --aux-model="), true);
+	assert.equal(
+		runFlags("--units=true --model flash/replay", { ...two, after: "--aux-model openai/gpt-6" }),
+		"--units=true --model flash/replay",
+	);
+	// The deployment where the line's pi starts: none named there, a verifier model named, a value that names none.
+	const at = (cfg: unknown) => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-embodied-run-"));
+		mkdirSync(join(cwd, ".pi"));
+		writeFileSync(join(cwd, ".pi/embodied.json"), JSON.stringify(cfg));
+		return cwd;
+	};
+	const restore = withConfig({});
+	try {
+		assert.equal(
+			runFlags("--units=true --model flash/replay", { ...two, cwd: at({}) }),
+			"--units=true --model flash/replay --units-verify=false",
+		);
+		assert.equal(
+			runFlags("--units=true --model flash/replay", { ...two, cwd: at(VERIFY_NAMED) }),
+			"--units=true --model flash/replay",
+		);
+		// A deployment that is no object names none.
+		assert.equal(
+			runFlags("--units=true --model flash/replay", { ...two, cwd: at({ deployments: { default: null } }) }),
+			"--units=true --model flash/replay --units-verify=false",
+		);
+		for (const verify of [false, 5, " ", null])
+			assert.equal(
+				runFlags("--units=true --model flash/replay", {
+					...two,
+					cwd: at({ deployments: { default: { aux: { verify } } } }),
+				}),
+				"--units=true --model flash/replay --units-verify=false",
+				String(verify),
+			);
+	} finally {
+		restore();
+	}
 });
 
 /** A model answering from a script: each call takes the next reply (an Error is thrown); the prompts it got are kept. */

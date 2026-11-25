@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { generateKind, sessionPrograms, sessionUnits } from "../src/capabilities/flash/generate.ts";
@@ -25,6 +26,7 @@ import {
 import { loadManifest, toolEntry, toolSchema } from "../src/primitives/manifest.ts";
 import { PRIMITIVES_EVENT, type PrimitivesHandle } from "../src/robot.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { within } from "./helpers/pi-session.ts";
 import { SESSION_HEADER } from "./helpers/session.ts";
 
 // The toy robot's primitive manifest (./fixtures/manifests/toy.json): move_to (high, tool and code), segment (ts).
@@ -121,20 +123,52 @@ test("parseProgram takes exactly one fenced block, or the word DONE, and nothing
 // ---------------------------------------------------------------------------
 // the provider on the tools and code surfaces, against a fake OpenAI-compatible endpoint
 
-async function endpoint(replies: string[]) {
+/** A reply the endpoint holds back: `arrived` once its request is in; it is sent when the test calls `release`. */
+function hold() {
+	const h = { reached: () => {}, release: () => {}, arrived: Promise.resolve(), released: Promise.resolve() };
+	h.arrived = new Promise<void>((resolve) => {
+		h.reached = () => resolve();
+	});
+	h.released = new Promise<void>((resolve) => {
+		h.release = () => resolve();
+	});
+	return h;
+}
+type Hold = ReturnType<typeof hold>;
+
+async function endpoint(replies: (string | { held: Hold; reply: string })[]) {
 	const bodies: any[] = [];
 	const server = createServer(async (req: IncomingMessage, res) => {
 		let data = "";
 		for await (const chunk of req) data += chunk;
 		bodies.push(JSON.parse(data));
-		const r = replies.shift() ?? "DONE";
+		let r = replies.shift() ?? "DONE";
+		if (typeof r !== "string") {
+			r.held.reached();
+			await r.held.released;
+			r = r.reply;
+		}
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: r } }] }));
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	return { url, bodies, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+	return {
+		url,
+		bodies,
+		// A request still held back must not keep the server open.
+		close: () =>
+			new Promise<void>((resolve) => {
+				server.closeAllConnections();
+				server.close(() => resolve());
+			}),
+	};
 }
+
+/** The stub's first session id. pi sends a session's id with every request of that session's own loop. */
+const SESSION = "session-1";
+/** A user message to ask with, as the dashboard's model check asks. */
+const CHECK = { role: "user", content: "Reply with the single word OK.", timestamp: 0 };
 
 /** A stub pi with the finetuned provider, the toy robot's task entry and its published tools. */
 function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<PrimitivesHandle> | undefined = {}) {
@@ -163,6 +197,8 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 	} as unknown as ExtensionAPI;
 	const warnings: string[] = [];
+	/** The id of the session the stub is in. */
+	const session = { id: SESSION };
 	const ctx = {
 		hasUI: true,
 		model: { provider: "finetuned" },
@@ -171,6 +207,7 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 			getBranch: () => [
 				{ type: "custom", customType: "robot_task", data: { robot: "toy", task: "PickCube-v1", seed: "3" } },
 			],
+			getSessionId: () => session.id,
 		},
 	};
 	finetuned(pi);
@@ -189,15 +226,36 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 		if (name === "session_start" && published) for (const fn of listeners.get(PRIMITIVES_EVENT) ?? []) fn(published);
 		for (const fn of handlers.get(name) ?? []) await fn({ type: name }, ctx);
 	};
+	const local = () => provider.getModels().find((m: any) => m.id === "local");
+	/** One step as pi's agent loop asks for it: with the session's id. It is awaited ten seconds at most. */
 	const turn = (messages: unknown[], signal?: AbortSignal) =>
-		provider
-			.streamSimple(
-				provider.getModels().find((m: any) => m.id === "local"),
-				{ messages },
-				{ signal },
-			)
-			.result();
-	return { emit, turn, entries, warnings };
+		within<any>(
+			10_000,
+			provider.streamSimple(local(), { messages }, { signal, sessionId: session.id }).result(),
+			"the session's own turn",
+		);
+	/**
+	 * The answer to a request that is not the loop's, as ctx.modelRegistry.streamSimple hands one over (the dashboard's
+	 * model check, a question to a VLM): one user message unless a transcript or a whole context is given, and no
+	 * session id unless `options` holds one. It is awaited two seconds at most: one taken for a turn may wait on the
+	 * endpoint.
+	 */
+	const side = (options: Record<string, unknown> = {}, context?: unknown[] | object) =>
+		within(
+			2000,
+			provider
+				.streamSimple(
+					local(),
+					Array.isArray(context) ? { messages: context } : (context ?? { messages: [CHECK] }),
+					{
+						maxTokens: 1,
+						...options,
+					},
+				)
+				.result(),
+			"a request that is not the session's turn",
+		);
+	return { emit, turn, side, entries, warnings };
 }
 const calls = (m: any) => m.content.filter((c: any) => c.type === "toolCall");
 /** A tool result with a JSON text, two images and `details`. */
@@ -434,6 +492,179 @@ test("student x code: the prompt carries code mode's rendering of the tier; one 
 });
 
 // ---------------------------------------------------------------------------
+// the tools and code surfaces and a request that is not a turn of the session's own loop (the dashboard's model
+// check, a question to a VLM, a check that asks the session's model, pi's own summaries)
+
+/** What a request to a fine-tuned model gets that is not a turn of the session's own loop. */
+const NOT_A_TURN =
+	"finetuned runs a fine-tuned policy and answers no other request; --aux-model names a model for the checks that take one";
+const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+/** `m` is that answer: an error of finetuned/local, with no content and no usage. */
+function assertNotATurn(m: any) {
+	assert.equal(m.stopReason, "error");
+	assert.equal(m.errorMessage, NOT_A_TURN);
+	assert.deepEqual(m.content, []);
+	assert.deepEqual([m.api, m.provider, m.model], ["finetuned", "finetuned", "local"]);
+	assert.deepEqual(m.usage, { ...NO_COST, totalTokens: 0, cost: { ...NO_COST, total: 0 } });
+}
+/**
+ * What the policy takes for no turn of its session: a request without an id, under another id, or with pi's mark on
+ * a one-off summary under the session's id. Each one as it is, and with a signal that is aborted when it arrives.
+ */
+const NOT_TURNS = Object.entries<Record<string, unknown>>({
+	"without an id": {},
+	"under another id": { sessionId: "0193e1c0-0000-7000-8000-000000000000" },
+	"as a one-off summary under the session's id": { sessionId: SESSION, cacheRetention: "none" },
+}).flatMap(([kind, options]): [string, Record<string, unknown>][] => [
+	[kind, options],
+	[`${kind}, arriving aborted`, { ...options, signal: AbortSignal.abort() }],
+]);
+/** A context of a request's own, as a tool's agent loop or pi's summaries send one: a system prompt and tools. */
+const OWN = normalizeContext({
+	systemPrompt: "You are a policy.",
+	tools: [{ name: "policy_act", description: "act", parameters: Type.Object({}) }],
+	messages: [CHECK as never],
+});
+/**
+ * A request of this kind gets the error with each transcript a check sends: one user message, the loop's own as it is
+ * at this place, and a context of its own; and with a signal that is live when it arrives, as the dashboard's model
+ * check sends one (a request that arrives aborted keeps its own).
+ */
+async function refused(p: ReturnType<typeof fakePi>, options: Record<string, unknown>, transcript: unknown[]) {
+	for (const context of [undefined, transcript, OWN]) assertNotATurn(await p.side(options, context));
+	assertNotATurn(await p.side({ signal: new AbortController().signal, ...options }));
+}
+/** A turn as the loop got it: its stop reason, its text (or its error) without the latency, and its calls. */
+const seen = (m: any) => [
+	m.stopReason,
+	m.errorMessage ??
+		m.content
+			.filter((c: any) => c.type === "text")
+			.map((c: any) => c.text)
+			.join("\n")
+			.replace(/ · \d+ ms/g, ""),
+	calls(m).map((c: any) => [c.id, c.name, c.arguments]),
+];
+/** The places of an episode where a request from elsewhere can arrive, in the order an episode first reaches them. */
+const PLACES = [
+	"before the first step",
+	"while a step's call runs",
+	"between two steps",
+	"while the service answers a step",
+	"after the end",
+];
+type At = (place: string, transcript: unknown[], p: ReturnType<typeof fakePi>) => Promise<void>;
+
+/**
+ * One episode as pi's agent loop runs it: the calls of each turn get `text` and two images as their result, until a
+ * turn calls nothing; then the loop asks once more, as for a second prompt. `at` runs at each place where a request
+ * from elsewhere can arrive, with the transcript the loop has there; while `held` holds back the service's reply to
+ * a step, `at` runs inside the loop's request that waits for it. Returns each turn as the loop got it.
+ */
+async function episode(p: ReturnType<typeof fakePi>, text: string, at?: At, held?: Hold) {
+	const visit = async (place: string, transcript: unknown[]) => at?.(place, [...transcript], p);
+	const turns: unknown[] = [];
+	const history: unknown[] = [];
+	await visit("before the first step", history);
+	for (let i = 0; i < 20; i++) {
+		const asked = p.turn([...history]);
+		const h = held;
+		if (h && (await Promise.race([asked.then(() => false), h.arrived.then(() => true)]))) {
+			held = undefined;
+			try {
+				await visit("while the service answers a step", history);
+			} finally {
+				h.release();
+			}
+		}
+		const m = await asked;
+		turns.push(seen(m));
+		if (!calls(m).length) break;
+		await visit("while a step's call runs", [...history, m]);
+		history.push(m, ...observation(m, text));
+		await visit("between two steps", history);
+	}
+	await visit("after the end", history);
+	turns.push(seen(await p.turn([...history])));
+	return turns;
+}
+
+/**
+ * The student on a surface: its replies in turn (the service holds back the second), the robot's tools, and a result
+ * text without a TASK line (the prompt's task is the robot's task flags). Returns what the loop got, the steps the
+ * policy wrote (without latency and endpoint) and what the service was asked.
+ */
+async function student(surface: "tools" | "code", replies: string[], at?: At) {
+	const held = hold();
+	const ep = await endpoint(replies.map((reply, i) => (i === 1 ? { held, reply } : reply)));
+	const p =
+		surface === "tools"
+			? fakePi({ "ft-endpoint": ep.url, "ft-model": "student", "ft-surface": "tools" }, [
+					"view_env_state",
+					"move_to",
+					"finish",
+				])
+			: fakePi({ "ft-endpoint": ep.url, "ft-model": "student", "ft-surface": "code", "code-api": "high" }, [
+					"run_code",
+					"finish",
+				]);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const text = surface === "tools" ? '{"state": {"tcp_pos": [0.4, 0, 0.3]}}' : 'run_code: {"status": "ran"}';
+		const turns = await episode(p, text, at, held);
+		const steps = p.entries.map((e) => [
+			e.type,
+			Object.fromEntries(Object.entries(e.data).filter(([k]) => k !== "latency_ms" && k !== "endpoint")),
+		]);
+		return { turns, steps, asked: ep.bodies };
+	} finally {
+		held.release();
+		await ep.close();
+	}
+}
+/** The tools surface: a move, garbage (the observe tool runs), another move, finish. */
+const tools = (at?: At) =>
+	student(
+		"tools",
+		[
+			'{"tool": "move_to", "arguments": {"xyz": [0.1, 0.2, 0.3]}}',
+			"I would rather MV_DOWN",
+			'{"tool": "move_to", "arguments": {"xyz": [0.2, 0.2, 0.3], "gripper": -1}}',
+			'{"tool": "finish", "arguments": {"status": "success", "summary": "placed"}}',
+		],
+		at,
+	);
+/** The code surface: a program, garbage (the observe-only program runs), another program, DONE. */
+const code = (at?: At) =>
+	student(
+		"code",
+		[
+			"```python\nr = move_to([0.1, 0.2, 0.3])\nRESULT = r\n```",
+			"Let me think. move_to([0, 0, 0])",
+			"```python\nmove_to([0.2, 0.2, 0.3])\n```",
+			"DONE",
+		],
+		at,
+	);
+/** Each episode without a request from elsewhere, run once for all the tests that compare with it. */
+const alone = new Map<string, ReturnType<typeof tools>>();
+const without = (run: typeof tools) => alone.get(run.name) ?? alone.set(run.name, run()).get(run.name);
+
+for (const [kind, options] of NOT_TURNS)
+	test(`student x tools and x code: a request that is not the session's turn (${kind}) gets the error and leaves the policy as it is: before the first step, while a step's call runs, between two steps, while the service answers a step and after the end, the session's own turns, the steps written and what the service is asked are those of an episode without it (the recent calls, the task from the robot's flags)`, async () => {
+		for (const run of [tools, code]) {
+			const places: string[] = [];
+			const got = await run(async (place, transcript, p) => {
+				places.push(place);
+				await refused(p, options, transcript);
+			});
+			assert.deepEqual([...new Set(places)], PLACES, run.name);
+			assert.deepEqual(got, await without(run), run.name);
+		}
+	});
+
+// ---------------------------------------------------------------------------
 // replay x A1 (units) and x A3 (program): the plan kinds, read by content, played by flash/replay
 
 test("readKind judges a plan by its content: a units JSON, an act JSONL, a .py or a JSON program; a tool plan is not its business", () => {
@@ -492,13 +723,19 @@ function flashPi(flagValues: Record<string, unknown> = {}) {
 		appendEntry: () => {},
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as ExtensionAPI;
-	const ctx = { hasUI: false, cwd: "/", ui: { notify: () => {} }, sessionManager: { getBranch: () => [] } };
+	const ctx = {
+		hasUI: false,
+		cwd: "/",
+		ui: { notify: () => {} },
+		sessionManager: { getBranch: () => [], getSessionId: () => "session-1" },
+	};
 	const emit = async (name: string) => {
 		for (const fn of handlers.get(name) ?? []) await fn({ type: name }, ctx);
 	};
+	/** One turn as pi's agent loop asks for it: with the session's id. */
 	const turn = (messages: unknown[] = []) => {
 		const provider = providers.find((p) => p.id === "flash");
-		return provider.streamSimple(provider.getModels()[0], { messages }, {}).result();
+		return provider.streamSimple(provider.getModels()[0], { messages }, { sessionId: "session-1" }).result();
 	};
 	return { pi, emit, turn };
 }
