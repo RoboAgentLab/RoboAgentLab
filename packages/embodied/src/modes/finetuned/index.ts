@@ -58,6 +58,15 @@
  * teacher sessions into training pairs rendered with the same functions. No released adapter speaks
  * these surfaces yet: they run with `finetuned/local --ft-model <adapter>`.
  *
+ * pi sends the session's id with every request of the session's own loop, and marks its one-off
+ * summaries as not to be cached. A step is taken only for a request that carries that id and not that
+ * mark; any other request to this model gets an error and leaves the episode where it is. The policy
+ * answers no question, so a check that asks the session's model when no other is named for it (the
+ * units verifier, a reviewed approval, VDM, an attachment check) gets that error unless one is named:
+ * `--aux-model` for any of them; for one alone the deployment's `aux.verify`, `aux.vdm` or
+ * `aux.attach`, or `--approval-model`. The dashboard's model check and pi's own summaries always ask
+ * the session's model: under this policy they get that error.
+ *
  * Copyright 2026 The Show-Harness Authors (github.com/showlab/Show-Harness @137d571).
  * Licensed under the Apache License, Version 2.0.
  * Modified by pi-embodied: core/runners/mvtoken.py, core/runners/dual_mvtoken.py, core/vlm/mvtoken_roles.py,
@@ -562,6 +571,13 @@ async function complete(
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const USAGE: Usage = { ...ZERO_COST, totalTokens: 0, cost: { ...ZERO_COST, total: 0 } };
+/**
+ * What a request gets that is not a turn of the session's own loop, as an error. The asker puts it behind a colon
+ * or inside parentheses in a message of its own, so it has no full stop; and it holds no word that pi's retry, or the
+ * fallback planner by default (../../planner/fallback.ts), takes for a failure worth another try or another model.
+ */
+const NOT_A_TURN =
+	"finetuned runs a fine-tuned policy and answers no other request; --aux-model names a model for the checks that take one";
 const model = (id: string): Model<"finetuned"> => ({
 	id,
 	name: `Show-Harness fine-tuned ${id}`,
@@ -719,6 +735,8 @@ export default function finetuned(pi: ExtensionAPI) {
 
 	/** Why the policy cannot run (an --ft-prompt that names nothing, this robot's images), set at session start. */
 	let refused: string | undefined;
+	/** The session's id, which pi sends with every request of the session's own loop. */
+	let session: string | undefined;
 	const cameraIndices = () =>
 		(flag("ft-cameras") === "auto" || !flag("ft-cameras") ? (dual() ? "0,1,2" : "0,1") : flag("ft-cameras"))
 			.split(",")
@@ -827,6 +845,7 @@ export default function finetuned(pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", (_event, ctx) => {
+		session = ctx.sessionManager.getSessionId();
 		refused = undefined;
 		over = false;
 		steps = ids = dones = 0;
@@ -1453,6 +1472,16 @@ export default function finetuned(pi: ExtensionAPI) {
 			stream.push({ type: "error", reason: message.stopReason, error: message });
 			stream.end();
 		};
+		// Not the session's own loop asking for its next step: answered with an error, before anything of the episode
+		// is read or changed (an aborted request below would end it). pi marks its one-off summaries with
+		// cacheRetention "none", the bug report's included, which carries the session's id.
+		if (session === undefined || options?.sessionId !== session || options?.cacheRetention === "none") {
+			message.stopReason = "error";
+			message.errorMessage = NOT_A_TURN;
+			stream.push({ type: "error", reason: "error", error: message });
+			stream.end();
+			return stream;
+		}
 		if (options?.signal?.aborted) {
 			fail(new Error("aborted"));
 			return stream;

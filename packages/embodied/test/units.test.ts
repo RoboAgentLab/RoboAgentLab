@@ -2336,7 +2336,7 @@ test("the finetuned mode sees the session's arms: a dual prompt opens both of le
 		arms = names;
 		await f.emit("session_start");
 		const p = f.provider();
-		const turn = await p.streamSimple(p.getModels()[0], { messages: [] }, {}).result();
+		const turn = await p.streamSimple(p.getModels()[0], { messages: [] }, { sessionId: "session" }).result();
 		return {
 			notices: f.notes.filter((n) => n.startsWith("finetuned:")),
 			calls: turn.content.filter((c: any) => c.type === "toolCall").map((c: any) => c.arguments),

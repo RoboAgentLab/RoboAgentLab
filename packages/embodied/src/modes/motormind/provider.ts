@@ -12,11 +12,14 @@
  *
  * Reentrancy (DESIGN §1.4 step 1): the pending tool call's id keys the turn. A result already
  * answered (pi retrying that turn) gets the message it was answered with, the mission does not
- * advance; a context that is
- * neither the opening user message nor the pending result (compaction, an interactive message) gets
- * a static text with zero usage. Reconciliation (step 2): a closed-loop refusal of the pending call
- * (the previous motion's outcome is unknown) is answered with `mm_observe`, after which the same
- * call is reissued; `episode_over` reaches the generator, which finishes.
+ * advance; a turn of the session's own loop that is neither the opening user message nor the pending
+ * result (a second prompt, an interactive message) gets a static text with zero usage. pi sends the
+ * session's id with every request of the session's own loop, and marks its one-off summaries as not
+ * to be cached: a request that does not carry that id, or carries that mark, gets an error before
+ * anything of the mission is read or changed (the dashboard's model check, pi's own summaries, a check
+ * that asks the session's model when no other is named for it). Reconciliation (step 2): a closed-loop
+ * refusal of the pending call (the previous motion's outcome is unknown) is answered with `mm_observe`,
+ * after which the same call is reissued; `episode_over` reaches the generator, which finishes.
  *
  * Fail-closed (DESIGN §1.7, provider side): at session start the model is `motormind/<base>` but
  * `--mm` is not true, or `<base>` (or a `--mm-role-models` entry) is not in the registry → the
@@ -86,9 +89,19 @@ const BUILT: ProviderDeps = { runSubgoal: builtExecutor, describers: { legend, c
 
 export const TURN_ENTRY = "motormind_turn";
 export const END_ENTRY = "motormind_end";
-/** The static answer to a context that is not the mission's (compaction, an interactive message). */
+/**
+ * The static answer to a turn of the session's own loop that is no step of the mission (a second prompt, an
+ * interactive message).
+ */
 export const STATIC_TEXT =
 	"MotorMind mission in progress: this provider answers only the mission's own turns (one robot call per turn).";
+/**
+ * What a request gets that is not a turn of the session's own loop, as an error. The asker puts it behind a colon
+ * or inside parentheses in a message of its own, so it has no full stop; and it holds no word that pi's retry, or the
+ * fallback planner by default (../../planner/fallback.ts), takes for a failure worth another try or another model.
+ */
+const NOT_A_TURN =
+	"motormind plays its mission's own turns and answers no other request; --aux-model names a model for the checks that take one";
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const USAGE: Usage = { ...ZERO_COST, totalTokens: 0, cost: { ...ZERO_COST, total: 0 } };
@@ -213,6 +226,8 @@ export function motormindProvider(
 	};
 	let run: Run | undefined;
 	let configError: string | undefined;
+	/** The session's id, which pi sends with every request of the session's own loop. */
+	let session: string | undefined;
 
 	const model: Model<Api> = {
 		id: base,
@@ -242,6 +257,7 @@ export function motormindProvider(
 	pi.on("session_start", (_event, c) => {
 		ctx = c;
 		registry = c.modelRegistry;
+		session = c.sessionManager.getSessionId();
 		run = undefined;
 		configError = undefined;
 		if (c.model?.provider !== MM_PROVIDER) return;
@@ -389,6 +405,11 @@ export function motormindProvider(
 			out.push({ type: "error", reason: message.stopReason, error: message });
 			out.end();
 		};
+		// Not the session's own loop asking for its next turn: answered with an error, before anything of the mission
+		// is read or changed. pi marks its one-off summaries with cacheRetention "none", the bug report's included,
+		// which carries the session's id.
+		if (session === undefined || options?.sessionId !== session || options?.cacheRetention === "none")
+			return fail(NOT_A_TURN);
 		if (configError) return fail(configError);
 		if (!registry || !ctx) return fail("motormind: no session");
 		const messages = context.messages as Message[];

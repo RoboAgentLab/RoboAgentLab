@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	alignAnswers,
@@ -82,6 +82,7 @@ import {
 } from "../src/modes/motormind/provider.ts";
 import { parseVerdict, verify } from "../src/modes/motormind/verify.ts";
 import { objectHead, placeTail, stripPlace } from "../src/modes/motormind/words.ts";
+import { RELAY_ERRORS } from "../src/planner/fallback.ts";
 import { plannerOf } from "../src/planner/kind.ts";
 
 type Json = Record<string, unknown>;
@@ -1416,13 +1417,24 @@ test("mission: the episode ending mid-plan judges the scene as it is and ends ex
 // the provider
 
 type Handler = (event: Json, ctx: Json) => unknown;
-/** A stub pi, registry and robot handle around the provider; role replies are scripted by the prompt's role. */
+type RoleOf = "plan" | "replan" | "verify" | "other";
+/** The stub's first session id. pi sends a session's id with every request of that session's own loop. */
+const SESSION = "session-1";
+/**
+ * A stub pi, registry and robot handle around the provider; role replies are scripted by the prompt's role. `hold`
+ * keeps the `n`-th reply of a role back until the promise it returns settles; `starting` leaves the robot's handle
+ * unpublished until `publish()`; with `selfRef` the registry finds motormind/<base> itself and hands its requests to
+ * the provider, as pi's registry would for a role mapped to it.
+ */
 function fakeProvider(o: {
 	flags?: Record<string, unknown>;
 	argv?: string[];
-	replies: (role: "plan" | "replan" | "verify" | "other", n: number) => unknown;
+	replies: (role: RoleOf, n: number) => unknown;
 	executor?: (input: SubgoalInput) => Executor;
 	model?: Json;
+	hold?: (role: RoleOf, n: number) => Promise<unknown> | undefined;
+	starting?: boolean;
+	selfRef?: boolean;
 }) {
 	const handlers = new Map<string, Handler[]>();
 	const flags: Record<string, unknown> = { mm: "true", ...o.flags };
@@ -1435,6 +1447,7 @@ function fakeProvider(o: {
 	const listeners = new Map<string, ((d: unknown) => void)[]>();
 	const notices: string[] = [];
 	let active: string[] | undefined;
+	let shutdowns = 0;
 	const pi = {
 		on: (name: string, fn: Handler) => handlers.set(name, [...(handlers.get(name) ?? []), fn]),
 		registerFlag: (name: string, f: { default?: unknown }) => {
@@ -1472,9 +1485,16 @@ function fakeProvider(o: {
 	};
 	const counts = { plan: 0, replan: 0, verify: 0, other: 0 };
 	const roleCalls: string[] = [];
+	const self = () => providers.find((p) => p.id === "motormind")!;
 	const registry = {
-		find: (provider: string, id: string) => (`${provider}/${id}` === BASE ? base : undefined),
+		find: (provider: string, id: string) =>
+			`${provider}/${id}` === BASE
+				? base
+				: o.selfRef && `${provider}/${id}` === `motormind/${BASE}`
+					? self().getModels()[0]
+					: undefined,
 		streamSimple: (m: Model<"openai-completions">, c: { systemPrompt?: string }, opt?: { signal?: AbortSignal }) => {
+			if (m.provider === "motormind") return self().streamSimple(m, c, opt);
 			const role = /^You plan/.test(c.systemPrompt ?? "")
 				? "plan"
 				: /^You replan/.test(c.systemPrompt ?? "")
@@ -1483,7 +1503,9 @@ function fakeProvider(o: {
 						? "verify"
 						: "other";
 			roleCalls.push(role);
-			const value = o.replies(role, counts[role]++);
+			const n = counts[role]++;
+			const value = o.replies(role, n);
+			const held = o.hold?.(role, n);
 			const stream = createAssistantMessageEventStream();
 			const message: AssistantMessage = {
 				role: "assistant",
@@ -1502,13 +1524,15 @@ function fakeProvider(o: {
 				stopReason: "stop",
 				timestamp: 1,
 			};
-			queueMicrotask(() => {
+			const answer = () => {
 				if (opt?.signal?.aborted) {
 					message.stopReason = "aborted";
 					stream.push({ type: "error", reason: "aborted", error: message });
 				} else stream.push({ type: "done", reason: "stop", message });
 				stream.end();
-			});
+			};
+			if (held) void held.then(answer);
+			else queueMicrotask(answer);
 			return stream;
 		},
 	};
@@ -1533,27 +1557,48 @@ function fakeProvider(o: {
 		latest: () => latest,
 		task: () => "put the black bowl on the plate",
 	};
+	/** The id of the session the stub is in: a test moves it on for a new session. */
+	const session = { id: SESSION };
 	const ctx = {
 		hasUI: true,
 		cwd: "/",
 		ui: { notify: (m: string) => notices.push(m) },
-		shutdown: () => {},
+		shutdown: () => {
+			shutdowns++;
+		},
 		model: o.model ?? { provider: "motormind", id: BASE, contextWindow: 128_000, maxTokens: 16_384 },
 		modelRegistry: registry,
-		sessionManager: { getBranch: () => [] },
+		sessionManager: { getBranch: () => [], getSessionId: () => session.id },
 	};
 	const emit = async (name: string, event: Json = {}) => {
 		let result: unknown;
 		for (const fn of handlers.get(name) ?? []) result = (await fn({ type: name, ...event }, ctx)) ?? result;
 		return result;
 	};
-	pi.events.emit(MOTORMIND_EVENT, handle);
-	const turn = async (messages: Message[], signal?: AbortSignal) => {
-		const provider = providers.find((p) => p.id === "motormind")!;
-		const stream = provider.streamSimple(provider.getModels()[0], { messages }, { signal });
+	const publish = () => pi.events.emit(MOTORMIND_EVENT, handle);
+	if (!o.starting) publish();
+	/** One turn as pi's agent loop asks for it: with the session's id, and `more` options of the loop's request. */
+	const turn = async (messages: Message[], signal?: AbortSignal, more: Json = {}) => {
+		const stream = self().streamSimple(
+			self().getModels()[0],
+			{ messages },
+			{ signal, sessionId: session.id, ...more },
+		);
 		for await (const _ of stream);
 		return (await stream.result()) as AssistantMessage;
 	};
+	/**
+	 * A request that is not the loop's, as ctx.modelRegistry.streamSimple hands one over (the dashboard's model check,
+	 * a question to a VLM): one user message unless `messages` is given, and no session id unless `options` holds one.
+	 */
+	const ask = (options: Json = {}, messages: Message[] = [ASKED]) =>
+		self().streamSimple(self().getModels()[0], { messages }, { maxTokens: 1, ...options });
+	/** The answer to such a request. */
+	const side = async (options: Json = {}, messages?: Message[]) =>
+		(await ask(options, messages).result()) as AssistantMessage;
+	/** One from a caller that passes no options at all, and its answer. */
+	const plain = () => self().streamSimple(self().getModels()[0], { messages: [ASKED] });
+	const bare = async () => (await plain().result()) as AssistantMessage;
 	/** The tool result pi would append for the message's tool call, from the fake robot. */
 	const resultFor = (m: AssistantMessage, body: Json, isError = false): Message => {
 		const call = m.content.find((c) => c.type === "toolCall")!;
@@ -1574,17 +1619,29 @@ function fakeProvider(o: {
 		prov,
 		emit,
 		turn,
+		ask,
+		side,
+		plain,
+		bare,
+		publish,
+		session,
+		/** The flags as pi reads them: a test changes one for a later session. */
+		flags,
+		model: () => self().getModels()[0],
 		resultFor,
 		entries,
 		notices,
 		roleCalls,
 		handleCalls,
 		active: () => active,
+		shutdowns: () => shutdowns,
 		setLatest,
 		ctx,
 	};
 }
 const USER: Message = { role: "user", content: [{ type: "text", text: "Solve the task." }], timestamp: 1 };
+/** The one user message the dashboard's model check sends. */
+const ASKED: Message = { role: "user", content: "Reply with the single word OK.", timestamp: 0 };
 const callOf = (m: AssistantMessage) => m.content.find((c) => c.type === "toolCall")!;
 
 test("provider: off without --model motormind/...; motormindArgs; plannerOf counts a motormind episode", () => {
@@ -1601,7 +1658,7 @@ test("provider: off without --model motormind/...; motormindArgs; plannerOf coun
 	assert.ok(!isClosedLoopRefusal("mm_act refused, nothing moved: distance_mm must be positive"));
 });
 
-test("provider: one tool call per turn; the same result twice advances the mission once; a foreign context gets the static text with zero usage", async () => {
+test("provider: one tool call per turn; the same result twice advances the mission once; a turn of the session's loop that is no step of the mission gets the static text with zero usage", async () => {
 	let verdicts = 0;
 	const f = fakeProvider({
 		replies: (role) => (role === "plan" ? PLAN : role === "verify" ? (++verdicts >= 3 ? TASK_DONE : DONE) : {}),
@@ -1629,8 +1686,10 @@ test("provider: one tool call per turn; the same result twice advances the missi
 	assert.equal(f.roleCalls.length, 1);
 	const first = await f.turn([USER]);
 	assert.equal(callOf(first).id, callOf(m1).id, "the first turn retried");
-	// a compaction-shaped context (the last message is not the pending result): static text, zero usage
-	const odd = await f.turn([USER, m1, seen, m2]);
+	// a turn of the session's own loop that is no step of the mission (a message the user sent while the look ran):
+	// static text, zero usage
+	const steer: Message = { role: "user", content: [{ type: "text", text: "Hurry up." }], timestamp: 3 };
+	const odd = await f.turn([USER, m1, seen, steer]);
 	assert.equal(odd.stopReason, "stop");
 	assert.deepEqual(odd.content, [{ type: "text", text: STATIC_TEXT }]);
 	assert.equal(odd.usage.totalTokens, 0);
@@ -1743,8 +1802,13 @@ test("provider: fails closed at session start without --mm or with a base model 
 	await f.emit("session_start");
 	assert.deepEqual(f.active(), []);
 	assert.match(f.notices[0], /needs --mm=true/);
+	// The session's own turn says why.
 	const m = await f.turn([USER]);
 	assert.equal(m.stopReason, "error");
+	assert.equal(
+		m.errorMessage,
+		"--model motormind/selfhost/q plays the MotorMind mission, which needs --mm=true (or --preset motormind)",
+	);
 	const g = fakeProvider({
 		argv: ["node", "pi", "--model", "motormind/nowhere/x"],
 		replies: () => ({}),
@@ -1799,6 +1863,618 @@ test("provider: replyOf reads the tool result and the robot's latest observation
 		assert.match(p.sha, /^[0-9a-f]{64}$/);
 	}
 	assert.deepEqual(Object.keys(promptHashes()), [...PROMPT_NAMES]);
+});
+
+// ---------------------------------------------------------------------------
+// the provider and the requests that are not a turn of the session's own loop
+
+/** What a request gets that is not a turn of the session's own loop. */
+const NOT_A_TURN =
+	"motormind plays its mission's own turns and answers no other request; --aux-model names a model for the checks that take one";
+const NO_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+/** `m` is that answer: an error of motormind's own model, with nothing of the mission in it and no usage. */
+function assertNotATurn(m: AssistantMessage, base = "selfhost/q") {
+	assert.equal(m.stopReason, "error");
+	assert.equal(m.errorMessage, NOT_A_TURN);
+	assert.deepEqual(m.content, []);
+	assert.deepEqual([m.api, m.provider, m.model], ["openai-completions", "motormind", base]);
+	assert.deepEqual(m.usage, NO_USAGE);
+}
+/**
+ * What motormind takes for no turn of its session: a request without an id, under another id, or with pi's mark on a
+ * one-off summary under the session's id. Each one as it is, and with a signal that is aborted when it arrives.
+ */
+const NOT_TURNS = Object.entries<Json>({
+	"without an id": {},
+	"under another id": { sessionId: "0193e1c0-0000-7000-8000-000000000000" },
+	"as a one-off summary under the session's id": { sessionId: SESSION, cacheRetention: "none" },
+}).flatMap(([kind, options]): [string, Json][] => [
+	[kind, options],
+	[`${kind}, arriving aborted`, { ...options, signal: AbortSignal.abort() }],
+]);
+/**
+ * What a request that is not a turn leaves as it is: the session's entries, the role calls, what the robot was told,
+ * the mission's report, what the session was told or asked to do (notices, the active tools, a shutdown), and the
+ * model motormind registered.
+ */
+const stateOf = (f: ReturnType<typeof fakeProvider>) =>
+	JSON.stringify([
+		f.entries,
+		f.roleCalls,
+		f.handleCalls,
+		f.prov!.result(),
+		f.notices,
+		f.active() ?? null,
+		f.shutdowns(),
+		f.model(),
+	]);
+/** The same, as far as two runs of one mission agree (role calls take their own time). */
+const outcomeOf = (f: ReturnType<typeof fakeProvider>) => {
+	const r = f.prov!.result();
+	return JSON.stringify([
+		f.entries.map((e) => e.type),
+		f.entries.filter((e) => e.type === END_ENTRY),
+		// each turn's entry, but for the time its role calls took
+		f.entries
+			.filter((e) => e.type === TURN_ENTRY)
+			.map((e) => ({ ...e.data, calls: (e.data.calls as Json[]).map(({ latency_s: _, ...call }) => call) })),
+		f.roleCalls,
+		f.handleCalls,
+		[
+			r.status,
+			r.ended_on,
+			r.aborted,
+			r.turns,
+			r.plans,
+			r.replans,
+			r.mission_actions,
+			r.observes,
+			r.models,
+			r.cost_usd,
+		],
+	]);
+};
+/** A reply as a line: its stop reason and error, its text, its calls with their ids and arguments. */
+const lineOf = (m: AssistantMessage) =>
+	[
+		m.stopReason,
+		m.errorMessage ?? "",
+		...m.content.map((c) =>
+			c.type === "text"
+				? c.text
+				: c.type === "toolCall"
+					? `${c.name} ${c.id} ${JSON.stringify(c.arguments)}`
+					: c.type,
+		),
+	].join(" | ");
+/** The role replies of one mission: the planner's first reply is no usable plan, the third verdict ends the task. */
+const missionReplies = () => {
+	let verdicts = 0;
+	return (role: RoleOf, n: number) =>
+		role === "plan" ? (n === 0 ? {} : PLAN) : role === "verify" ? (++verdicts >= 3 ? TASK_DONE : DONE) : {};
+};
+/** A question to a VLM with a picture, one user message. */
+const LOOKED: Message = {
+	role: "user",
+	content: [
+		{ type: "text", text: "Is the bowl on the plate?" },
+		{ type: "image", data: JPEG, mimeType: "image/jpeg" },
+	],
+	timestamp: 0,
+};
+/** A second user message: the session's own loop after a second prompt. */
+const AGAIN: Message = { role: "user", content: [{ type: "text", text: "And now put it back." }], timestamp: 3 };
+const MOVE = '{"type":"move","direction":"down","distance_mm":50,"label":"move down 50.0 mm (base)"}';
+/** The session's own replies of that mission, as playMission asks for them. */
+const COURSE = [
+	"toolUse |  | [motormind] no role call → mm_observe | mm_observe motormind-1 {}",
+	// pi's retry of the opening turn: the message that turn was answered with
+	"toolUse |  | [motormind] no role call → mm_observe | mm_observe motormind-1 {}",
+	`toolUse |  | [motormind] planner planner → mm_act move down 50.0 mm (base) | mm_act motormind-2 ${MOVE}`,
+	`toolUse |  | [motormind] verify → mm_act move down 50.0 mm (base) | mm_act motormind-3 ${MOVE}`,
+	'toolUse |  | [motormind] verify verify → finish → task_done: the bowl sits on the plate | finish motormind-4 {"status":"success","summary":"task_done (task_done): the bowl sits on the plate"}',
+	// once the mission is over: finish's result, a second prompt, pi's retry of the opening turn
+	`stop |  | ${STATIC_TEXT}`,
+	`stop |  | ${STATIC_TEXT}`,
+	"toolUse |  | [motormind] no role call → mm_observe | mm_observe motormind-1 {}",
+	// once the run has ended: a second prompt, pi's retry of the opening turn
+	`stop |  | ${STATIC_TEXT}`,
+	"toolUse |  | [motormind] no role call → mm_observe | mm_observe motormind-1 {}",
+];
+/** The places of a mission where something of it could be started, changed or forgotten. */
+const PLACES = [
+	"before the first turn",
+	"with the opening look pending",
+	"while the session's own turn waits for the planner",
+	"while the session's own turn waits for the planner again",
+	"with an action pending",
+	"once the mission is over",
+	"once the run has ended",
+] as const;
+/** A look pending after the mission's role calls: the one that reconciles a motion the closed loop refused. */
+const RECONCILING = "with the look that reconciles a refused motion pending";
+type Place = (typeof PLACES)[number] | typeof RECONCILING;
+
+/**
+ * The session's own loop plays a mission to its finish as pi asks for each turn: the opening turn and pi's retry of
+ * it, the planner's turn (asked twice in that turn), the actions' turns and finish; then finish's result, a second
+ * prompt and pi's retry of the opening turn once the mission is over, and once the run has ended a second prompt and
+ * pi's retry of the opening turn, in a run that ends too. With `cut`, the run ends with the first action pending (pi's
+ * --time-limit, the user); then the transcript with that action's result is sent again, and the same second prompt and
+ * retry follow. `aside` runs at each place with the transcripts of the session's next request and of pi's retry of its
+ * last one; while the session's own turn waits for the planner, each of the planner's two replies in that turn is held
+ * back until `aside` is done there. Returns the session's replies as lines (COURSE), and the stub.
+ */
+async function playMission(
+	aside: (
+		place: Place,
+		transcripts: Message[][],
+		f: ReturnType<typeof fakeProvider>,
+	) => Promise<void> = async () => {},
+	cut = false,
+) {
+	// The first two planner calls once the session's own planner turn is asked, each held back until its `aside` is
+	// done (a call before that turn is answered at once).
+	const holds = [0, 1].map(() => {
+		let asked = () => {};
+		const planning = new Promise<void>((resolve) => {
+			asked = resolve;
+		});
+		let release = () => {};
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		return { asked: () => asked(), planning, release: () => release(), released };
+	});
+	let held: number | undefined;
+	const f = fakeProvider({
+		replies: missionReplies(),
+		hold: (role) => {
+			if (held === undefined || role !== "plan" || held > 1) return undefined;
+			const h = holds[held++];
+			h.asked();
+			return h.released;
+		},
+	});
+	const lines: string[] = [];
+	const own = async (messages: Message[]) => {
+		const m = await f.turn(messages);
+		lines.push(lineOf(m));
+		return m;
+	};
+	const acted = (m: AssistantMessage) =>
+		f.resultFor(m, { segments: [{ ...GOAL.C6.blocked, outcome: "done" }], episode_over: false });
+	await f.emit("session_start");
+	await aside("before the first turn", [[USER]], f);
+	const m1 = await own([USER]);
+	const seen = f.resultFor(m1, { obs_id: 1 });
+	await aside("with the opening look pending", [[USER, m1, seen], [USER]], f);
+	await own([USER]);
+	held = 0;
+	const planned = own([USER, m1, seen]);
+	for (const [h, place] of [
+		[holds[0], "while the session's own turn waits for the planner"],
+		[holds[1], "while the session's own turn waits for the planner again"],
+	] as const) {
+		try {
+			// A turn that ends without asking the planner (again) is not this mission's course: its line says so.
+			await Promise.race([h.planning, planned]);
+			await aside(place, [[USER, m1, seen], [USER]], f);
+		} finally {
+			h.release();
+		}
+	}
+	const m2 = await planned;
+	const history: Message[] = [USER, m1, seen, m2, acted(m2)];
+	await aside("with an action pending", [history, [USER, m1, seen]], f);
+	if (cut) {
+		await f.emit("agent_end", { messages: [] });
+		await aside("once the run has ended", [history, [USER, m1, seen]], f);
+		await own(history);
+		await own([...history, AGAIN]);
+		await own([USER]);
+		await f.emit("agent_end", { messages: [] });
+		return { f, lines };
+	}
+	const m3 = await own(history);
+	const acting = [...history];
+	history.push(m3, acted(m3));
+	f.setLatest(observation(GOAL.C6.contact, { holding: false, commanded: "open" }));
+	const m4 = await own(history);
+	const finishing = [...history];
+	history.push(m4, f.resultFor(m4, {}));
+	await aside("once the mission is over", [history, finishing, acting], f);
+	await own(history);
+	await own([...history, AGAIN]);
+	await own([USER]);
+	await f.emit("agent_end", { messages: [] });
+	await aside("once the run has ended", [[...history, AGAIN], history, finishing], f);
+	await own([...history, AGAIN]);
+	await own([USER]);
+	await f.emit("agent_end", { messages: [] });
+	return { f, lines };
+}
+
+/**
+ * A mission whose planner gives no usable plan: the opening turn, the planner's turn, which finishes it, and finish's
+ * result; then the run ends. `aside` runs once the mission is over. Returns the session's replies as lines, and the
+ * stub.
+ */
+async function failMission(
+	aside: (
+		place: Place,
+		transcripts: Message[][],
+		f: ReturnType<typeof fakeProvider>,
+	) => Promise<void> = async () => {},
+) {
+	const f = fakeProvider({ replies: () => ({}) });
+	const lines: string[] = [];
+	const own = async (messages: Message[]) => {
+		const m = await f.turn(messages);
+		lines.push(lineOf(m));
+		return m;
+	};
+	await f.emit("session_start");
+	const m1 = await own([USER]);
+	const seen = f.resultFor(m1, { obs_id: 1 });
+	const m2 = await own([USER, m1, seen]);
+	const history = [USER, m1, seen, m2, f.resultFor(m2, {})];
+	await aside("once the mission is over", [history, [USER, m1, seen]], f);
+	await own(history);
+	await f.emit("agent_end", { messages: [] });
+	return { f, lines };
+}
+
+/**
+ * A mission whose first action the closed loop refuses (the closed-loop test above): the opening turn, the planner's
+ * turn, the look that reconciles the refused action, the same action again, and the rest played to finish and its
+ * result; then the run ends. `aside` runs while that look is pending, after the planner's call. Returns the session's
+ * replies as lines, and the stub.
+ */
+async function reconcileMission(
+	aside: (
+		place: Place,
+		transcripts: Message[][],
+		f: ReturnType<typeof fakeProvider>,
+	) => Promise<void> = async () => {},
+) {
+	let verdicts = 0;
+	const f = fakeProvider({
+		replies: (role) => (role === "plan" ? PLAN : role === "verify" ? (++verdicts >= 3 ? TASK_DONE : DONE) : {}),
+	});
+	const lines: string[] = [];
+	const own = async (messages: Message[]) => {
+		const m = await f.turn(messages);
+		lines.push(lineOf(m));
+		return m;
+	};
+	await f.emit("session_start");
+	const m1 = await own([USER]);
+	const seen = f.resultFor(m1, {});
+	const m2 = await own([USER, m1, seen]);
+	const refused: Message = {
+		...(f.resultFor(m2, {}, true) as Extract<Message, { role: "toolResult" }>),
+		content: [
+			{
+				type: "text",
+				text: "mm_act refused: the last motion (mm_act) has an unknown outcome (timed out). Re-observe with mm_observe before issuing another motion.",
+			},
+		],
+	};
+	const m3 = await own([USER, m1, seen, m2, refused]);
+	const history: Message[] = [USER, m1, seen, m2, refused, m3, f.resultFor(m3, {})];
+	await aside(RECONCILING, [history, [USER, m1, seen, m2, refused]], f);
+	let m = await own(history);
+	history.push(m);
+	for (let i = 0; i < 6 && callOf(m).name !== "finish"; i++) {
+		const body =
+			callOf(m).name === "mm_act"
+				? { segments: [{ ...GOAL.C6.blocked, outcome: "done" }], episode_over: false }
+				: {};
+		if (i === 2) f.setLatest(observation(GOAL.C6.contact, { holding: false, commanded: "open" }));
+		history.push(f.resultFor(m, body));
+		m = await own(history);
+		history.push(m);
+	}
+	await own([...history, f.resultFor(m, {})]);
+	await f.emit("agent_end", { messages: [] });
+	return { f, lines };
+}
+
+/**
+ * An `aside` for the courses above: requests of one kind that is not the session's turn, at each place: a check's one
+ * user message, one with a picture, the very transcripts of the session's next request and of pi's retry of its last
+ * one, two user messages, none, and one whose caller gives up once it has the answer (its signal is aborted then).
+ * Each gets the error, and the mission, what the session printed and its exit code are as they were. The places it ran
+ * at are pushed to `places`.
+ */
+const asideOf =
+	(options: Json, places: Place[]) =>
+	async (place: Place, transcripts: Message[][], f: ReturnType<typeof fakeProvider>) => {
+		const before = stateOf(f);
+		const code = process.exitCode;
+		const printed: unknown[] = [];
+		const log = console.error;
+		console.error = (...line: unknown[]) => void printed.push(line);
+		try {
+			for (const messages of [[ASKED], [LOOKED], ...transcripts, [ASKED, AGAIN], []])
+				assertNotATurn(await f.side(options, messages));
+			const caller = new AbortController();
+			assertNotATurn(await f.side({ signal: caller.signal, ...options }));
+			caller.abort();
+		} finally {
+			console.error = log;
+		}
+		assert.equal(stateOf(f), before, place);
+		assert.deepEqual(printed, [], place);
+		assert.equal(process.exitCode, code, place);
+		places.push(place);
+	};
+
+for (const [kind, options] of NOT_TURNS) {
+	test(`provider: a request that is not the session's turn (${kind}) gets the error and leaves the mission as it is: before the first turn, with a call pending, while the session's own turn waits for the planner, once the mission is over and once the run has ended; the session's own turns are those of a mission without it, and a new session then starts a mission of its own`, async () => {
+		const without = await playMission();
+		assert.deepEqual(without.lines, COURSE);
+		const places: Place[] = [];
+		const asked = await playMission(asideOf(options, places));
+		assert.deepEqual(places, [...PLACES]);
+		// The session's own turns are those of the mission without the requests, and so is how it ended.
+		assert.deepEqual(asked.lines, COURSE);
+		assert.equal(outcomeOf(asked.f), outcomeOf(without.f));
+		// A session that starts after it: its first turn starts a mission of its own.
+		asked.f.session.id = "session-2";
+		await asked.f.emit("session_start");
+		assert.equal(lineOf(await asked.f.turn([USER])), COURSE[0]);
+	});
+
+	test(`provider: a request that is not the session's turn (${kind}) leaves as it is a mission the run's end cuts off with an action pending, and one that ends without a plan: the session's own turns and the run's record are those of a run without it`, async () => {
+		const places: Place[] = [];
+		const cut = await playMission(undefined, true);
+		// The opening turn, its retry and the planner's turn; the action's result sent again; a second prompt, the retry.
+		assert.equal(cut.lines.length, 6);
+		assert.deepEqual(
+			[...cut.lines.slice(0, 3), ...cut.lines.slice(-2)],
+			[...COURSE.slice(0, 3), ...COURSE.slice(-2)],
+		);
+		const cutAsked = await playMission(asideOf(options, places), true);
+		assert.deepEqual(places, [...PLACES.slice(0, 5), "once the run has ended"]);
+		assert.deepEqual(cutAsked.lines, cut.lines);
+		assert.equal(outcomeOf(cutAsked.f), outcomeOf(cut.f));
+		places.length = 0;
+		const failed = await failMission();
+		assert.match(failed.lines[1], /the planner gave no usable plan/);
+		const failedAsked = await failMission(asideOf(options, places));
+		assert.deepEqual(places, ["once the mission is over"]);
+		assert.deepEqual(failedAsked.lines, failed.lines);
+		assert.equal(outcomeOf(failedAsked.f), outcomeOf(failed.f));
+	});
+
+	test(`provider: a request that is not the session's turn (${kind}) gets the error and leaves the mission as it is while the look that reconciles a refused motion is pending: the refused call goes out again and the mission ends as without it`, async () => {
+		const without = await reconcileMission();
+		// The look that reconciles the refused action and the same action again, without a role call; the finish.
+		assert.deepEqual(without.lines.slice(2, 4), [
+			"toolUse |  | [motormind] no role call → mm_observe | mm_observe motormind-3 {}",
+			`toolUse |  | [motormind] no role call → mm_act move down 50.0 mm (base) | mm_act motormind-4 ${MOVE}`,
+		]);
+		assert.deepEqual(without.lines.slice(-2), [
+			'toolUse |  | [motormind] verify verify → finish → task_done: the bowl sits on the plate | finish motormind-7 {"status":"success","summary":"task_done (task_done): the bowl sits on the plate"}',
+			`stop |  | ${STATIC_TEXT}`,
+		]);
+		const places: Place[] = [];
+		const asked = await reconcileMission(asideOf(options, places));
+		assert.deepEqual(places, [RECONCILING]);
+		assert.deepEqual(asked.lines, without.lines);
+		assert.equal(outcomeOf(asked.f), outcomeOf(without.f));
+	});
+}
+
+test("provider: before a session has started no request is a turn, of whatever kind, with or without options, under the id the session will have too", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	const before = stateOf(f);
+	for (const [, options] of NOT_TURNS) assertNotATurn(await f.side(options, [USER]));
+	assertNotATurn(await f.bare());
+	assertNotATurn(await f.turn([USER]));
+	assert.equal(stateOf(f), before);
+	assert.deepEqual(f.entries, []);
+	await f.emit("session_start");
+	assert.equal(lineOf(await f.turn([USER])), COURSE[0]);
+});
+
+test("provider: a request that is not the session's turn while the robot is starting (its handle not yet published) gets the error and starts nothing: once the robot is up, the session's first turn starts the mission", async () => {
+	const f = fakeProvider({ replies: missionReplies(), starting: true });
+	await f.emit("session_start");
+	const before = stateOf(f);
+	for (const [, options] of NOT_TURNS)
+		for (const messages of [[ASKED], [USER]]) assertNotATurn(await f.side(options, messages));
+	assertNotATurn(await f.bare());
+	assert.equal(stateOf(f), before);
+	f.publish();
+	const m1 = await f.turn([USER]);
+	assert.equal(lineOf(m1), COURSE[0]);
+	assert.equal(lineOf(await f.turn([USER, m1, f.resultFor(m1, { obs_id: 1 })])), COURSE[2]);
+});
+
+test("provider: in a session that fails closed at its start, a request that is not the session's turn gets the error and starts nothing, and the session's own turn after each gets the reason it failed; a new session that does not fail then starts its mission", async () => {
+	const needsMm =
+		"--model motormind/selfhost/q plays the MotorMind mission, which needs --mm=true (or --preset motormind)";
+	const f = fakeProvider({ flags: { mm: "false" }, replies: () => ({}) });
+	await f.emit("session_start");
+	const before = stateOf(f);
+	for (const [kind, options] of NOT_TURNS) {
+		assertNotATurn(await f.side(options, [USER]));
+		assert.equal((await f.turn([USER])).errorMessage, needsMm, kind);
+	}
+	assertNotATurn(await f.bare());
+	assert.equal((await f.turn([USER])).errorMessage, needsMm);
+	assert.equal(stateOf(f), before);
+	const unknown = "unknown model nowhere/x (the registry has no such provider/id)";
+	const g = fakeProvider({
+		argv: ["node", "pi", "--model", "motormind/nowhere/x"],
+		replies: () => ({}),
+		model: { provider: "motormind", id: "nowhere/x" },
+	});
+	await g.emit("session_start");
+	const was = stateOf(g);
+	for (const [kind, options] of NOT_TURNS) {
+		assertNotATurn(await g.side(options, [USER]), "nowhere/x");
+		assert.equal((await g.turn([USER])).errorMessage, unknown, kind);
+	}
+	assert.equal(stateOf(g), was);
+	// No mission was started, so the run's end writes no end entry.
+	await f.emit("agent_end", { messages: [] });
+	await g.emit("agent_end", { messages: [] });
+	assert.deepEqual([f.entries, g.entries], [[], []]);
+	// A session that starts after it with --mm on: its first turn starts the mission.
+	f.flags.mm = "true";
+	f.session.id = "session-2";
+	await f.emit("session_start");
+	assert.equal(lineOf(await f.turn([USER])), COURSE[0]);
+});
+
+test("provider: a new session has an id of its own: a request under the one before is not its turn, and the new session's first turn starts a mission of its own", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	const m1 = await f.turn([USER]);
+	const seen = f.resultFor(m1, { obs_id: 1 });
+	f.session.id = "session-2";
+	await f.emit("session_start");
+	// The loop of the session before, with its next transcript and with its opening one.
+	assertNotATurn(await f.side({ sessionId: SESSION }, [USER, m1, seen]));
+	assertNotATurn(await f.side({ sessionId: SESSION }, [USER]));
+	assert.equal(lineOf(await f.turn([USER])), COURSE[0]);
+	assert.equal(f.entries.filter((e) => e.type === TURN_ENTRY).length, 2);
+});
+
+test("provider: the session's id is kept whatever start pi announces (its first start, a new session, a resumed one, a fork, a reload): that session's own request is its turn, and one without an id is not", async () => {
+	for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
+		const f = fakeProvider({ replies: missionReplies() });
+		f.session.id = `session-${reason}`;
+		await f.emit("session_start", { reason });
+		assertNotATurn(await f.side({}, [USER]));
+		assert.equal(lineOf(await f.turn([USER])), COURSE[0], reason);
+	}
+});
+
+test("provider: the session's id is kept at its start whatever the session's model is then: after a switch to motormind, the session's own request is a turn and one from elsewhere is not", async () => {
+	const f = fakeProvider({ replies: missionReplies(), model: { provider: "selfhost", id: "q" } });
+	await f.emit("session_start");
+	// The stub's session keeps selfhost/q as its model; its loop asks motormind's model, as it would after a switch.
+	assertNotATurn(await f.side({}, [USER]));
+	assert.equal(lineOf(await f.turn([USER])), COURSE[0]);
+});
+
+test("provider: a request of the session's own loop is its turn whatever retention it names, other than pi's one-off mark", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	const m1 = await f.turn([USER], undefined, { cacheRetention: "short" });
+	assert.equal(lineOf(m1), COURSE[0]);
+	const next = [USER, m1, f.resultFor(m1, { obs_id: 1 })];
+	assertNotATurn(await f.side({ sessionId: SESSION, cacheRetention: "none" }, next));
+	assert.equal(lineOf(await f.turn(next, undefined, { cacheRetention: "long" })), COURSE[2]);
+});
+
+test("provider: whatever else a request carries (a reasoning level, a temperature, metadata, headers, a payload hook, a token limit, a retention other than pi's mark), the id and the mark decide: without the id, under another id or with the mark it gets the error and leaves the mission as it is, and the session's own turn is answered", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	const carried = {
+		reasoning: "low",
+		temperature: 0,
+		metadata: { user_id: "u" },
+		headers: { "x-request": "1" },
+		onPayload: () => undefined,
+		maxTokens: 64,
+	};
+	const before = stateOf(f);
+	// Each kind with all of it, under each retention a request names (a one-off summary's is pi's mark).
+	for (const [, options] of NOT_TURNS)
+		for (const cacheRetention of options.cacheRetention ? [options.cacheRetention] : [undefined, "short", "long"])
+			assertNotATurn(await f.side({ ...carried, cacheRetention, ...options }, [USER]));
+	assert.equal(stateOf(f), before);
+	// The session's first turn, asked with all of it and a retention: the mission's opening turn.
+	assert.equal(lineOf(await f.turn([USER], undefined, { ...carried, cacheRetention: "long" })), COURSE[0]);
+});
+
+test("provider: an id that only resembles the session's is another id, and a one-off summary is told by its mark alone", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	for (const sessionId of [
+		`${SESSION}0`,
+		SESSION.toUpperCase(),
+		SESSION.slice(0, -1),
+		SESSION.slice(1),
+		` ${SESSION}`,
+		`${SESSION} `,
+		"",
+	])
+		assertNotATurn(await f.side({ sessionId }, [USER]));
+	// The stub's other requests set a token limit; pi's mark counts without one, with another id and with none.
+	assertNotATurn(await f.side({ sessionId: SESSION, cacheRetention: "none", maxTokens: undefined }, [USER]));
+	assertNotATurn(await f.side({ sessionId: "0193e1c0-0000-7000-8000-000000000000", cacheRetention: "none" }, [USER]));
+	assertNotATurn(await f.side({ cacheRetention: "none" }, [USER]));
+	assert.equal(lineOf(await f.turn([USER])), COURSE[0]);
+});
+
+test("provider: the answer to a request that is not the session's turn reaches its asker as one error event, for every kind (also arriving aborted) and for a caller that passes no options", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	for (const [what, stream] of [
+		...NOT_TURNS.map(([kind, options]) => [kind, f.ask(options)] as const),
+		["no options", f.plain()] as const,
+	]) {
+		const events: { type: string; reason?: string; error?: AssistantMessage }[] = [];
+		for await (const event of stream) events.push(event as (typeof events)[number]);
+		assert.deepEqual(
+			events.map((e) => [e.type, e.reason]),
+			[["error", "error"]],
+			what,
+		);
+		assertNotATurn(events[0].error!);
+		assert.equal(await stream.result(), events[0].error, what);
+	}
+});
+
+test("provider: the answer to a request that is not the session's turn is no error pi sends again, none the fallback planner by default changes models for, and no closed-loop refusal; it ends without a full stop", async () => {
+	const f = fakeProvider({ replies: missionReplies() });
+	await f.emit("session_start");
+	const m = await f.side();
+	assertNotATurn(m);
+	// pi sends a request again after an error it takes for a passing one, and after one it takes for a full context.
+	assert.equal(isRetryableAssistantError(m), false);
+	assert.equal(isContextOverflow(m, f.model().contextWindow), false);
+	assert.doesNotMatch(m.errorMessage!, RELAY_ERRORS);
+	assert.equal(isClosedLoopRefusal(m.errorMessage!), false);
+	// An asker puts it behind a colon or in parentheses, in a sentence of its own.
+	assert.doesNotMatch(m.errorMessage!, /\.$/);
+});
+
+test("provider: a role mapped to motormind itself is no turn of the session: the role's request gets the error, which the role counts as a failed call and not as a timeout, and the plan fails without a hang", async () => {
+	const f = fakeProvider({
+		replies: () => ({}),
+		flags: { "mm-role-models": "planner=motormind/selfhost/q" },
+		selfRef: true,
+	});
+	await f.emit("session_start");
+	assert.deepEqual(f.notices, []);
+	const m1 = await f.turn([USER]);
+	const m2 = await f.turn([USER, m1, f.resultFor(m1, { obs_id: 1 })]);
+	assert.equal(
+		lineOf(m2),
+		'toolUse |  | [motormind] planner✗(transport) planner✗(transport) planner✗(transport) → finish → error: the planner gave no usable plan in 3 attempts | finish motormind-2 {"status":"failure","summary":"error (plan_failed): the planner gave no usable plan in 3 attempts"}',
+	);
+	const calls = f.entries.filter((e) => e.type === TURN_ENTRY)[1].data.calls as Json[];
+	assert.deepEqual(
+		calls.map((c) => [c.role, c.ok, c.error_kind, c.model]),
+		Array.from({ length: 3 }, () => ["planner", false, "transport", "motormind/selfhost/q"]),
+	);
+	// No request reached the base model.
+	assert.deepEqual(f.roleCalls, []);
 });
 
 // ---------------------------------------------------------------------------

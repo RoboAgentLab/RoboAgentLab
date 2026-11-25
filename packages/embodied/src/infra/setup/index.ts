@@ -24,7 +24,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { deployment, deploymentName } from "../config.ts";
+import { deployment, deploymentAt, deploymentName } from "../config.ts";
+import { PRESETS } from "../tiers.ts";
 import { askUser, registerAsk } from "./ask.ts";
 import {
 	type Axes,
@@ -158,6 +159,11 @@ export type Robot = {
 	panels?: Panel[];
 	/** Flash mounts (`--model flash/replay`): the robot has a hook that replays its recorded plans. */
 	flash?: boolean;
+	/**
+	 * Two arms: the units verifier is on by default (--units-verify auto, ../../modes/units). A robot whose arms a flag
+	 * picks reads them off the line (`runFlags`).
+	 */
+	twoArms?: boolean | ((line: string[]) => boolean);
 	/** The VLA-alone baseline (`--vla-alone`, ../../planner/vla-alone.ts): its flags, an example task, what it needs. */
 	vlaAlone?: { flags: string; task: string; needs: string; weights?: string };
 };
@@ -229,6 +235,8 @@ export const ROBOTS: Robot[] = [
 		label: "ManiSkill 3",
 		extension: "src/robots/maniskill/index.ts",
 		needs: "NVIDIA GPU (Vulkan)",
+		// The two-robot scenes (TwoRobotPickCube-v1, TwoRobotStackCube-v1) run on --arm panda_pair, two arms.
+		twoArms: (line) => flagOf(line, "arm") === "panda_pair",
 		axes: SIM,
 		task: "--task PickCube-v1 --seed 0",
 		finetuned: SIM_FT,
@@ -296,6 +304,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboTwin 2",
 		extension: "src/robots/robotwin/index.ts",
 		needs: "NVIDIA GPU (SAPIEN/Vulkan), cuRobo build; two arms",
+		twoArms: true,
 		axes: VLA_SIM("lingbot"),
 		task: "--task beat_block_hammer --task-config demo_randomized --seed 0",
 		weights: "LingBot-VLA RoboTwin EEF",
@@ -324,6 +333,7 @@ export const ROBOTS: Robot[] = [
 		label: "RoboDojo",
 		extension: "src/robots/robodojo/index.ts",
 		needs: "RTX GPU, Isaac Sim 6.1 / Isaac Lab 3.0, ~41 GB assets; two arms",
+		twoArms: true,
 		axes: SIM,
 		task: "--task stack_bowls --seed 0",
 		// RoboDojo's policies are XPolicyLab's: the one served at --xpolicy runs alone.
@@ -385,6 +395,7 @@ export const ROBOTS: Robot[] = [
 		label: "Dual Franka",
 		extension: "src/robots/dual_franka/index.ts",
 		needs: "two real Frankas, RLinf + Ray, an operator at the e-stop",
+		twoArms: true,
 		axes: ARM,
 		task: "--robot-config <yaml> --operator=true",
 	},
@@ -477,10 +488,111 @@ export function settingFlags(c: Choice): string {
 	return [cell, planner].filter(Boolean).join(" ");
 }
 
+/** The switch a Flash line in units mode carries when no model is named for the finish verifier (../../modes/units). */
+const VERIFY_OFF = "--units-verify=false";
+/**
+ * The value pi gives extension flag `--<name>` on a line of `words`: its last `--name=<v>`, or `--name <v>` when <v>
+ * starts with neither - nor @, else `true` (which pi refuses at start for a flag that takes a value); undefined when
+ * the line does not give it.
+ */
+function flagOf(words: string[], name: string): string | true | undefined {
+	let value: string | true | undefined;
+	for (let i = 0; i < words.length; i++) {
+		if (words[i].startsWith(`--${name}=`)) value = words[i].slice(name.length + 3);
+		else if (words[i] === `--${name}`) {
+			const next = words[i + 1];
+			value = next !== undefined && !next.startsWith("-") && !next.startsWith("@") ? words[++i] : true;
+		}
+	}
+	return value;
+}
+/** Whether a line of `words` runs units mode: by its --units (../../modes/units), else by its preset's (../tiers.ts). */
+function unitsMode(words: string[]): boolean {
+	const preset = flagOf(words, "preset");
+	const units =
+		flagOf(words, "units") ??
+		(typeof preset === "string" && Object.hasOwn(PRESETS, preset) ? PRESETS[preset].flags.units : undefined);
+	return units === true || units === "true" || units === "pure" || units === "both";
+}
+/** Flash's provider and its model id: pi runs Flash for a bare `--model replay` too (its model resolver). */
+const FLASH_PROVIDER = FLASH_REF.slice(0, FLASH_REF.indexOf("/"));
+const FLASH_ID = FLASH_REF.slice(FLASH_REF.indexOf("/") + 1);
+/** The levels pi takes as a `:<level>` suffix of --model (coding-agent's model resolver). */
+const THINKING_SUFFIX = /:(off|minimal|low|medium|high|xhigh|max)$/;
+/** Where a line of pi's runs, and what else is on it besides the setting's flags (`runFlags`). */
+export type Line = {
+	/** The planner pi runs when the line names no --model: the settings' default model. */
+	planner?: string;
+	/** The robot has two arms, where the units verifier is on by default (--units-verify auto, ../../modes/units). */
+	twoArms?: Robot["twoArms"];
+	/**
+	 * The words ahead of the setting's flags (the task's; a batch's arguments, of which eval.sh hands pi what follows its
+	 * positionals) and behind them (the budget, the panels, a batch's own flags).
+	 */
+	before?: string;
+	after?: string;
+	/** Where the line's pi starts, whose deployment it reads (../config.ts); unknown for a remote box. */
+	cwd?: string;
+};
+/**
+ * `flags` as they run on a line of pi's, with Flash's switch where the line needs it. Flash answers no question, so
+ * where Flash runs units mode on two arms and nothing on the line or in the deployment its pi reads names a model for
+ * the units verifier (--aux-model, aux.verify) or sets --units-verify, the switch turns the units verifier's whole
+ * check of a finish off (the hold rule, the lift of open grippers, the question), and a replayed finish is claimed
+ * unchecked, as Flash's own answer had it claimed before. The line (`before`, `flags`, `after`) is read as pi reads it:
+ * the planner is its last --model (with --provider, without a thinking suffix, in any case), else `planner`; Flash is
+ * its bare id, or any id under its provider, which pi runs there (its own id by a fuzzy match, else a custom id). Any
+ * other line, and a line on one arm (the verifier is off by default there), is `flags` as they are.
+ */
+export function runFlags(flags: string, o: Line = {}): string {
+	const words = flags.split(/\s+/).filter(Boolean);
+	const line = [...(o.before ?? "").split(/\s+/), ...words, ...(o.after ?? "").split(/\s+/)].filter(Boolean);
+	let runs = o.planner;
+	let named = false;
+	let provider: string | undefined;
+	for (let i = 0; i < line.length - 1; i++)
+		if (line[i] === "--model") {
+			runs = line[++i];
+			named = true;
+		} else if (line[i] === "--provider") provider = line[++i];
+	if (provider && runs && !runs.includes("/")) runs = `${provider}/${runs}`;
+	// A model named for the verifier as pi's robot reads one (../config.ts auxModel): the deployment's aux.verify, else
+	// --aux-model.
+	const verify = () => {
+		if (o.cwd === undefined) return false;
+		const v = deploymentAt(o.cwd, String(flagOf(line, "deployment") ?? "")).aux?.verify;
+		return typeof v === "string" && v.trim() !== "";
+	};
+	const model = runs?.toLowerCase().replace(THINKING_SUFFIX, "");
+	// --provider limits the --model pi resolves to that provider's models (coding-agent's model resolver).
+	const flash =
+		model === FLASH_ID ||
+		model?.startsWith(`${FLASH_PROVIDER}/`) === true ||
+		(named && provider?.toLowerCase() === FLASH_PROVIDER);
+	const off =
+		(typeof o.twoArms === "function" ? o.twoArms(line) : o.twoArms === true) &&
+		flash &&
+		unitsMode(line) &&
+		flagOf(line, "units-verify") === undefined &&
+		!String(flagOf(line, "aux-model") ?? "").trim() &&
+		!verify();
+	return [...words, ...(off ? [VERIFY_OFF] : [])].join(" ");
+}
+/** The flags of a choice's launch line: the setting's, as they run on that line (`runFlags`). */
+export const lineFlags = (c: Choice) =>
+	runFlags(settingFlags(c), {
+		planner: c.model,
+		twoArms: c.robot.twoArms,
+		before: launchTask(c),
+		after: `${BUDGET} --dashboard=true`,
+		cwd: c.remote ? undefined : c.dir,
+	});
+/** The task flags of a choice's launch line. */
+const launchTask = (c: Choice) => (c.vlaAlone ? c.robot.vlaAlone?.task : c.robot.task);
+
 /** The launch flags for a choice (after `pi`), with the quickstart's episode budget. */
 export function launchFlags(c: Choice): string {
-	const task = c.vlaAlone ? c.robot.vlaAlone?.task : c.robot.task;
-	return [task, settingFlags(c), BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
+	return [launchTask(c), lineFlags(c), BUDGET, "--dashboard=true"].filter(Boolean).join(" ");
 }
 
 /** The planner in a few words: a registry model, the student, Flash, or none (the VLA alone). */
@@ -567,7 +679,7 @@ function handoff(c: Choice, settingsText: string): string {
 	return [
 		`/skill:embodied-quickstart Install and verify pi-embodied with the choices I confirmed in /embodied-setup (skill file: ${SKILL}):`,
 		`- robot: ${c.robot.label} (${c.robot.kind}); setup target \`${c.robot.id}\`; needs ${c.robot.needs}`,
-		`- setting: ${settingLine(c)}; flags \`${settingFlags(c) || "none"}\``,
+		`- setting: ${settingLine(c)}; flags \`${lineFlags(c) || "none"}\``,
 		`- services: ${where}`,
 		`- install: \`${setup}\`${c.weights ? ` (weights: ${weightsOf(c.robot, c.vlaAlone === true)})` : ""}`,
 		...perception,
@@ -591,6 +703,12 @@ function plannerLines(c: Choice): string[] {
 		return [
 			`- planner: ${FLASH}`,
 			"- plan: flash/replay needs a recorded plan before an episode: the robot's plan directories (dirs.flash_plans, else the memory's flash/ and task_only/) or --flash-plan <file>; capabilities/flash/generate.ts writes one from a solved session; tell me when there is none yet",
+			// A remote box's deployment is not read here (runFlags): the box's own may name a model for the verifier.
+			...(c.remote && lineFlags(c).split(" ").includes(VERIFY_OFF)
+				? [
+						`- verifier: the launch line has ${VERIFY_OFF} (Flash answers no question, and the units verifier is on by default on two arms); leave it out on the box when the box's deployment names aux.verify, so that model checks the replayed finish`,
+					]
+				: []),
 		];
 	return [`- planner: ${plannerName(c)}`];
 }
@@ -1026,7 +1144,7 @@ async function setup(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""):
 		...(req.unknown.length ? [`not recognized (maybe not supported yet): ${req.unknown.join(", ")}`] : []),
 		...(req.unsupported?.length ? [`not supported: ${req.unsupported.join("; ")}`] : []),
 		`${robot.label} (${robot.kind}): ${settingLine(choice)}`,
-		`flags: ${settingFlags(choice) || "none (the robot's defaults)"}; planner ${plannerName(choice)}${choice.thinking ? ` (thinking ${choice.thinking})` : ""}`,
+		`flags: ${lineFlags(choice) || "none (the robot's defaults)"}; planner ${plannerName(choice)}${choice.thinking ? ` (thinking ${choice.thinking})` : ""}`,
 		...(selfhost
 			? [
 					selfhost.deploy
@@ -1218,8 +1336,8 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		settingPaper = paper;
 	}
 	// A planner the request names replaces the experiment's for this episode.
-	if (req.model && req.model !== (exp.planner ?? exp.record?.planner))
-		setting = `${setting} --model ${req.model}`.trim();
+	const recorded = exp.planner ?? exp.record?.planner;
+	if (req.model && req.model !== recorded) setting = `${setting} --model ${req.model}`.trim();
 	if (plan?.thinking) setting = `${setting} --thinking ${plan.thinking}`.trim();
 	// The task: the request's task, seed and suite on the recorded flags; else asked.
 	const recordedTask = exp.record?.task ?? exp.robot.task;
@@ -1271,7 +1389,15 @@ async function run(pi: ExtensionAPI, ctx: ExtensionCommandContext, args = ""): P
 		if (picked === rec(withOwn)) panels = own.length ? own : robotPanels;
 	}
 	const port = await runDeps.freePort(DASHBOARD_PORT);
-	const flags = episodeFlags(taskFlags, setting, budget || BUDGET, panelFlags(port, panels));
+	// The setting as it runs on the episode's line, which pi starts in the experiment directory (runFlags).
+	const ran = runFlags(setting, {
+		planner: recorded,
+		twoArms: exp.robot.twoArms,
+		before: taskFlags,
+		after: `${budget || BUDGET} ${panelFlags(port, panels)}`,
+		cwd: exp.dir,
+	});
+	const flags = episodeFlags(taskFlags, ran, budget || BUDGET, panelFlags(port, panels));
 	const command = runCommand(exp, flags, gpu);
 	const urls = panelUrls(port, panels);
 	const tunnel = tunnelHint([port, ...panels.map((p) => p.port)], runDeps.env);
@@ -1369,7 +1495,15 @@ async function runBatch(
 	}
 	const planner = exp.planner ?? exp.record?.planner;
 	const model = /--model\b/.test(setting) || !planner?.includes("/") ? "" : `--model ${planner}`;
-	const command = batchCommand(exp, ev.script, batch, [setting, model, budget].filter(Boolean).join(" "), gpu);
+	// The setting as it runs on the batch's line, which pi starts in the checkout (runFlags): eval.sh hands pi what
+	// follows its positionals, so the line is the batch's arguments, the setting and the batch's own flags.
+	const ran = runFlags([setting, model, budget].filter(Boolean).join(" "), {
+		twoArms: exp.robot.twoArms,
+		before: batch.args.join(" "),
+		after: batch.flags,
+		cwd: dirname(exp.services),
+	});
+	const command = batchCommand(exp, ev.script, batch, ran, gpu);
 	const summary = [
 		`from your request: ${settled.join("; ")}`,
 		`${exp.robot.label} (${exp.dir}): a batch with ${ev.script}`,

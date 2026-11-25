@@ -52,7 +52,8 @@ test("PSV retries NInfer's unsupported JSON format at the same observation and r
 	const turn = async (messages: Message[]): Promise<ToolCall[]> => {
 		let result: AssistantMessage | undefined;
 		const wrapped = { ...model, api: "humanclaw-psv", provider: "humanclaw-psv" } as Model<Api>;
-		for await (const ev of psv.streamSimple(wrapped, normalizeContext({ messages }), {})) {
+		// As pi's agent loop asks: with the session's id (sim-stub's).
+		for await (const ev of psv.streamSimple(wrapped, normalizeContext({ messages }), { sessionId: "sess" })) {
 			if (ev.type === "error") assert.fail(ev.error.errorMessage);
 			if (ev.type === "done") result = ev.message;
 		}

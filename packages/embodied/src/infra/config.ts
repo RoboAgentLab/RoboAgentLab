@@ -18,7 +18,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -126,9 +126,12 @@ const merge = <T extends object>(a: T | undefined, b: T | undefined): T => {
 	return out as T;
 };
 
-/** Both files, project over global (read on every call: sync, small, and a test may swap them). */
+/**
+ * Both files, project over global, as a pi started in `cwd` reads them (a relative global path is read from there),
+ * read on every call: sync, small, and a test may swap them.
+ */
 export function loadConfig(cwd = process.cwd()): Loaded {
-	const g = readOne(globalConfigPath());
+	const g = readOne(resolve(cwd, globalConfigPath()));
 	const p = readOne(projectConfigPath(cwd));
 	return { file: merge(g.file, p.file), problem: g.problem ?? p.problem };
 }
@@ -137,16 +140,25 @@ const name = (pi: ExtensionAPI) => String(pi.getFlag("deployment") ?? "").trim()
 
 /** The selected deployment's name, or a problem (unknown name, ambiguous default, malformed file). */
 function select(pi: ExtensionAPI): { name: string; deployment: Deployment; problem?: string } {
-	const { file, problem } = loadConfig();
+	// The flag is read only for files without a problem (an extension's flags can no longer be read once it is stale).
+	const loaded = loadConfig();
+	return loaded.problem ? { name: "", deployment: {}, problem: loaded.problem } : choose(loaded, name(pi));
+}
+
+/** The deployment `asked` for (else `default`, else the only one) in the files read from `cwd` (`loadConfig`). */
+function choose(
+	{ file, problem }: Loaded,
+	asked: string,
+	cwd = process.cwd(),
+): { name: string; deployment: Deployment; problem?: string } {
 	const all = file.deployments ?? {};
 	if (problem) return { name: "", deployment: {}, problem };
-	const asked = name(pi);
 	if (asked) {
 		if (!all[asked])
 			return {
 				name: asked,
 				deployment: {},
-				problem: `--deployment ${asked} is not in ${globalConfigPath()} or ${projectConfigPath()} (known: ${Object.keys(all).join(", ") || "none"})`,
+				problem: `--deployment ${asked} is not in ${globalConfigPath()} or ${projectConfigPath(cwd)} (known: ${Object.keys(all).join(", ") || "none"})`,
 			};
 		return { name: asked, deployment: all[asked] };
 	}
@@ -166,6 +178,14 @@ function select(pi: ExtensionAPI): { name: string; deployment: Deployment; probl
 
 /** The deployment in effect (empty when no file names one). */
 export const deployment = (pi: ExtensionAPI) => select(pi).deployment;
+/**
+ * The deployment a pi started in `cwd` reads, with `--deployment <asked>` when its command line gives one: the global
+ * file and `cwd`'s project file (`loadConfig(cwd)`), empty when no file names one or when they have a problem.
+ */
+export function deploymentAt(cwd: string, asked = ""): Deployment {
+	const d: unknown = choose(loadConfig(cwd), asked.trim(), cwd).deployment;
+	return d && typeof d === "object" ? (d as Deployment) : {};
+}
 /** The name of the deployment in effect ("" when no file names one). */
 export const deploymentName = (pi: ExtensionAPI) => select(pi).name;
 

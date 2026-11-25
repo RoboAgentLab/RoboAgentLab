@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { isContextOverflow, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { encodePng } from "../src/infra/png.ts";
 import finetuned, {
@@ -28,7 +29,9 @@ import finetuned, {
 import { convertRun, findRuns, trainedTokens } from "../src/modes/finetuned/prepare.ts";
 import { decodePng, fingerprint, parseView, prepareView } from "../src/modes/finetuned/views.ts";
 import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
+import { RELAY_ERRORS } from "../src/planner/fallback.ts";
 import { deployFlags } from "./helpers/deployment.ts";
+import { within } from "./helpers/pi-session.ts";
 
 /**
  * The reference: Show-Harness @137d571's own MvTokenController + VLMClient.complete_action_token
@@ -175,13 +178,31 @@ test("replies parse like vlm_client._parse_single_token", () => {
 
 type Handler = (event: any, ctx: any) => unknown;
 
-async function endpoint(replies: (string | { status: number; body: string })[]) {
+/** A reply the endpoint holds back: `arrived` once its request is in; it is sent when the test calls `release`. */
+function hold() {
+	const h = { reached: () => {}, release: () => {}, arrived: Promise.resolve(), released: Promise.resolve() };
+	h.arrived = new Promise<void>((resolve) => {
+		h.reached = () => resolve();
+	});
+	h.released = new Promise<void>((resolve) => {
+		h.release = () => resolve();
+	});
+	return h;
+}
+type Hold = ReturnType<typeof hold>;
+
+async function endpoint(replies: (string | { status: number; body: string } | { held: Hold; reply: string })[]) {
 	const bodies: any[] = [];
 	const server = createServer(async (req: IncomingMessage, res) => {
 		let data = "";
 		for await (const chunk of req) data += chunk;
 		bodies.push({ path: req.url, auth: req.headers.authorization, body: JSON.parse(data) });
-		const r = replies.shift() ?? "DONE";
+		let r = replies.shift() ?? "DONE";
+		if (typeof r !== "string" && "held" in r) {
+			r.held.reached();
+			await r.held.released;
+			r = r.reply;
+		}
 		if (typeof r !== "string") {
 			res.writeHead(r.status, { "content-type": "application/json" });
 			res.end(r.body);
@@ -192,8 +213,24 @@ async function endpoint(replies: (string | { status: number; body: string })[]) 
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	return { url, bodies, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+	return {
+		url,
+		bodies,
+		// A request still held back must not keep the server open.
+		close: () =>
+			new Promise<void>((resolve) => {
+				server.closeAllConnections();
+				server.close(() => resolve());
+			}),
+	};
 }
+
+/** The stub's first session id. pi sends a session's id with every request of that session's own loop. */
+const SESSION = "session-1";
+/** The model a step is asked for unless a test names another. */
+const ADAPTER = "qwen3_5_2b_showharness_sim";
+/** A user message to ask with, as the dashboard's model check asks. */
+const CHECK = { role: "user", content: "Reply with the single word OK.", timestamp: 0 };
 
 function fakePi(
 	flags: Record<string, string>,
@@ -226,22 +263,49 @@ function fakePi(
 		appendEntry: (type: string, data: any) => entries.push({ type, data }),
 	} as unknown as ExtensionAPI;
 	const warnings: string[] = [];
+	/** The id of the session the stub is in: a test moves it on for a new session. */
+	const session = { id: SESSION };
 	const ctx = {
 		hasUI: true,
 		model: { provider: "finetuned" },
 		ui: { notify: (s: string) => warnings.push(s) },
-		sessionManager: { getBranch: () => [{ type: "custom", customType: "robot_task", data: { robot } }] },
+		sessionManager: {
+			getBranch: () => [{ type: "custom", customType: "robot_task", data: { robot } }],
+			getSessionId: () => session.id,
+		},
 	};
 	finetuned(pi);
-	const emit = async (name: string) => {
+	const emit = async (name: string, event: Record<string, unknown> = {}) => {
 		// The robot's units layer publishes its handle at session start, before the provider's handlers.
 		if (name === "session_start" && units) for (const fn of listeners.get(UNITS_EVENT) ?? []) fn(units);
-		for (const fn of handlers.get(name) ?? []) await fn({ type: name }, ctx);
+		for (const fn of handlers.get(name) ?? []) await fn({ type: name, ...event }, ctx);
 	};
 	const model = (id: string) => provider.getModels().find((m: any) => m.id === id);
-	const turn = (messages: unknown[], id = "qwen3_5_2b_showharness_sim", signal?: AbortSignal) =>
-		provider.streamSimple(model(id), { messages }, { signal }).result();
-	return { emit, turn, entries, warnings, model };
+	/** One step as pi's agent loop asks for it: with the session's id. It is awaited ten seconds at most. */
+	const turn = (messages: unknown[], id = ADAPTER, signal?: AbortSignal) =>
+		within<any>(
+			10_000,
+			provider.streamSimple(model(id), { messages }, { signal, sessionId: session.id }).result(),
+			"the session's own turn",
+		);
+	/**
+	 * A request that is not the loop's, as ctx.modelRegistry.streamSimple hands one over (the dashboard's model check,
+	 * a question to a VLM): one user message unless a transcript or a whole context is given, and no session id
+	 * unless `options` holds one.
+	 */
+	const ask = (options: Record<string, unknown> = {}, context?: unknown[] | object, id = ADAPTER) =>
+		provider.streamSimple(
+			model(id),
+			Array.isArray(context) ? { messages: context } : (context ?? { messages: [CHECK] }),
+			{ maxTokens: 1, ...options },
+		);
+	/** The answer to such a request, awaited two seconds at most (one taken for a turn may wait on the endpoint). */
+	const side = (options: Record<string, unknown> = {}, context?: unknown[] | object, id = ADAPTER) =>
+		within<any>(2000, ask(options, context, id).result(), "a request that is not the session's turn");
+	/** The answer to one from a caller that passes no options at all. */
+	const bare = (id = ADAPTER) =>
+		within<any>(2000, provider.streamSimple(model(id), { messages: [] }).result(), "a request without options");
+	return { emit, turn, ask, side, bare, session, ctx, entries, warnings, model };
 }
 
 const calls = (m: any) => m.content.filter((c: any) => c.type === "toolCall");
@@ -993,4 +1057,451 @@ test("--ft-prompt names a prompt version or a template file; anything else is re
 	const byPath = fakePi({ "ft-prompt": file }, "libero");
 	await byPath.emit("session_start");
 	assert.doesNotMatch(byPath.warnings.join("\n"), /not a prompt version/);
+});
+
+// ---------------------------------------------------------------------------
+// a request that is not a turn of the session's own loop (the dashboard's model check, a question to a VLM, a check
+// that asks the session's model, pi's own summaries)
+
+/** What a request to a fine-tuned model gets that is not a turn of the session's own loop. */
+const NOT_A_TURN =
+	"finetuned runs a fine-tuned policy and answers no other request; --aux-model names a model for the checks that take one";
+const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+/** `m` is that answer: an error of the model asked (`id`), with no content and no usage. */
+function assertNotATurn(m: any, id = ADAPTER) {
+	assert.equal(m.stopReason, "error");
+	assert.equal(m.errorMessage, NOT_A_TURN);
+	assert.deepEqual(m.content, []);
+	assert.deepEqual([m.api, m.provider, m.model], ["finetuned", "finetuned", id]);
+	assert.deepEqual(m.usage, { ...NO_COST, totalTokens: 0, cost: { ...NO_COST, total: 0 } });
+}
+
+/**
+ * What the policy takes for no turn of its session: a request without an id, under another id, or with pi's mark on
+ * a one-off summary under the session's id. Each one as it is, and with a signal that is aborted when it arrives.
+ */
+const NOT_TURNS = Object.entries<Record<string, unknown>>({
+	"without an id": {},
+	"under another id": { sessionId: "0193e1c0-0000-7000-8000-000000000000" },
+	"as a one-off summary under the session's id": { sessionId: SESSION, cacheRetention: "none" },
+}).flatMap(([kind, options]): [string, Record<string, unknown>][] => [
+	[kind, options],
+	[`${kind}, arriving aborted`, { ...options, signal: AbortSignal.abort() }],
+]);
+
+/** A context of a request's own, as a tool's agent loop or pi's summaries send one: a system prompt and tools. */
+const OWN = normalizeContext({
+	systemPrompt: "You are a policy.",
+	tools: [{ name: "policy_act", description: "act", parameters: { type: "object", properties: {} } as never }],
+	messages: [CHECK as never],
+});
+/**
+ * A request of this kind gets the error with each transcript a check sends: one user message, the loop's own as it is
+ * at this place, and a context of its own; and with a signal that is live when it arrives, as the dashboard's model
+ * check sends one (a request that arrives aborted keeps its own).
+ */
+async function refused(p: ReturnType<typeof fakePi>, options: Record<string, unknown>, transcript: unknown[]) {
+	for (const context of [undefined, transcript, OWN]) assertNotATurn(await p.side(options, context));
+	assertNotATurn(await p.side({ signal: new AbortController().signal, ...options }));
+}
+
+const said = (m: any) =>
+	m.content
+		.filter((c: any) => c.type === "text")
+		.map((c: any) => c.text)
+		.join("\n");
+/** A turn as the loop got it: its stop reason, its text (or its error) without the latency, and its calls. */
+const seen = (m: any) => [
+	m.stopReason,
+	m.errorMessage ?? said(m).replace(/ · \d+ ms/g, ""),
+	calls(m).map((c: any) => [c.id, c.name, c.arguments]),
+];
+/** The places of an episode where a request from elsewhere can arrive, in the order an episode first reaches them. */
+const PLACES = [
+	"before the first step",
+	"while a step's call runs",
+	"between two steps",
+	"while the service answers a step",
+	"after the end",
+];
+type At = (place: string, transcript: unknown[], p: ReturnType<typeof fakePi>) => Promise<void>;
+
+/**
+ * One episode as pi's agent loop runs it: the calls of each turn get `results` (by turn), until a turn calls nothing;
+ * then the loop asks once more, as for a second prompt. `at` runs at each place where a request from elsewhere can
+ * arrive, with the transcript the loop has there; while `held` holds back the service's reply to a step, `at` runs
+ * inside the loop's request that waits for it. Returns each turn as the loop got it.
+ */
+async function episode(p: ReturnType<typeof fakePi>, results: (m: any, i: number) => unknown[], at?: At, held?: Hold) {
+	const visit = async (place: string, transcript: unknown[]) => at?.(place, [...transcript], p);
+	const turns: unknown[] = [];
+	const history: unknown[] = [];
+	await visit("before the first step", history);
+	for (let i = 0; i < 40; i++) {
+		const asked = p.turn([...history]);
+		const h = held;
+		if (h && (await Promise.race([asked.then(() => false), h.arrived.then(() => true)]))) {
+			held = undefined;
+			try {
+				await visit("while the service answers a step", history);
+			} finally {
+				h.release();
+			}
+		}
+		const m = await asked;
+		turns.push(seen(m));
+		if (!calls(m).length) break;
+		await visit("while a step's call runs", [...history, m]);
+		history.push(m, ...results(m, i));
+		await visit("between two steps", history);
+	}
+	await visit("after the end", history);
+	turns.push(seen(await p.turn([...history])));
+	return turns;
+}
+/** Small camera images for these episodes: the policy's transform still runs on them, at a fraction of the time. */
+const VIEWS = [pattern(32, 32, 7), pattern(24, 32, 11)].map((v) => png(v).toString("base64"));
+/** The units `act` result of each call of `m`: its header with the TASK line, the robot's state and two views. */
+const seenBy = (m: any, details: Record<string, unknown> = {}) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{ type: "text", text: `units: ${c.arguments.unit} x1\nRecent units: none\nTASK: ${TASK}` },
+			{ type: "text", text: "{}" },
+			...VIEWS.map((data) => ({ type: "image", data, mimeType: "image/png" })),
+		],
+		details,
+		isError: false,
+	}));
+/** The same on two arms: the front view and each arm's wrist view. */
+const seenByBoth = (m: any) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{ type: "text", text: `units: ${c.arguments.unit} x1\nTASK: fold the towel` },
+			...[VIEWS[0], VIEWS[1], VIEWS[1]].map((data) => ({ type: "image", data, mimeType: "image/png" })),
+		],
+		details: {},
+		isError: false,
+	}));
+/** The steps the policy wrote, without their latency and the endpoint's address, which differ from run to run. */
+const written = (p: ReturnType<typeof fakePi>) =>
+	p.entries.map((e) => [
+		e.type,
+		Object.fromEntries(Object.entries(e.data).filter(([k]) => k !== "latency_ms" && k !== "endpoint")),
+	]);
+
+/**
+ * One arm (v5, a robot that reports its TCP): MV_DOWN, MV_DOWN again (1 mm each: the third decision is asked without
+ * it), RT_YAW_CW, DONE asked again (GRASP), DONE asked again (MV_UP), an out-of-vocabulary reply asked again (MV_LEFT),
+ * then the environment's success. The service holds back its reply to the second decision. Returns what the loop got,
+ * the steps the policy wrote and what the service was asked.
+ */
+async function oneArm(at?: At) {
+	const held = hold();
+	const ep = await endpoint([
+		"MV_DOWN",
+		{ held, reply: "MV_DOWN" },
+		"RT_YAW_CW",
+		"DONE",
+		"GRASP",
+		"DONE",
+		"MV_UP",
+		"MV_STRETCH",
+		"MV_LEFT",
+	]);
+	const tcp = [0.2, 0.199, 0.198, 0.198, 0.198, 0.198].map((z) => [0.5, 0, z]);
+	const p = v5Run(ep, tcp);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const turns = await episode(p, (m, i) => seenBy(m, i === 6 ? { terminated: true } : {}), at, held);
+		return { turns, steps: written(p), asked: ep.bodies.map((b) => b.body) };
+	} finally {
+		held.release();
+		await ep.close();
+	}
+}
+
+/**
+ * A subgoal prompt whose phase moves with the policy's GRASP and RELEASE, two steps to a phase: GRASP, MV_UP, MV_LEFT
+ * (the service holds back this reply), RELEASE, MV_UP, DONE.
+ */
+async function subgoal(at?: At) {
+	const dir = mkdtempSync(join(tmpdir(), "ft-cond-"));
+	writeFileSync(join(dir, "task_config.json"), JSON.stringify({ task: TASK, subgoals: PLAN }));
+	const held = hold();
+	const ep = await endpoint(["GRASP", "MV_UP", { held, reply: "MV_LEFT" }, "RELEASE", "MV_UP", "DONE"]);
+	const p = fakePi({
+		"ft-endpoint": ep.url,
+		"ft-prompt": "v3-subgoal",
+		"ft-task-config": join(dir, "task_config.json"),
+		"ft-phase-steps": "2",
+	});
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const turns = await episode(p, (m) => seenBy(m), at, held);
+		return { turns, steps: written(p), asked: ep.bodies.map((b) => b.body) };
+	} finally {
+		held.release();
+		await ep.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/** Two arms: MV_UP and MV_FWD, STILL and GRASP (the service holds back this reply), a lone DONE, garbage, DONE twice. */
+async function twoArms(at?: At) {
+	const held = hold();
+	const ep = await endpoint(["MV_UP MV_FWD", { held, reply: "STILL GRASP" }, "DONE MV_UP", "garbage", "DONE DONE"]);
+	const p = fakePi(
+		{ "ft-endpoint": ep.url, "ft-prompt": "v4-dual-once" },
+		"piper_dual",
+		["act", "finish"],
+		DUAL_UNITS,
+	);
+	try {
+		await p.emit("session_start");
+		await p.emit("before_agent_start");
+		const turns = await episode(p, (m) => seenByBoth(m), at, held);
+		return { turns, steps: written(p), asked: ep.bodies.map((b) => b.body) };
+	} finally {
+		held.release();
+		await ep.close();
+	}
+}
+
+/** Each episode without a request from elsewhere, run once for all the tests that compare with it. */
+const alone = new Map<string, ReturnType<typeof oneArm>>();
+const without = (run: typeof oneArm) => alone.get(run.name) ?? alone.set(run.name, run()).get(run.name);
+
+for (const [kind, options] of NOT_TURNS)
+	test(`a request that is not the session's turn (${kind}) gets the error and leaves the policy as it is: before the first step, while a step's call runs, between two steps, while the service answers a step and after the end, the session's own turns, the steps written and what the service is asked are those of an episode without it (one arm with the stuck guard and replies asked again, a subgoal prompt's phase, two arms' histories)`, async () => {
+		for (const run of [oneArm, subgoal, twoArms]) {
+			const places: string[] = [];
+			const got = await run(async (place, transcript, p) => {
+				places.push(place);
+				await refused(p, options, transcript);
+			});
+			assert.deepEqual([...new Set(places)], PLACES, run.name);
+			assert.deepEqual(got, await without(run), run.name);
+		}
+	});
+
+test("before a session starts no request is a session's turn, of whatever kind, with or without options; after it starts, one that is not its turn does not take the opening step", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	// Each request as it was answered: of each kind, without options, and under the id the session will have.
+	const answered = async (what: string, m: Promise<any>) => [what, (await m).stopReason, (await m).errorMessage];
+	const before = [];
+	for (const [kind, options] of NOT_TURNS) before.push(await answered(kind, p.side(options)));
+	before.push(await answered("without options", p.bare()));
+	before.push(await answered("under the session's id", p.turn([])));
+	assert.deepEqual(
+		before,
+		[...NOT_TURNS.map(([kind]) => kind), "without options", "under the session's id"].map((what) => [
+			what,
+			"error",
+			NOT_A_TURN,
+		]),
+	);
+	await p.emit("session_start");
+	for (const [, options] of NOT_TURNS) await refused(p, options, []);
+	assertNotATurn(await p.bare());
+	// The session's first step is the opening one, under the first call id; nothing was asked or written.
+	assert.deepEqual(seen(await p.turn([])), [
+		"toolUse",
+		"opening RELEASE (the runner's first step; it returns the first observation)",
+		[["ft_1", "act", { unit: "RELEASE" }]],
+	]);
+	assert.deepEqual(p.entries, []);
+});
+
+test("once the policy has refused this robot at the start, a request that is not the session's turn gets the error, and the session's own turn still says why", async () => {
+	const why = /^The fine-tuned policy refused this robot: --ft-prompt v5-lite: not a prompt version/;
+	// One kind at a time, each in a session of its own: the session's own turn says why after each.
+	for (const [kind, options] of NOT_TURNS) {
+		const p = fakePi({ "ft-prompt": "v5-lite" }, "libero");
+		await p.emit("session_start");
+		await refused(p, options, []);
+		const t = await p.turn([]);
+		assert.deepEqual([kind, calls(t), why.test(said(t))], [kind, [], true]);
+		await refused(p, options, [t]);
+		assert.deepEqual([kind, why.test(said(await p.turn([t])))], [kind, true]);
+		assert.deepEqual(p.entries, []);
+	}
+	const p = fakePi({ "ft-prompt": "v5-lite" }, "libero");
+	await p.emit("session_start");
+	assertNotATurn(await p.bare());
+	assert.match(said(await p.turn([])), why);
+});
+
+test("a request of the session's own loop is its turn whatever retention it names other than pi's one-off mark; a new session's turns are those under its own id", async () => {
+	const ep = await endpoint(["MV_DOWN", "MV_UP"]);
+	const p = fakePi({ "ft-endpoint": ep.url });
+	try {
+		await p.emit("session_start");
+		const t0 = await p.side({ sessionId: SESSION, cacheRetention: "short" }, []);
+		const history = [t0, ...observation(t0)];
+		const t1 = await p.side({ sessionId: SESSION, cacheRetention: "long" }, history);
+		assert.deepEqual(
+			[t0, t1].map((m) => m.stopReason),
+			["toolUse", "toolUse"],
+			"a turn under short retention, then one under long",
+		);
+		assert.deepEqual(calls(t0)[0].arguments, { unit: "RELEASE" });
+		assert.deepEqual(calls(t1)[0].arguments, { unit: "MV_DOWN" });
+		// A new session has an id of its own: a request under the one before is not its turn.
+		p.session.id = "session-2";
+		await p.emit("session_start");
+		assertNotATurn(await p.side({ sessionId: SESSION }, [...history, t1, ...observation(t1)]));
+		assert.deepEqual(
+			calls(await p.turn([])).map((c: any) => [c.id, c.arguments]),
+			[["ft_1", { unit: "RELEASE" }]],
+		);
+		assert.equal(ep.bodies.length, 1);
+	} finally {
+		await ep.close();
+	}
+});
+
+test("an id that only resembles the session's is another id, and a one-off summary is told by its mark alone", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	await p.emit("session_start");
+	const ids = [
+		`${SESSION}0`,
+		SESSION.toUpperCase(),
+		SESSION.slice(0, -1),
+		SESSION.slice(1),
+		` ${SESSION}`,
+		`${SESSION} `,
+		"",
+	];
+	const answers = [];
+	for (const sessionId of ids) answers.push([sessionId, (await p.side({ sessionId })).stopReason]);
+	// The stub's other requests set a token limit; pi's mark counts without one.
+	const mark = { sessionId: SESSION, cacheRetention: "none", maxTokens: undefined };
+	answers.push(["the mark without a token limit", (await p.side(mark)).stopReason]);
+	assert.deepEqual(
+		answers,
+		[...ids, "the mark without a token limit"].map((what) => [what, "error"]),
+	);
+	for (const sessionId of ids) assertNotATurn(await p.side({ sessionId }));
+	assertNotATurn(await p.side(mark));
+	assert.deepEqual(
+		calls(await p.turn([])).map((c: any) => c.id),
+		["ft_1"],
+	);
+});
+
+/** What else a request can carry, as pi's loop or another asker sends it: none of it makes a request a turn or not. */
+const CARRIED = {
+	reasoning: "low",
+	temperature: 0,
+	metadata: { user_id: "u" },
+	headers: { "x-request": "1" },
+	onPayload: () => undefined,
+	maxTokens: 64,
+	transport: "sse",
+};
+
+test("whatever else a request carries (a reasoning level, a temperature, metadata, headers, a payload hook, a token limit, a retention other than pi's mark), the id and the mark decide: without the id, under another id or with the mark it gets the error, and the session's own turn is answered", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	await p.emit("session_start");
+	// Each kind with all of it, under each retention a request names (a one-off summary's is pi's mark).
+	const answers = [];
+	const expected = [];
+	for (const [kind, options] of NOT_TURNS)
+		for (const cacheRetention of options.cacheRetention ? [options.cacheRetention] : [undefined, "short", "long"]) {
+			const m = await p.side({ ...CARRIED, cacheRetention, ...options });
+			answers.push([kind, cacheRetention, m.stopReason, m.errorMessage]);
+			expected.push([kind, cacheRetention, "error", NOT_A_TURN]);
+		}
+	assert.deepEqual(answers, expected);
+	// The session's first step, asked with all of it and a retention: the opening one, under the first call id.
+	const own = { ...CARRIED, cacheRetention: "long", sessionId: SESSION };
+	const opening = within<any>(2000, p.ask(own, []).result(), "the session's own turn");
+	assert.deepEqual(seen(await opening), [
+		"toolUse",
+		"opening RELEASE (the runner's first step; it returns the first observation)",
+		[["ft_1", "act", { unit: "RELEASE" }]],
+	]);
+});
+
+test("a session whose model at its start is another one (the fallback planner over this policy) keeps its id too: the policy's turns are those under it", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	p.ctx.model = { provider: "fallback" };
+	await p.emit("session_start");
+	assertNotATurn(await p.side());
+	assert.deepEqual(
+		calls(await p.turn([])).map((c: any) => [c.id, c.arguments]),
+		[["ft_1", { unit: "RELEASE" }]],
+	);
+});
+
+test("the answer to a request that is not the session's turn reaches its asker as one error event, stamped with the model it asked", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	await p.emit("session_start");
+	const stream = p.ask();
+	// Its events and its result, each awaited two seconds at most (a stream that never ends fails the test).
+	const events: any[] = [];
+	const read = async () => {
+		for await (const event of stream) events.push(event);
+	};
+	await within(2000, read(), "its events");
+	assert.deepEqual(
+		events.map((e) => [e.type, e.reason]),
+		[["error", "error"]],
+	);
+	assertNotATurn(events[0].error);
+	assert.equal(await within(2000, stream.result(), "its result"), events[0].error);
+	for (const id of ["local", "gemma4_e4b_showharness_ft"]) {
+		assertNotATurn(await p.side({}, undefined, id), id);
+		assertNotATurn(await p.bare(id), id);
+	}
+});
+
+test("the answer to a request that is not the session's turn is no error pi sends again, and none the fallback planner by default changes models for", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	await p.emit("session_start");
+	const m = await p.side();
+	assertNotATurn(m);
+	// pi sends a request again after an error it takes for a passing one, and after one it takes for a full context.
+	assert.equal(isRetryableAssistantError(m), false);
+	assert.equal(isContextOverflow(m, p.model(ADAPTER).contextWindow), false);
+	assert.doesNotMatch(m.errorMessage, RELAY_ERRORS);
+});
+
+test("the session's id is kept at every start pi announces (its first start, a new session, a resumed one, a fork, a reload), each in a provider of its own as pi builds one, and still when a run ends: that session's own request is its turn, and one without an id is not", async () => {
+	for (const reason of ["startup", "new", "resume", "fork", "reload"]) {
+		const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+		p.session.id = `session-${reason}`;
+		await p.emit("session_start", { reason });
+		// pi ends each run with agent_end; the session's next prompt is still its own.
+		await p.emit("agent_end");
+		assertNotATurn(await p.side());
+		assert.deepEqual(
+			calls(await p.turn([])).map((c: any) => c.name),
+			["act"],
+			reason,
+		);
+	}
+});
+
+test("the session's id is kept ahead of the rest of the start: when the rest throws (here a robot's wrist hook), the session's own turns are still answered and every other request refused", async () => {
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" }, "libero", ["act", "finish"], {
+		vocabulary: [...UNITS],
+		wrist: () => {
+			throw new Error("the wrist camera is not up yet");
+		},
+	});
+	await assert.rejects(p.emit("session_start"), /the wrist camera is not up yet/);
+	for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
+	assert.deepEqual(
+		calls(await p.turn([])).map((c: any) => c.id),
+		["ft_1"],
+	);
 });

@@ -67,7 +67,7 @@ function fakePi(flagValues: Record<string, unknown> = {}, branch: unknown[] = []
 			shutdown = true;
 		},
 		abort: () => {},
-		sessionManager: { getBranch: () => branch, getSessionDir: () => dir },
+		sessionManager: { getBranch: () => branch, getSessionDir: () => dir, getSessionId: () => "session-1" },
 		// Like pi: the prompt the last before_agent_start handler forced (see emit).
 		getSystemPrompt: () => forced ?? "pi default prompt",
 	};
@@ -759,7 +759,9 @@ test("a Flash replay with no program to load ends as an env_error, not a failed 
 	await f.emit("session_start");
 	await f.emit("agent_start");
 	const provider = f.providers.find((p) => p.id === "flash");
-	const turn = await provider.streamSimple(provider.getModels()[0], { messages: [] }, {}).result();
+	const turn = await provider
+		.streamSimple(provider.getModels()[0], { messages: [] }, { sessionId: "session-1" })
+		.result();
 	const call = turn.content.find((c: any) => c.type === "toolCall");
 	assert.equal(call.name, "finish");
 	await f.emit("agent_end");

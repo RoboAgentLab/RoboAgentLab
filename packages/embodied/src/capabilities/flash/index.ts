@@ -8,6 +8,15 @@
  * replay). The robot's tools execute it, so the session, `finish`, and the `robot_result` row are
  * exactly those of an LLM run. It is mounted by `defineRobot` for a robot whose spec has `flash`.
  *
+ * pi sends the session's id with every request of the session's own loop, and marks its one-off
+ * summaries as not to be cached. A turn is given only to a request that carries that id and not that
+ * mark; any other request to this model gets an error and leaves the replay where it is. Flash runs
+ * no model, so a check that asks the session's model when no other is named for it (the units
+ * verifier, a reviewed approval, VDM, an attachment check) gets that error unless one is named:
+ * `--aux-model` for any of them; for one alone the deployment's `aux.verify`, `aux.vdm` or
+ * `aux.attach`, or `--approval-model`. The dashboard's model check and pi's own summaries always ask
+ * the session's model: under Flash they get that error.
+ *
  * What a plan holds, where it lives, and how it meets the live scene are the robot's (its
  * `FlashHook`). Flash loads the robot's program, lets the robot re-localize it (`start`), then walks
  * the plan in order: the robot rewrites each planned call against what it localized (or skips it,
@@ -225,6 +234,13 @@ function jsonIn(candidates: string[]): Json | undefined {
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 /** Flash runs no model, so every turn reports zero usage. */
 const USAGE: Usage = { ...ZERO_COST, totalTokens: 0, cost: { ...ZERO_COST, total: 0 } };
+/**
+ * What a request gets that is not a turn of the session's own loop, as an error. The asker puts it behind a colon
+ * or inside parentheses in a message of its own, so it has no full stop; and it holds no word that pi's retry, or the
+ * fallback planner by default (../../planner/fallback.ts), takes for a failure worth another try or another model.
+ */
+const NOT_A_TURN =
+	"flash/replay replays a recorded plan and answers no other request; --aux-model names a model for the checks that take one";
 const MODEL: Model<"flash"> = {
 	id: "replay",
 	name: "Flash replay",
@@ -265,6 +281,8 @@ export function flash<P extends FlashProgram>(
 	let stopped: Error | undefined;
 	let calls = 0;
 	let cwd = process.cwd();
+	/** The session's id, which pi sends with every request of the session's own loop. */
+	let session: string | undefined;
 
 	const say = (turn: Turn) => {
 		const f = toModel;
@@ -400,6 +418,16 @@ export function flash<P extends FlashProgram>(
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
+		// Not the session's own loop asking for its next turn: answered with an error, before anything of the replay
+		// is read or changed. pi marks its one-off summaries with cacheRetention "none", the bug report's included,
+		// which carries the session's id.
+		if (session === undefined || options?.sessionId !== session || options?.cacheRetention === "none") {
+			message.stopReason = "error";
+			message.errorMessage = NOT_A_TURN;
+			stream.push({ type: "error", reason: "error", error: message });
+			stream.end();
+			return stream;
+		}
 		next(context.messages as Message[], options?.signal).then(
 			(turn) => {
 				stream.push({ type: "start", partial: message });
@@ -440,6 +468,7 @@ export function flash<P extends FlashProgram>(
 
 	pi.on("session_start", (_event, ctx) => {
 		cwd = ctx.cwd;
+		session = ctx.sessionManager.getSessionId();
 		started = over = false;
 		stopped = toModel = toReplay = undefined;
 		pending = [];
