@@ -199,6 +199,8 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 	const warnings: string[] = [];
 	/** The id of the session the stub is in. */
 	const session = { id: SESSION };
+	/** The session's file as pi reads it (every entry, every branch): a test puts an earlier episode's in it. */
+	const file: unknown[] = [];
 	const ctx = {
 		hasUI: true,
 		model: { provider: "finetuned" },
@@ -207,6 +209,7 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 			getBranch: () => [
 				{ type: "custom", customType: "robot_task", data: { robot: "toy", task: "PickCube-v1", seed: "3" } },
 			],
+			getEntries: () => file,
 			getSessionId: () => session.id,
 		},
 	};
@@ -255,7 +258,7 @@ function fakePi(flags: Record<string, string>, tools: string[], handle: Partial<
 				.result(),
 			"a request that is not the session's turn",
 		);
-	return { emit, turn, side, entries, warnings };
+	return { emit, turn, side, file, entries, warnings };
 }
 const calls = (m: any) => m.content.filter((c: any) => c.type === "toolCall");
 /** A tool result with a JSON text, two images and `details`. */
@@ -488,6 +491,65 @@ test("student x code: the prompt carries code mode's rendering of the tier; one 
 		assert.equal(steps[3].code, "");
 	} finally {
 		await ep.close();
+	}
+});
+
+test("student x tools and x code: a later session over a file that holds an earlier episode (a fork or clone, a resumed or reloaded session, --continue) goes on from that episode's last call id, and each step reads its own call's result: not the earlier one's report, images or env success", async () => {
+	const surfaces = {
+		tools: {
+			flags: { "ft-surface": "tools" },
+			active: ["view_env_state", "finish"],
+			step: '{"tool": "view_env_state", "arguments": {}}',
+			done: '{"tool": "finish", "arguments": {"status": "success", "summary": "done"}}',
+			last: /^Last result: (.*)$/m,
+		},
+		code: {
+			flags: { "ft-surface": "code", "code-api": "high" },
+			active: ["run_code", "finish"],
+			step: "```python\nr = move_to([0.1, 0.2, 0.3])\nRESULT = r\n```",
+			done: "DONE",
+			last: /^Last report: (.*)$/m,
+		},
+	};
+	for (const [surface, o] of Object.entries(surfaces)) {
+		// The earlier episode: the opening, one step after which the env reports success, and finish.
+		const ep = await endpoint([o.step, o.step, o.done]);
+		try {
+			const first = fakePi({ "ft-endpoint": ep.url, "ft-model": "student", ...o.flags }, o.active);
+			await first.emit("session_start");
+			await first.emit("before_agent_start");
+			const earlier: any[] = [];
+			for (const details of [{}, { success: true }, {}]) {
+				const m = await first.turn([...earlier]);
+				earlier.push(m, ...observation(m, "the earlier episode's report", details));
+			}
+			// A provider of its own over the file, as pi builds one at the later session's start.
+			const p = fakePi({ "ft-endpoint": ep.url, "ft-model": "student", ...o.flags }, o.active);
+			p.file.push(...earlier.map((message) => ({ type: "message", message })));
+			await p.emit("session_start");
+			await p.emit("before_agent_start");
+			const history = [...earlier];
+			const later: any[] = [];
+			for (let i = 0; i < 3; i++) {
+				const m = await p.turn([...history]);
+				later.push(...calls(m).map((c: any) => [c.id, c.name]));
+				history.push(m, ...observation(m, "the later episode's report"));
+			}
+			assert.deepEqual(
+				later.map(([id]) => id),
+				["ft_4", "ft_5", "ft_6"],
+				surface,
+			);
+			assert.equal(later[2][1], "finish", surface);
+			// Each request the later episode sent carried its own last report: the earlier one's first, then its two.
+			assert.deepEqual(
+				ep.bodies.map((b) => o.last.exec(b.messages[0].content[2].text)?.[1]),
+				["the earlier episode's report", "the later episode's report", "the later episode's report"],
+				surface,
+			);
+		} finally {
+			await ep.close();
+		}
 	}
 });
 

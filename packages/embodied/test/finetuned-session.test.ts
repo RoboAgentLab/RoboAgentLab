@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, FileEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { Deployment } from "../src/infra/config.ts";
 import finetuned, { STEP_ENTRY } from "../src/modes/finetuned/index.ts";
@@ -30,11 +30,18 @@ const FINISH = {
 };
 const view = { type: "image" as const, data: PNG, mimeType: "image/png" };
 
-/** A toy robot with its own tools look and go, each returning a camera view; `inside` runs while go runs. */
+/**
+ * A toy robot with its own tools look and go, each returning a camera view and a text that ends with what `tag` says
+ * then; `inside` runs while go runs.
+ */
 const toolsToy =
 	(
 		log: string[],
-		o: { inside?: (ctx: ExtensionContext, x: number) => Promise<unknown>; spec?: Partial<RobotSpec> } = {},
+		o: {
+			inside?: (ctx: ExtensionContext, x: number) => Promise<unknown>;
+			spec?: Partial<RobotSpec>;
+			tag?: () => string;
+		} = {},
 	) =>
 	(pi: ExtensionAPI) => {
 		const r = defineRobot(pi, {
@@ -49,12 +56,12 @@ const toolsToy =
 		});
 		r.tool("look", "Look at the scene.", Type.Object({}), async () => {
 			log.push("look");
-			return { content: [{ type: "text", text: "scene" }, view], details: {} };
+			return { content: [{ type: "text", text: `scene${o.tag?.() ?? ""}` }, view], details: {} };
 		});
 		r.tool("go", "Go to x.", Type.Object({ x: Type.Number() }), async (p, _signal, ctx) => {
 			log.push(`go ${p.x}`);
 			await o.inside?.(ctx, p.x);
-			return { content: [{ type: "text", text: `at ${p.x}` }, view], details: {} };
+			return { content: [{ type: "text", text: `at ${p.x}${o.tag?.() ?? ""}` }, view], details: {} };
 		});
 	};
 
@@ -144,12 +151,12 @@ const texts = (m: { content: { type: string; text?: string }[] }) =>
 
 /**
  * One episode with `-e robot -e modes/finetuned`, the session's model set to finetuned/local (`model` names another)
- * once the session has started, and `flags`, the service answering `replies` (default: go 1, go 2, finish). `before`
- * runs before the prompt, `waiting` while the loop's request for the second step waits for the service, and `after`
- * after the prompt, with the context pi gives an extension; `aux` are the answers of the scripted model, which is
- * asked only when a flag or the deployment names it. Returns what reached the robot, the loop's replies, each call's
- * result, what the service was asked, the session's entries of a type, and the robot's result row (written at pi's
- * quit when the episode did not finish).
+ * once the session has started, and `flags`, the service answering `replies` (default: go 1, go 2, finish), in a new
+ * session or one whose file is `entries`. `before` runs before the prompt, `waiting` while the loop's request for the
+ * second step waits for the service, and `after` after the prompt, with the context pi gives an extension; `aux` are
+ * the answers of the scripted model, which is asked only when a flag or the deployment names it. Returns what reached
+ * the robot, the loop's replies, each call's result, what the service was asked, the session's entries of a type, the
+ * robot's result row (written at pi's quit when the episode did not finish) and the session's file.
  */
 async function run(
 	o: {
@@ -164,6 +171,7 @@ async function run(
 		more?: ((pi: ExtensionAPI) => void)[];
 		model?: string;
 		argv?: string[];
+		entries?: FileEntry[];
 	} = {},
 ) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "finetuned-session-")));
@@ -215,12 +223,14 @@ async function run(
 					entries,
 					row: entries(RESULT_ENTRY).at(-1) as Record<string, unknown> | undefined,
 					stderr,
+					file: [session.sessionManager.getHeader(), ...session.sessionManager.getEntries()] as FileEntry[],
 				};
 			},
 			{
 				flags: { ...TOOLS, ...o.flags },
 				deployment: { ...o.deployment, services: { finetuned: stub.url } },
 				...(o.argv ? { argv: o.argv } : {}),
+				...(o.entries ? { entries: o.entries } : {}),
 			},
 		);
 	} finally {
@@ -397,4 +407,95 @@ test("a real session behind the fallback planner with default flags (--model fal
 		out.stderr.filter((l) => l.startsWith("[fallback]")),
 		[],
 	);
+});
+
+/** The last result each request to the service carried (the tools surface's prompt names it). */
+const lastResults = (asked: any[]) =>
+	asked.map((body) =>
+		body.messages[0].content
+			.filter((c: any) => c.type === "text")
+			.map((c: any) => /^Last result: .*$/m.exec(c.text)?.[0])
+			.join(""),
+	);
+
+test("a real session over the file of an earlier one, under its id (--continue, --session, /resume) or a new one (a fork or clone), with the robot's frame budget and with a larger one: the policy's next episode goes on from the earlier one's last call id and runs on its own observations: each step is asked with its own last result, and the episode is whole and claims success", async () => {
+	for (const keepImages of [2, 4]) {
+		const first = await run({ robot: (log) => toolsToy(log, { spec: { keepImages } }) });
+		assert.deepEqual(first.robot, ["look", "go 1", "go 2"]);
+		assert.deepEqual(first.results, ["ft_1 look: scene", "ft_2 go: at 1", "ft_3 go: at 2", "ft_4 finish: success"]);
+		const [header, ...entries] = first.file as [Record<string, unknown>, ...FileEntry[]];
+		for (const id of [header.id, "0193e1c0-0000-7000-8000-00000000f02c"]) {
+			const out = await run({
+				robot: (log) => toolsToy(log, { spec: { keepImages }, tag: () => " (later)" }),
+				entries: [{ ...header, id } as FileEntry, ...entries],
+			});
+			const what = `keep ${keepImages}, ${id === header.id ? "the same id" : "a new id"}`;
+			assert.deepEqual(out.robot, ["look", "go 1", "go 2"], what);
+			assert.deepEqual(
+				out.replies.slice(first.replies.length).map((r) => r[2]),
+				[
+					[["ft_5", "look", {}]],
+					[["ft_6", "go", { x: 1 }]],
+					[["ft_7", "go", { x: 2 }]],
+					[["ft_8", "finish", { status: "success", summary: "done" }]],
+				],
+				what,
+			);
+			assert.deepEqual(
+				out.results.slice(first.results.length),
+				["ft_5 look: scene (later)", "ft_6 go: at 1 (later)", "ft_7 go: at 2 (later)", "ft_8 finish: success"],
+				what,
+			);
+			assert.deepEqual(
+				lastResults(out.asked),
+				["Last result: scene (later)", "Last result: at 1 (later)", "Last result: at 2 (later)"],
+				what,
+			);
+			assert.equal(out.row?.claimed, "success", what);
+		}
+	}
+});
+
+test("a real session reloaded after an episode (/reload), with the robot's frame budget and with a larger one: the policy's next episode goes on from the earlier one's last call id and runs on its own observations: each step is asked with its own last result, and the episode is whole and claims success", async () => {
+	for (const keepImages of [2, 4]) {
+		let starts = 0;
+		const start = async () => {
+			starts++;
+			return ["look", "go", "finish"];
+		};
+		const out = await run({
+			robot: (log) => toolsToy(log, { spec: { keepImages, start }, tag: () => ` (start ${starts})` }),
+			replies: [GO(1), GO(2), DONE, GO(1), GO(2), DONE],
+			after: async (_ctx, session) => {
+				await session.reload();
+				await within(20_000, session.prompt("Again."), "the prompt after the reload");
+			},
+		});
+		const what = `keep ${keepImages}`;
+		assert.deepEqual(out.robot, ["look", "go 1", "go 2", "look", "go 1", "go 2"], what);
+		assert.deepEqual(
+			out.results,
+			[
+				"ft_1 look: scene (start 1)",
+				"ft_2 go: at 1 (start 1)",
+				"ft_3 go: at 2 (start 1)",
+				"ft_4 finish: success",
+				"ft_5 look: scene (start 2)",
+				"ft_6 go: at 1 (start 2)",
+				"ft_7 go: at 2 (start 2)",
+				"ft_8 finish: success",
+			],
+			what,
+		);
+		assert.deepEqual(
+			lastResults(out.asked),
+			[1, 2].flatMap((n) => [
+				`Last result: scene (start ${n})`,
+				`Last result: at 1 (start ${n})`,
+				`Last result: at 2 (start ${n})`,
+			]),
+			what,
+		);
+		assert.equal(out.row?.claimed, "success", what);
+	}
 });

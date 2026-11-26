@@ -103,6 +103,7 @@ function fakePi(
 		signal: aborted ? AbortSignal.abort() : undefined,
 		sessionManager: {
 			getBranch: () => branch,
+			getEntries: () => branch,
 			getSessionDir: () => dir,
 			getSessionFile: () => join(dir, "session.jsonl"),
 			getSessionId: () => "session",

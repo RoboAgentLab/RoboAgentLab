@@ -281,18 +281,13 @@ export class PsvPlanner {
 		this.turnForSitVerified = false;
 	}
 
-	/** The planner state (session entries restore it on resume). */
+	/** The planner state, which each decision's session entry records. */
 	state() {
 		return {
 			current_plan: this.currentPlan,
 			current_step: this.currentStep,
 			turn_for_sit_sequence_verified: this.turnForSitVerified,
 		};
-	}
-	restore(s: { current_plan: string | null; current_step: number; turn_for_sit_sequence_verified: boolean }) {
-		this.currentPlan = s.current_plan;
-		this.currentStep = s.current_step;
-		this.turnForSitVerified = s.turn_for_sit_sequence_verified;
 	}
 
 	private async call(prompt: string, stage: string, signal?: AbortSignal): Promise<Stage> {

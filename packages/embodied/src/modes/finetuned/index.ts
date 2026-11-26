@@ -93,6 +93,7 @@ import {
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { service } from "../../infra/config.ts";
 import { encodePng } from "../../infra/png.ts";
+import { callId, highestCallNumber } from "../../planner/call-ids.ts";
 import { type CodeApiTier, codePrimitives } from "../../primitives/registry.ts";
 import { PRIMITIVES_EVENT, type PrimitivesHandle, TASK_ENTRY } from "../../robot.ts";
 import { codeTier, renderPrimitives } from "../code/index.ts";
@@ -592,6 +593,8 @@ const model = (id: string): Model<"finetuned"> => ({
 });
 /** The session entry each step appends. */
 export const STEP_ENTRY = "finetuned_step";
+/** The policy's tool call ids are this and a number (../../planner/call-ids.ts). */
+const CALL_ID = "ft_";
 type Turn = { text: string; calls: ToolCall[] };
 
 export default function finetuned(pi: ExtensionAPI) {
@@ -848,7 +851,9 @@ export default function finetuned(pi: ExtensionAPI) {
 		session = ctx.sessionManager.getSessionId();
 		refused = undefined;
 		over = false;
-		steps = ids = dones = 0;
+		steps = dones = 0;
+		// The session's earlier calls keep their ids: the next one goes on from them (../../planner/call-ids.ts).
+		ids = highestCallNumber(ctx.sessionManager, CALL_ID);
 		recent = [];
 		phase = 0;
 		phaseStep = 0;
@@ -950,7 +955,7 @@ export default function finetuned(pi: ExtensionAPI) {
 	};
 	const call = (name: string, args: Json): ToolCall => ({
 		type: "toolCall",
-		id: `ft_${++ids}`,
+		id: callId(CALL_ID, ++ids),
 		name,
 		arguments: args as ToolCall["arguments"],
 	});
@@ -1057,6 +1062,8 @@ export default function finetuned(pi: ExtensionAPI) {
 		if (refused) return { text: `The fine-tuned policy refused this robot: ${refused}`, calls: [] };
 		if (over) return { text: "The fine-tuned policy already ended this episode.", calls: [] };
 		if (!pending) return opening();
+		// At the bound the turn fails here, before the service is asked or a step is written (../../planner/call-ids.ts).
+		callId(CALL_ID, ids + 1);
 		const result = messages.find((m) => m.role === "toolResult" && m.toolCallId === pending);
 		if (!result || result.role !== "toolResult") return end(`no result for ${pending}; the policy stops.`);
 		const texts = result.content.flatMap((c) => (c.type === "text" ? [c.text] : []));

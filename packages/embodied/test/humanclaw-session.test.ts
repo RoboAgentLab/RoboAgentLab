@@ -9,12 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, FileEntry } from "@earendil-works/pi-coding-agent";
 import { RESULT_ENTRY } from "../src/robot.ts";
 import humanclaw from "../src/robots/humanclaw/index.ts";
 import { PSV_ENTRY } from "../src/robots/humanclaw/provider.ts";
 import { at, llm, type Session, vlm, within, withSession } from "./helpers/pi-session.ts";
-import { fakeEnv, rgb } from "./sim-stub.ts";
+import { fakeEnv, nd } from "./sim-stub.ts";
 
 /** What a request to humanclaw-psv gets that is not a turn of the session's own loop. */
 const NOT_A_TURN =
@@ -27,12 +27,15 @@ const plan = (action_id: number, action_name: string, goal = "Find the bed") =>
 const DECISIONS = [plan(2, "Turn<left><45>"), plan(0, "Walk<forward><slow>"), plan(1, "Stop/Stand", "Stop/Stand")];
 const ACCEPT = JSON.stringify({ verdict: "accept", reason: "the lane is clear" });
 
-/** The fake env server of one episode: Stop/Stand ends it; `steps` are the actions env.step got. */
-async function episode() {
+/**
+ * The fake env server of one episode, its ego images all of the grey `shade`: Stop/Stand ends it; `steps` are the
+ * actions env.step got.
+ */
+async function episode(shade = 0) {
 	let step = 0;
 	const steps: string[] = [];
 	const obsOf = (done = false) => ({
-		ego: rgb(4, 4),
+		ego: nd("uint8", [4, 4, 3], Buffer.alloc(4 * 4 * 3, shade)),
 		instruction: "Find the bed.",
 		step,
 		max_steps: 100,
@@ -66,11 +69,12 @@ const texts = (m: { content: { type: string; text?: string }[] }) =>
 
 /**
  * One episode with `-e robots/humanclaw --units=both --humanclaw-mode paper --model humanclaw-psv/faux/faux-1` and
- * `flags`: the base model answers the planner with DECISIONS and the verifier with ACCEPT; any other question to it
- * (a check that names it) gets `aux`. `before` runs before the prompt and `after` after it, with the context pi gives
- * an extension. Returns the env's steps and calls, the loop's replies, each call's result, the planner's entries, how
- * often the base model was asked as the planner, the other questions it got, and the robot's result row (written at
- * pi's quit when the episode did not finish).
+ * `flags`, its ego images of the grey `shade`, in a new session or one whose file is `entries`: the base model answers
+ * the planner with DECISIONS and the verifier with ACCEPT; any other question to it (a check that names it) gets
+ * `aux`. `before` runs before the prompt and `after` after it, with the context pi gives an extension. Returns the
+ * env's steps and calls, the loop's replies, each call's result, the planner's entries, how often the base model was
+ * asked as the planner, the ego image each planner and verifier request carried, the other questions it got, the
+ * robot's result row (written at pi's quit when the episode did not finish) and the session's file.
  */
 async function paper(
 	o: {
@@ -79,12 +83,16 @@ async function paper(
 		before?: (ctx: ExtensionContext, session: Session) => Promise<void>;
 		after?: (ctx: ExtensionContext, session: Session) => Promise<void>;
 		more?: ((pi: ExtensionAPI) => void)[];
+		shade?: number;
+		entries?: FileEntry[];
 	} = {},
 ) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "humanclaw-session-")));
-	const { env, steps } = await episode();
+	const { env, steps } = await episode(o.shade);
 	const decisions = [...DECISIONS];
 	let planned = 0;
+	const images: unknown[] = [];
+	const prompts: string[] = [];
 	const questions: string[] = [];
 	try {
 		return await withSession(
@@ -96,11 +104,18 @@ async function paper(
 					const prompt = Array.isArray(last)
 						? last.map((c: { text?: string }) => c.text ?? "").join(" ")
 						: String(last);
+					const image = Array.isArray(last) ? last.find((c: { type?: string }) => c.type === "image") : undefined;
 					if (/You are the plan-and-skill chooser/.test(prompt)) {
+						images.push(image?.data);
+						prompts.push(prompt);
 						planned++;
 						return fauxAssistantMessage(decisions.shift() ?? plan(1, "Stop/Stand", "Stop/Stand"));
 					}
-					if (/You are the verifier for the proposed action/.test(prompt)) return fauxAssistantMessage(ACCEPT);
+					if (/You are the verifier for the proposed action/.test(prompt)) {
+						images.push(image?.data);
+						prompts.push(prompt);
+						return fauxAssistantMessage(ACCEPT);
+					}
 					questions.push(prompt);
 					return fauxAssistantMessage(o.aux ?? "no answer");
 				};
@@ -138,13 +153,17 @@ async function paper(
 					),
 					decided: entries(PSV_ENTRY).map((e: Record<string, unknown>) => [e.step, e.history_item, e.state]),
 					planned,
+					images,
+					prompts,
 					questions,
 					row: entries(RESULT_ENTRY).at(-1) as Record<string, unknown> | undefined,
+					file: [session.sessionManager.getHeader(), ...session.sessionManager.getEntries()] as FileEntry[],
 				};
 			},
 			{
 				argv: ["--model", MODEL],
 				flags: { "env-url": env.url, units: "both", "humanclaw-mode": "paper", ...o.flags },
+				...(o.entries ? { entries: o.entries } : {}),
 			},
 		);
 	} finally {
@@ -225,5 +244,31 @@ test("a real session in paper mode: a reviewed approval's question, with no mode
 		assert.deepEqual(named.robot, ["Turn<left><45>", "Walk<forward><slow>", "Stop/Stand"]);
 		assert.equal(named.row?.claimed, "success");
 		assert.equal(named.row?.approval_errors, 0);
+	}
+});
+
+test("a real session in paper mode over the file of an earlier one, under its id (--continue, --session, /resume) or a new one (a fork or clone): the planner's next episode goes on from the earlier one's last call id, starts afresh and plans from its own ego images: its planner and verifier are sent what a new session's are, it records the decisions a new session records, and it is whole", async () => {
+	const first = await paper();
+	assert.deepEqual(
+		first.results.map((r) => r.slice(0, r.indexOf(":"))),
+		["psv_1 look", "psv_2 act", "psv_3 act", "psv_4 act", "psv_5 finish"],
+	);
+	// A new session over an env whose ego images are another grey: what its planner and verifier are sent.
+	const alone = await paper({ shade: 200 });
+	assert.notDeepEqual(alone.images, first.images);
+	const [header, ...entries] = first.file as [Record<string, unknown>, ...FileEntry[]];
+	for (const id of [header.id, "0193e1c0-0000-7000-8000-00000000f02c"]) {
+		const what = id === header.id ? "the same id" : "a new id";
+		const out = await paper({ shade: 200, entries: [{ ...header, id } as FileEntry, ...entries] });
+		assert.deepEqual(out.robot, ["Turn<left><45>", "Walk<forward><slow>", "Stop/Stand"], what);
+		assert.deepEqual(
+			out.replies.slice(first.replies.length).map((r) => (r[2] as unknown[][]).map((c) => c.slice(0, 2))),
+			[[["psv_6", "look"]], [["psv_7", "act"]], [["psv_8", "act"]], [["psv_9", "act"]], [["psv_10", "finish"]]],
+			what,
+		);
+		assert.deepEqual(out.images, alone.images, what);
+		assert.deepEqual(out.prompts, alone.prompts, what);
+		assert.deepEqual(out.decided.slice(first.decided.length), alone.decided, what);
+		assert.equal(out.row?.claimed, "success", what);
 	}
 });

@@ -12,6 +12,7 @@ import {
 	DefaultResourceLoader,
 	type ExtensionAPI,
 	type ExtensionContext,
+	type FileEntry,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -38,6 +39,11 @@ export type SessionOptions = {
 	model?: string;
 	/** Settings as a settings file holds them (compaction's thresholds, say); pi's own retry stays off. */
 	settings?: Parameters<typeof SettingsManager.inMemory>[0];
+	/**
+	 * The session's file, its header and entries, as pi reads a file it opens (--continue, --session, /resume) or a
+	 * fork's; else the session is a new one.
+	 */
+	entries?: FileEntry[];
 };
 
 /**
@@ -124,7 +130,7 @@ export async function withSession<T>(
 			agentDir: join(base, "agent"),
 			model,
 			modelRuntime: runtime,
-			sessionManager: SessionManager.inMemory(base),
+			sessionManager: SessionManager.inMemory(base, undefined, o.entries && structuredClone(o.entries)),
 			settingsManager,
 			resourceLoader,
 		}));

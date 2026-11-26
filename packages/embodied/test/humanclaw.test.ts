@@ -13,6 +13,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { LARGEST } from "../src/planner/call-ids.ts";
 import { RELAY_ERRORS } from "../src/planner/fallback.ts";
 import {
 	chooserAction,
@@ -285,12 +286,13 @@ type Hold = ReturnType<typeof hold>;
 type Reply = string | { held: Hold; reply: string };
 
 /**
- * humanclaw-psv/selfhost/muse on a stub pi whose session's branch holds the entries the provider writes (a later
- * session resumes from them). The base model answers with `replies` in turn, through the `ask` hook, or through
- * `registry` when one is given (as pi's model registry streams a reply). `asked` holds what each base-model request
- * carried, `decisions` what the provider sent the robot.
+ * humanclaw-psv/selfhost/muse on a stub pi whose session's branch holds the entries the provider writes (one per
+ * decision; no start reads them), and whose file is `file` (every entry pi reads from it, every branch; by default the
+ * branch). The base model answers with `replies` in turn, through the `ask` hook, or through `registry` when one is
+ * given (as pi's model registry streams a reply). `asked` holds what each base-model request carried, `decisions` what
+ * the provider sent the robot.
  */
-function psvPi(replies: Reply[], o: { branch?: any[]; registry?: (asked: Json[]) => unknown } = {}) {
+function psvPi(replies: Reply[], o: { branch?: any[]; file?: any[]; registry?: (asked: Json[]) => unknown } = {}) {
 	const handlers = new Map<string, ((event: any, ctx: any) => unknown)[]>();
 	const branch = o.branch ?? [];
 	const entries: { type: string; data: any }[] = [];
@@ -311,7 +313,7 @@ function psvPi(replies: Reply[], o: { branch?: any[]; registry?: (asked: Json[])
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		modelRegistry: o.registry?.(asked),
-		sessionManager: { getBranch: () => branch, getSessionId: () => session.id },
+		sessionManager: { getBranch: () => branch, getEntries: () => o.file ?? branch, getSessionId: () => session.id },
 	};
 	const psv = mountPsv(
 		pi,
@@ -380,6 +382,14 @@ const WALK = plan(0, "Walk<forward><slow>");
 const ACCEPT = JSON.stringify({ verdict: "accept", reason: "the lane is clear" });
 /** Stop/Stand, which the verifier is asked about too. */
 const STOP = plan(1, "Stop/Stand", "Stop/Stand");
+/** A turn toward a sit: the verifier is asked about the first of a sequence of them, not about the next. */
+const SIT_TURN = JSON.stringify({
+	visible_state: "A bed ahead.",
+	mid_level_goal: "Sit on the bed",
+	action_id: 2,
+	action_name: "Turn<left><45>",
+	additional_info: { turn_for_sit: true },
+});
 /** The ego image of the n-th observation: each decision's requests show which one they carry. */
 const ego = (n: number) => ({ type: "image", data: `EGO${n}`, mimeType: "image/png" });
 /** The robot's result of each call of `m`, the n-th observation: the episode is done at `done`. */
@@ -410,12 +420,13 @@ type At = (place: string, transcript: unknown[], p: Psv) => Promise<void>;
  * One episode as pi's agent loop runs it: the calls of each turn get the next observation, done at the `done`-th,
  * until a turn calls nothing; then the loop asks once more, as for a second prompt. `at` runs at each place where a
  * request from elsewhere can arrive, with the transcript the loop has there; while `held` holds back a base-model
- * reply, `at` runs inside the loop's request that waits for it. Returns each turn as the loop got it.
+ * reply, `at` runs inside the loop's request that waits for it. The transcript starts as `earlier` (a session started
+ * over a file). Returns each turn as the loop got it.
  */
-async function decide(p: Psv, done: number, at?: At, held?: Hold) {
+async function decide(p: Psv, done: number, at?: At, held?: Hold, earlier: unknown[] = []) {
 	const visit = async (place: string, transcript: unknown[]) => at?.(place, [...transcript], p);
 	const turns: unknown[] = [];
-	const history: unknown[] = [];
+	const history: unknown[] = [...earlier];
 	await visit("before the first decision", history);
 	for (let n = 0; n < 20; n++) {
 		const asked = p.turn([...history]);
@@ -463,8 +474,9 @@ async function episode(at?: At) {
 	}
 }
 /**
- * A later session on the branch of one that made two decisions (a turn and a walk): it starts with look again, then
- * a turn and Stop/Stand, its planner going on from the state and history the first session wrote.
+ * A later session over the file of one that made two decisions (a turn and a walk), its transcript in each request: it
+ * opens after that session's call ids with look again, then a turn and Stop/Stand, each reading its own call's result,
+ * its planner starting afresh (the robot resets the env for each episode it starts).
  */
 async function resumed(at?: At) {
 	const first = psvPi([TURN, WALK, ACCEPT]);
@@ -474,10 +486,13 @@ async function resumed(at?: At) {
 		const m = await first.turn([...history]);
 		history.push(m, ...observed(m, n, 9));
 	}
-	const p = psvPi([TURN, STOP, ACCEPT], { branch: first.branch });
-	await p.emit("session_start");
-	return { turns: await decide(p, 2, at), ...held(p) };
+	const p = psvPi([TURN, STOP, ACCEPT], { branch: first.branch, file: [...fileOf(history), ...first.branch] });
+	await p.emit("session_start", { reason: "resume" });
+	return { turns: await decide(p, 2, at, undefined, history), ...held(p) };
 }
+/** A transcript as pi's file holds it: one message entry each. */
+const fileOf = (messages: unknown[]) =>
+	messages.map((message, i) => ({ type: "message", id: `e${i}`, parentId: null, timestamp: "", message }));
 /**
  * The base model through pi's model registry (an OpenAI-compatible server): it rejects the JSON response format at
  * the second decision, which is asked again as text, as is every request after it.
@@ -572,11 +587,8 @@ test("humanclaw-psv: a request of the session's own loop is its turn whatever re
 	p.session.id = "session-2";
 	await p.emit("session_start");
 	assertNotATurn(await p.side({ sessionId: SESSION }, [...history, again, ...observed(again, 2, 9)]));
-	const opened = await p.turn([]);
-	assert.deepEqual(
-		opened.content.filter((c: any) => c.type === "toolCall").map((c: any) => c.name),
-		["look"],
-	);
+	// Its file holds no call: its opening look takes the first call id.
+	assert.deepEqual(seen(await p.turn([]))[2], [["psv_1", "look", {}]]);
 	assert.equal(p.asked.length, 2);
 });
 
@@ -677,14 +689,235 @@ test("humanclaw-psv: the session's id is kept at every start pi announces (its f
 	}
 });
 
-test("humanclaw-psv: the session's id is kept ahead of the rest of the start: when the rest throws (here reading the branch), the session's own turns are still answered and every other request refused", async () => {
+test("humanclaw-psv: a start reads none of the branch's earlier decisions, so a branch that cannot be read does not stop it: the session's own turns are answered, after the file's call ids, and every other request is refused", async () => {
 	const unreadable = Object.assign([], {
 		filter: () => {
 			throw new Error("the branch could not be read");
 		},
 	});
-	const p = psvPi([TURN], { branch: unreadable });
-	await assert.rejects(p.emit("session_start"), /the branch could not be read/);
+	const look = { role: "assistant", content: [{ type: "toolCall", id: "psv_3", name: "look", arguments: {} }] };
+	const p = psvPi([TURN], { branch: unreadable, file: [{ type: "message", message: look }] });
+	await p.emit("session_start");
 	for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
-	assert.deepEqual(seen(await p.turn([]))[2], [["psv_1", "look", {}]]);
+	assert.deepEqual(seen(await p.turn([]))[2], [["psv_4", "look", {}]]);
+});
+
+test("humanclaw-psv: a later session over a file that holds an earlier episode (a fork or clone, a resumed or reloaded session, --continue), in a planner of its own as pi builds one, goes on from that episode's last call id, and each decision reads its own call's result: it plans from its own ego images, and the earlier episode's Stop/Stand does not end it", async () => {
+	// The earlier episode: look, Stop/Stand (its verifier accepts), finish.
+	const first = psvPi([STOP, ACCEPT]);
+	await first.emit("session_start");
+	const earlier: any[] = [];
+	for (let n = 0; n < 3; n++) {
+		const m = await first.turn([...earlier]);
+		earlier.push(m, ...observed(m, n, 1));
+	}
+	assert.deepEqual(
+		earlier.filter((m) => m.role === "assistant").map((m) => seen(m)[2].map((c: any) => [c[0], c[1]])),
+		[[["psv_1", "look"]], [["psv_2", "act"]], [["psv_3", "finish"]]],
+	);
+	// pi's file holds the transcript and the planner's entries; a start reads only the file's call ids.
+	const file = [...fileOf(earlier), ...first.branch];
+	// A new session's planner at the same observations, to compare with.
+	const fresh = psvPi([TURN, TURN]);
+	await fresh.emit("session_start");
+	const own: unknown[] = [];
+	for (let n = 10; n < 13; n++) {
+		const m = await fresh.turn([...own]);
+		own.push(m, ...observed(m, n, 99));
+	}
+	for (const reason of ["startup", "reload", "resume", "fork"]) {
+		const p = psvPi([TURN, TURN], { branch: [...first.branch], file });
+		// The same start announced again leaves the planner as it was.
+		await p.emit("session_start", { reason });
+		await p.emit("session_start", { reason });
+		const history = [...earlier];
+		const turns: unknown[] = [];
+		for (let n = 10; n < 13; n++) {
+			const m = await p.turn([...history]);
+			turns.push(seen(m)[2]);
+			history.push(m, ...observed(m, n, 99));
+		}
+		assert.deepEqual(
+			turns,
+			[
+				[["psv_4", "look", {}]],
+				[["psv_5", "act", { unit: "TURN_LEFT", param: 45 }]],
+				[["psv_6", "act", { unit: "TURN_LEFT", param: 45 }]],
+			],
+			reason,
+		);
+		// The base model got the later episode's ego images: of its look, then of its turn.
+		assert.deepEqual(
+			p.asked.map((content: any) => content.filter((c: any) => c.type === "image").map((c: any) => c.data)),
+			[["EGO10"], ["EGO11"]],
+			reason,
+		);
+		// The planner starts afresh, as the robot resets the env for each episode it starts: its history and the
+		// entries it writes hold the later episode's decisions only, as the new session's planner's do, and the base
+		// model is asked what that planner is asked (no prompt holds the earlier episode's Stop/Stand).
+		assert.deepEqual(p.asked, fresh.asked, reason);
+		assert.deepEqual(p.psv.history(), fresh.psv.history(), reason);
+		assert.deepEqual(p.entries, fresh.entries, reason);
+		assert.deepEqual(
+			p.entries.map((e) => e.data.step),
+			[0, 1],
+			reason,
+		);
+	}
+});
+
+test("humanclaw-psv: a later session over a file whose earlier episode stopped in the middle of a plan starts afresh: the plan's steps are counted from its own first decision, and the entries it writes are a new session's", async () => {
+	const first = psvPi([TURN, WALK, ACCEPT]);
+	await first.emit("session_start");
+	const earlier: any[] = [];
+	for (let n = 0; n < 3; n++) {
+		const m = await first.turn([...earlier]);
+		earlier.push(m, ...observed(m, n, 9));
+	}
+	// The earlier episode stopped two steps into its plan.
+	assert.deepEqual(
+		first.entries.map((e) => [e.data.state.current_plan, e.data.state.current_step]),
+		[
+			["Find the bed", 1],
+			["Find the bed", 2],
+		],
+	);
+	const file = [...fileOf(earlier), ...first.branch];
+	const later = psvPi([TURN, TURN], { branch: [...first.branch], file });
+	const fresh = psvPi([TURN, TURN]);
+	for (const [p, history] of [
+		[later, [...earlier]],
+		[fresh, []],
+	] as [Psv, unknown[]][]) {
+		await p.emit("session_start");
+		for (let n = 10; n < 13; n++) {
+			const m = await p.turn([...history]);
+			history.push(m, ...observed(m, n, 99));
+		}
+	}
+	assert.deepEqual(later.entries, fresh.entries);
+	assert.deepEqual(
+		later.entries.map((e) => [e.data.step, e.data.state.current_step]),
+		[
+			[0, 1],
+			[1, 2],
+		],
+	);
+});
+
+test("humanclaw-psv: a later session over a file whose earlier episode ended right after a turn toward a sit that its verifier accepted starts afresh: its first such turn is asked of the verifier again, as in a new session", async () => {
+	const first = psvPi([SIT_TURN, ACCEPT]);
+	await first.emit("session_start");
+	const earlier: unknown[] = [];
+	for (let n = 0; n < 2; n++) {
+		const m = await first.turn([...earlier]);
+		earlier.push(m, ...observed(m, n, 9));
+	}
+	assert.equal(first.entries.at(-1)?.data.state.turn_for_sit_sequence_verified, true);
+	const later = psvPi([SIT_TURN, ACCEPT, SIT_TURN], {
+		branch: [...first.branch],
+		file: [...fileOf(earlier), ...first.branch],
+	});
+	const fresh = psvPi([SIT_TURN, ACCEPT, SIT_TURN]);
+	for (const [p, history] of [
+		[later, [...earlier]],
+		[fresh, []],
+	] as [Psv, unknown[]][]) {
+		await p.emit("session_start");
+		for (let n = 10; n < 13; n++) {
+			const m = await p.turn([...history]);
+			history.push(m, ...observed(m, n, 99));
+		}
+	}
+	// The planner, the verifier about the first turn toward the sit, the planner: as in the new session.
+	assert.equal(later.asked.length, 3);
+	assert.deepEqual(later.asked, fresh.asked);
+	assert.deepEqual(later.entries, fresh.entries);
+});
+
+test("humanclaw-psv: a later session whose first planner reply names no goal starts afresh too: the earlier episode's plan is in none of its decisions or entries", async () => {
+	const NO_GOAL = JSON.stringify({ visible_state: "A hallway.", action_id: 2, action_name: "Turn<left><45>" });
+	const first = psvPi([TURN, WALK, ACCEPT]);
+	await first.emit("session_start");
+	const earlier: unknown[] = [];
+	for (let n = 0; n < 3; n++) {
+		const m = await first.turn([...earlier]);
+		earlier.push(m, ...observed(m, n, 9));
+	}
+	const later = psvPi([NO_GOAL, TURN], {
+		branch: [...first.branch],
+		file: [...fileOf(earlier), ...first.branch],
+	});
+	const fresh = psvPi([NO_GOAL, TURN]);
+	for (const [p, history] of [
+		[later, [...earlier]],
+		[fresh, []],
+	] as [Psv, unknown[]][]) {
+		await p.emit("session_start");
+		for (let n = 10; n < 13; n++) {
+			const m = await p.turn([...history]);
+			history.push(m, ...observed(m, n, 99));
+		}
+	}
+	assert.deepEqual(later.entries, fresh.entries);
+	assert.deepEqual(later.asked, fresh.asked);
+	assert.notEqual(later.entries[0]?.data.state.current_plan, "Find the bed");
+});
+
+test("humanclaw-psv: the resumed episode the side-request tests run is a later session: it opens after the earlier session's call ids, and each decision reads its own call's result", async () => {
+	const { turns } = await resumed();
+	assert.deepEqual(
+		(turns as any[]).slice(0, 4).map((t) => [t[1], t[2].map((c: any) => [c[0], c[1]])]),
+		[
+			["look (the first ego image)", [["psv_4", "look"]]],
+			["Turn<left><45>", [["psv_5", "act"]]],
+			["Stop/Stand", [["psv_6", "act"]]],
+			["episode over", [["psv_7", "finish"]]],
+		],
+	);
+});
+
+test("humanclaw-psv: the planner makes no call id past the largest that is counted: over a file at that id its turn fails with the error, and so does the next; after a file one short of it the planner makes that id, then fails before the base model is asked or a decision is written", async () => {
+	const at = (n: number) => ({
+		type: "message",
+		message: { role: "assistant", content: [{ type: "toolCall", id: `psv_${n}`, name: "look", arguments: {} }] },
+	});
+	const ran = `the session's call ids reached psv_${LARGEST}; start a new session`;
+	const full = psvPi([TURN], { file: [at(LARGEST)] });
+	await full.emit("session_start");
+	const failed = await full.turn([]);
+	assert.deepEqual(seen(failed), ["error", ran, []]);
+	assert.deepEqual(seen(await full.turn([failed])), ["error", ran, []]);
+	// One short of it, after a result that ends the episode: the finish would take the next id.
+	const ended = psvPi([], { file: [at(LARGEST - 1)] });
+	await ended.emit("session_start");
+	const first = await ended.turn([]);
+	assert.deepEqual(seen(await ended.turn([first, ...observed(first, 0, 0)])), ["error", ran, []]);
+	const short = psvPi([TURN], { file: [at(LARGEST - 1)] });
+	await short.emit("session_start");
+	const look = await short.turn([]);
+	assert.deepEqual(seen(look)[2], [[`psv_${LARGEST}`, "look", {}]]);
+	assert.deepEqual(seen(await short.turn([look, ...observed(look, 0, 9)])), ["error", ran, []]);
+	assert.deepEqual([short.asked, short.entries, short.decisions], [[], [], []]);
+});
+
+test("humanclaw-psv: a start on a planner that has run an episode (a host that binds the extensions again) begins afresh too: the next episode sends the base model what the first sent, writes the entries the first wrote and ends as the first did", async () => {
+	// Each episode: two turns toward the same goal, then the env's step limit ends it in the middle of that plan.
+	const p = psvPi([TURN, TURN, TURN, TURN]);
+	await p.emit("session_start");
+	const first = await decide(p, 2);
+	assert.deepEqual(
+		p.entries.map((e) => e.data.state.current_step),
+		[1, 2],
+	);
+	const asked = [...p.asked];
+	const entries = [...p.entries];
+	await p.emit("session_start");
+	const again = await decide(p, 2);
+	assert.deepEqual(p.asked.slice(asked.length), asked);
+	assert.deepEqual(p.entries.slice(entries.length), entries);
+	assert.deepEqual(
+		again.map((t: any) => [t[0], t[1]]),
+		first.map((t: any) => [t[0], t[1]]),
+	);
 });
