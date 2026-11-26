@@ -29,6 +29,7 @@ import finetuned, {
 import { convertRun, findRuns, trainedTokens } from "../src/modes/finetuned/prepare.ts";
 import { decodePng, fingerprint, parseView, prepareView } from "../src/modes/finetuned/views.ts";
 import { RT_UNITS, UNITS, UNITS_EVENT, type UnitsHandle } from "../src/modes/units/index.ts";
+import { LARGEST } from "../src/planner/call-ids.ts";
 import { RELAY_ERRORS } from "../src/planner/fallback.ts";
 import { deployFlags } from "./helpers/deployment.ts";
 import { within } from "./helpers/pi-session.ts";
@@ -265,12 +266,15 @@ function fakePi(
 	const warnings: string[] = [];
 	/** The id of the session the stub is in: a test moves it on for a new session. */
 	const session = { id: SESSION };
+	/** The session's file as pi reads it (every entry, every branch): a test puts an earlier episode's in it. */
+	const file: unknown[] = [];
 	const ctx = {
 		hasUI: true,
 		model: { provider: "finetuned" },
 		ui: { notify: (s: string) => warnings.push(s) },
 		sessionManager: {
 			getBranch: () => [{ type: "custom", customType: "robot_task", data: { robot } }],
+			getEntries: () => file,
 			getSessionId: () => session.id,
 		},
 	};
@@ -305,7 +309,7 @@ function fakePi(
 	/** The answer to one from a caller that passes no options at all. */
 	const bare = (id = ADAPTER) =>
 		within<any>(2000, provider.streamSimple(model(id), { messages: [] }).result(), "a request without options");
-	return { emit, turn, ask, side, bare, session, ctx, entries, warnings, model };
+	return { emit, turn, ask, side, bare, session, file, ctx, entries, warnings, model };
 }
 
 const calls = (m: any) => m.content.filter((c: any) => c.type === "toolCall");
@@ -1491,17 +1495,185 @@ test("the session's id is kept at every start pi announces (its first start, a n
 	}
 });
 
-test("the session's id is kept ahead of the rest of the start: when the rest throws (here a robot's wrist hook), the session's own turns are still answered and every other request refused", async () => {
+test("the session's id and where its call ids go on from are kept ahead of the rest of the start: when the rest throws (here a robot's wrist hook), the session's own turns are still answered, after the file's call ids, and every other request refused", async () => {
 	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" }, "libero", ["act", "finish"], {
 		vocabulary: [...UNITS],
 		wrist: () => {
 			throw new Error("the wrist camera is not up yet");
 		},
 	});
+	p.file.push({
+		type: "message",
+		message: { role: "assistant", content: [{ type: "toolCall", id: "ft_3", name: "act", arguments: {} }] },
+	});
 	await assert.rejects(p.emit("session_start"), /the wrist camera is not up yet/);
 	for (const [, options] of NOT_TURNS) assertNotATurn(await p.side(options));
 	assert.deepEqual(
 		calls(await p.turn([])).map((c: any) => c.id),
-		["ft_1"],
+		["ft_4"],
 	);
+});
+
+// a later session over a file that holds an earlier episode
+
+/** A units `act` result for the task `task` with the views `views` (a finish's result says its status), and `details`. */
+const seenIn = (m: any, task: string, views: string[], details: Record<string, unknown> = {}) =>
+	calls(m).map((c: any) => ({
+		role: "toolResult",
+		toolCallId: c.id,
+		toolName: c.name,
+		content: [
+			{
+				type: "text",
+				text:
+					c.name === "act"
+						? `units: ${c.arguments.unit} x1\nRecent units: none\nTASK: ${task}`
+						: c.arguments.status,
+			},
+			...views.map((data) => ({ type: "image", data, mimeType: "image/png" })),
+		],
+		details,
+		isError: false,
+	}));
+/** Other camera images than VIEWS, for a later episode. */
+const LATER_VIEWS = [pattern(32, 32, 13), pattern(24, 32, 17)].map((v) => png(v).toString("base64"));
+/** A transcript's messages as pi's session file holds them, one entry each. */
+const fileOf = (messages: unknown[]) =>
+	messages.map((message, i) => ({
+		type: "message",
+		id: `e${i}`,
+		parentId: i ? `e${i - 1}` : null,
+		timestamp: "",
+		message,
+	}));
+
+test("a later session over a file that holds an earlier episode (a fork or clone, a resumed or reloaded session, --continue), in a provider of its own as pi builds one and under either model at its start (the policy, the fallback planner over it), goes on from that episode's last call id, and its steps are a fresh session's: each reads its own call's result, not the earlier one's task, images or env success", async () => {
+	// The earlier episode: the opening RELEASE, MV_LEFT, after which the env reports success, and finish.
+	const earlier: any[] = [];
+	const ep = await endpoint(["MV_LEFT"]);
+	try {
+		const first = fakePi({ "ft-endpoint": ep.url });
+		await first.emit("session_start");
+		for (const details of [{}, { success: true }, {}]) {
+			const m = await first.turn([...earlier]);
+			earlier.push(m, ...seenIn(m, "stack the red cube", VIEWS, details));
+		}
+	} finally {
+		await ep.close();
+	}
+	assert.deepEqual(
+		earlier.filter((m) => m.role === "assistant").map((m) => calls(m).map((c: any) => [c.id, c.name])),
+		[[["ft_1", "act"]], [["ft_2", "act"]], [["ft_3", "finish"]]],
+	);
+	/** The later episode in a session whose file holds `file`: its turns and the steps it wrote. */
+	const later = async (file: any[], model = "finetuned", reason?: string) => {
+		const service = await endpoint(["MV_FWD", "DONE"]);
+		try {
+			const p = fakePi({ "ft-endpoint": service.url });
+			p.ctx.model = { provider: model };
+			p.file.push(...file);
+			// The same start announced again leaves the planner as it was.
+			await p.emit("session_start", reason ? { reason } : {});
+			await p.emit("session_start", reason ? { reason } : {});
+			const history = file.map((e) => e.message);
+			const turns: any[] = [];
+			for (let i = 0; i < 3; i++) {
+				const m = await p.turn([...history]);
+				turns.push(seen(m));
+				history.push(m, ...seenIn(m, "put the cube in the bowl", LATER_VIEWS));
+			}
+			return { turns, steps: written(p) };
+		} finally {
+			await service.close();
+		}
+	};
+	const ids = (turns: any[]) => turns.map((t) => t[2].map((c: any[]) => c[0]));
+	const withoutIds = (turns: any[]) => turns.map((t) => [t[0], t[1], t[2].map((c: any[]) => c.slice(1))]);
+	const alone = await later([]);
+	assert.deepEqual(
+		alone.turns.map((t) => t[2]),
+		[
+			[["ft_1", "act", { unit: "RELEASE" }]],
+			[["ft_2", "act", { unit: "MV_FWD" }]],
+			[["ft_3", "finish", { status: "success", summary: "the policy emitted DONE after 1 steps" }]],
+		],
+	);
+	for (const model of ["finetuned", "fallback"])
+		for (const reason of ["startup", "reload", "resume", "fork"]) {
+			const what = `${model}, ${reason}`;
+			const resumed = await later(fileOf(earlier), model, reason);
+			assert.deepEqual(ids(resumed.turns), [["ft_4"], ["ft_5"], ["ft_6"]], what);
+			assert.deepEqual(withoutIds(resumed.turns), withoutIds(alone.turns), what);
+			assert.deepEqual(resumed.steps, alone.steps, what);
+		}
+});
+
+test("the policy makes no call id past the largest that is counted: over a file at that id its turn fails with the error, and so does the next; one short of it the opening makes that id, and the next step fails before the service is asked or a step is written", async () => {
+	/** A file whose one call is ft_<n>. */
+	const at = (n: number) => ({
+		type: "message",
+		id: "e",
+		parentId: null,
+		timestamp: "",
+		message: { role: "assistant", content: [{ type: "toolCall", id: `ft_${n}`, name: "act", arguments: {} }] },
+	});
+	const ran = `the session's call ids reached ft_${LARGEST}; start a new session`;
+	const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+	p.file.push(at(LARGEST));
+	await p.emit("session_start");
+	const m = await p.turn([]);
+	assert.equal(m.stopReason, "error");
+	assert.equal(m.errorMessage, ran);
+	assert.deepEqual(seen(await p.turn([m])), ["error", ran, []]);
+	// The service would answer with a move, or with DONE (a finish).
+	for (const reply of ["MV_FWD", "DONE"]) {
+		const ep = await endpoint([reply]);
+		try {
+			const q = fakePi({ "ft-endpoint": ep.url });
+			q.file.push(at(LARGEST - 1));
+			await q.emit("session_start");
+			const opening = await q.turn([]);
+			assert.deepEqual(seen(opening)[2], [[`ft_${LARGEST}`, "act", { unit: "RELEASE" }]], reply);
+			assert.deepEqual(seen(await q.turn([opening, ...seenBy(opening)])), ["error", ran, []], reply);
+			assert.deepEqual([ep.bodies.length, written(q)], [0, []], reply);
+		} finally {
+			await ep.close();
+		}
+	}
+});
+
+test("a session that went back on its tree (/tree) to before an earlier episode, or compacted it out of the context, and started again (a reload) goes on from that episode's last call id: an id the file holds names no new call", async () => {
+	const prompt = { role: "user", content: "Solve the task.", timestamp: 0 };
+	// The earlier episode's calls and results, as the file holds them after the prompt.
+	const earlier = [1, 2, 3, 4].flatMap((n) => {
+		const m = { role: "assistant", content: [{ type: "toolCall", id: `ft_${n}`, name: "act", arguments: {} }] };
+		return [m, ...seenIn(m, "stack the red cube", VIEWS)];
+	});
+	const summary = {
+		type: "compaction",
+		id: "c",
+		parentId: null,
+		timestamp: "",
+		summary: "an episode",
+		tokensBefore: 9,
+	};
+	for (const [what, file, context] of [
+		// The leaf back at the prompt: the context holds the prompt alone.
+		["a branch the session left", fileOf([prompt, ...earlier]), [prompt]],
+		// A compaction's summary in place of the episode: the context holds the summary (as a user message).
+		[
+			"entries a compaction keeps out of the context",
+			[...fileOf([prompt, ...earlier]), summary],
+			[{ role: "user", content: "an episode", timestamp: 0 }],
+		],
+	] as const) {
+		const p = fakePi({ "ft-endpoint": "http://127.0.0.1:9/v1" });
+		p.file.push(...file);
+		await p.emit("session_start", { reason: "reload" });
+		assert.deepEqual(
+			calls(await p.turn([...context])).map((c: any) => c.id),
+			["ft_5"],
+			what,
+		);
+	}
 });

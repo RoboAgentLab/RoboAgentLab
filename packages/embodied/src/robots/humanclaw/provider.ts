@@ -6,7 +6,8 @@
  *
  * Every turn is one decision of HumanCLAW's evaluator loop: the latest ego image from the robot's
  * `look` / `act` result, the text history this provider keeps (evaluator._history_item rows, one
- * `humanclaw_psv_step` session entry per decision, rebuilt on resume), the planner request to the
+ * `humanclaw_psv_step` session entry per decision; every session start begins it afresh, as the robot
+ * resets the env for each episode it starts), the planner request to the
  * base model (the prompt text, then the image; temperature 0, --humanclaw-max-tokens, a JSON-object
  * response format, the SDK's two transport retries, no system prompt, no tools, no transcript), up to 5
  * attempts at the same state,
@@ -38,6 +39,7 @@ import {
 	type Usage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { callId, highestCallNumber } from "../../planner/call-ids.ts";
 import { unitOf } from "./actions.ts";
 import { type Decision, historyItem, PsvPlanner } from "./psv.ts";
 
@@ -45,6 +47,8 @@ import { type Decision, historyItem, PsvPlanner } from "./psv.ts";
 export const DECISION_EVENT = "pi-embodied:humanclaw-decision";
 /** One session entry per decision: the planner/verifier record, the history row and the planner state. */
 export const PSV_ENTRY = "humanclaw_psv_step";
+/** The planner's tool call ids are this and a number (../../planner/call-ids.ts). */
+const CALL_ID = "psv_";
 type Json = Record<string, unknown>;
 
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -73,7 +77,6 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 	let over = false;
 	let ids = 0;
 	let image: { data: string; mimeType: string } | undefined;
-	let restored: Parameters<PsvPlanner["restore"]>[0] | undefined;
 	let jsonFormatSupported = true;
 	/** The session's id, which pi sends with every request of the session's own loop. */
 	let session: string | undefined;
@@ -150,7 +153,7 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 
 	const toolCall = (name: string, args: Json): ToolCall => ({
 		type: "toolCall",
-		id: `psv_${++ids}`,
+		id: callId(CALL_ID, ++ids),
 		name,
 		arguments: args as ToolCall["arguments"],
 	});
@@ -162,6 +165,8 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 			pending = c.id;
 			return { text: "look (the first ego image)", calls: [c] };
 		}
+		// At the bound the turn fails here, before the base model is asked or a decision is written.
+		callId(CALL_ID, ids + 1);
 		const result = messages.find((m) => m.role === "toolResult" && m.toolCallId === pending);
 		if (!result || result.role !== "toolResult") {
 			over = true;
@@ -186,10 +191,7 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 			| undefined;
 		if (!img) throw new Error("humanclaw-psv: the observation carries no ego image");
 		image = img;
-		if (planner.instruction === undefined) {
-			planner.reset(String(details.instruction ?? ""));
-			if (restored) planner.restore(restored);
-		}
+		if (planner.instruction === undefined) planner.reset(String(details.instruction ?? ""));
 		const step = history.length;
 		const decision: Decision = await planner.act(history, signal);
 		const item = historyItem(step, decision);
@@ -278,18 +280,15 @@ export function mountPsv(pi: ExtensionAPI, base: string, ask?: (m: Json[]) => Pr
 	pi.on("session_start", (_e, ctx) => {
 		registry = ctx.modelRegistry;
 		session = ctx.sessionManager.getSessionId();
+		// The session's earlier calls keep their ids: the next one goes on from them (../../planner/call-ids.ts).
+		ids = highestCallNumber(ctx.sessionManager, CALL_ID);
 		jsonFormatSupported = true;
-		// Resume: the history and planner state of the branch's decisions.
-		const entries = ctx.sessionManager
-			.getBranch()
-			.filter((e) => e.type === "custom" && e.customType === PSV_ENTRY)
-			.map((e) => (e.type === "custom" ? (e.data as Json) : {}));
-		history = entries.map((e) => e.history_item as Json);
+		// The robot resets the env for each episode it starts, so the planner starts afresh: the decisions an earlier
+		// start wrote stay in the file, but its history and state are not this episode's.
+		history = [];
 		pending = undefined;
 		over = false;
-		const last = entries[entries.length - 1];
 		planner.instruction = undefined;
-		restored = last?.state as typeof restored;
 	});
 	return { planner, history: () => history, streamSimple };
 }
